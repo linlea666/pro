@@ -56,6 +56,30 @@ const MIGRATIONS: string[] = [
     data TEXT NOT NULL
   );
   `,
+  // 3: AI interpretations (one per coin/timeframe/bar) and daily usage
+  `
+  CREATE TABLE ai_cache (
+    key TEXT PRIMARY KEY,
+    coin TEXT NOT NULL,
+    tf TEXT NOT NULL,
+    bar_t INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    model TEXT NOT NULL,
+    content TEXT NOT NULL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    duration_ms INTEGER
+  );
+  CREATE INDEX ai_cache_coin_tf ON ai_cache(coin, tf, created_at);
+  CREATE TABLE ai_usage (
+    day TEXT PRIMARY KEY,
+    calls INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0
+  );
+  `,
 ];
 
 let db: Database.Database | null = null;

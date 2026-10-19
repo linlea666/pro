@@ -11,7 +11,7 @@ const ITEMS: { href: string; label: string; soon?: string }[] = [
   { href: "/admin/settings", label: "系统设置" },
 ];
 
-export function AdminNav({ username, ready = ["/admin", "/admin/logs", "/admin/params", "/admin/settings"] }: { username: string; ready?: string[] }) {
+export function AdminNav({ username, ready = ["/admin", "/admin/logs", "/admin/params", "/admin/ai", "/admin/settings"] }: { username: string; ready?: string[] }) {
   const path = usePathname();
   const logout = async () => {
     await fetch("/api/admin/logout", { method: "POST" });

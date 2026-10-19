@@ -11,6 +11,7 @@ import { LevelsList, ReliabilityBadge, Section } from "./shared";
 import { MtfStrip } from "./MtfStrip";
 import { Explain } from "../Explain";
 import { PositionCalc } from "./PositionCalc";
+import { AiCard } from "./AiCard";
 import type { Mode } from "./CoinView";
 
 export function Overview({ a, mtf, mode, onTf, onTab }: { a: Analysis; mtf: LightSummary[] | null; mode: Mode; onTf: (t: Timeframe) => void; onTab: (t: string) => void }) {
@@ -83,6 +84,8 @@ export function Overview({ a, mtf, mode, onTf, onTab }: { a: Analysis; mtf: Ligh
             )}
           </div>
         </section>
+
+        <AiCard coin={a.coin} tf={a.tf} />
 
         <section className="card p-3">
           <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-xs text-ink-3">
