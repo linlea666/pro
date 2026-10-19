@@ -46,6 +46,16 @@ const MIGRATIONS: string[] = [
   CREATE INDEX logs_level_ts ON logs(level, ts);
   CREATE INDEX logs_trace ON logs(trace);
   `,
+  // 2: engine parameter versions (only overrides of the code defaults are stored)
+  `
+  CREATE TABLE params_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at INTEGER NOT NULL,
+    author TEXT NOT NULL,
+    note TEXT,
+    data TEXT NOT NULL
+  );
+  `,
 ];
 
 let db: Database.Database | null = null;

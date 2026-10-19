@@ -18,15 +18,15 @@ export function TdTab({ a, mtf, mode, onTf }: TabProps) {
 
   const markers = useMemo<MarkerSpec[]>(() => {
     return a.td.markers
-      .filter((m) => (m.kind === "setup" ? allNumbers || m.n === 9 : allNumbers || m.n === 13))
+      .filter((m) => allNumbers || m.final)
       .map((m) => {
         const buy = m.side === "buy";
-        const big = (m.kind === "setup" && m.n === 9) || m.n === 13;
+        const big = m.final;
         return {
           t: m.t,
           position: buy ? "belowBar" : "aboveBar",
           color: m.kind === "countdown" && !big ? "#e0a400" : buy ? UP : DOWN,
-          text: m.kind === "countdown" ? (big ? "13" : `${m.n}`) : `${m.n}${m.n === 9 && m.perfected ? "★" : ""}`,
+          text: `${m.n}${m.kind === "setup" && m.final && m.perfected ? "★" : ""}`,
           shape: big ? (buy ? "arrowUp" : "arrowDown") : "circle",
           size: big ? 1 : 0.1,
         } satisfies MarkerSpec;

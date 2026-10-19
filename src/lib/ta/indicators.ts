@@ -1,5 +1,6 @@
 import type { Bias, Candle, Category } from "../types.ts";
 import * as ta from "./core.ts";
+import { DEFAULT_ENGINE_PARAMS, type EngineParams } from "../params.ts";
 
 /**
  * Indicator panel. Every indicator yields a bias for every bar (so we can
@@ -32,9 +33,11 @@ class Ctx {
   private memo = new Map<string, unknown>();
   readonly c: Candle[];
   readonly close: number[];
-  constructor(c: Candle[]) {
+  readonly p: EngineParams["indicators"];
+  constructor(c: Candle[], p: EngineParams["indicators"]) {
     this.c = c;
     this.close = ta.closes(c);
+    this.p = p;
   }
   get<T>(key: string, fn: () => T): T {
     if (!this.memo.has(key)) this.memo.set(key, fn());
@@ -298,10 +301,11 @@ const DEFS: Def[] = [
     category: "momentum",
     run(x) {
       const r = x.rsi();
+      const { rsiLow: lo, rsiHigh: hi } = x.p;
       return {
-        bias: map(r.length, (i) => (Number.isNaN(r[i]) ? 0 : r[i] < 30 ? 1 : r[i] > 70 ? -1 : 0)),
+        bias: map(r.length, (i) => (Number.isNaN(r[i]) ? 0 : r[i] < lo ? 1 : r[i] > hi ? -1 : 0)),
         value: r,
-        reason: (i) => (r[i] < 30 ? `RSI ${fx(r[i])}，跌得过急（超卖），容易反弹` : r[i] > 70 ? `RSI ${fx(r[i])}，涨得过急（超买），容易回调` : `RSI ${fx(r[i])}，处在正常区间`),
+        reason: (i) => (r[i] < lo ? `RSI ${fx(r[i])}，跌得过急（超卖），容易反弹` : r[i] > hi ? `RSI ${fx(r[i])}，涨得过急（超买），容易回调` : `RSI ${fx(r[i])}，处在正常区间`),
       };
     },
   },
@@ -549,8 +553,8 @@ export interface IndicatorPanel {
 
 const toBias = (b: BiasCode): Bias => (b > 0 ? "bull" : b < 0 ? "bear" : "neutral");
 
-export function computeIndicators(candles: Candle[], at = candles.length - 1): IndicatorPanel {
-  const ctx = new Ctx(candles);
+export function computeIndicators(candles: Candle[], at = candles.length - 1, ip: EngineParams["indicators"] = DEFAULT_ENGINE_PARAMS.indicators): IndicatorPanel {
+  const ctx = new Ctx(candles, ip);
   const n = candles.length;
   const net = new Array(n).fill(0);
   const bullCount = new Array(n).fill(0);
@@ -562,6 +566,7 @@ export function computeIndicators(candles: Candle[], at = candles.length - 1): I
   ) as IndicatorPanel["summary"];
 
   for (const def of DEFS) {
+    if (!ip.enabled.has(def.id)) continue;
     const r = def.run(ctx);
     byId.set(def.id, r.bias);
     for (let i = 0; i < n; i++) {

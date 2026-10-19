@@ -44,9 +44,9 @@ function cellFor(kind: MtfKind, m: LightSummary): Cell {
         const buy = d.last!.side === "buy";
         return { main: `${buy ? "买" : "卖"}${d.last!.kind === "setup9" ? "9" : "13"}`, sub: `${d.last!.barsAgo} 根前`, tone: buy ? "up" : "down" };
       }
-      const sub = d.countdown && d.countdown.count > 0 ? `13计数 ${d.countdown.count}/13` : d.last ? `上次${d.last.side === "buy" ? "买" : "卖"}${d.last.kind === "setup9" ? "9" : "13"}` : "—";
-      const near = d.setupSide && d.setupCount >= 7 && d.setupCount <= 9;
-      return { main: d.setupSide ? `${d.setupSide === "buy" ? "跌" : "涨"} ${Math.min(d.setupCount, 9)}/9` : "未计数", sub, tone: near || (d.countdown?.count ?? 0) >= 11 ? "warn" : "neutral" };
+      const sub = d.countdown && d.countdown.count > 0 ? `计数 ${d.countdown.count}/${d.countdownLength}` : d.last ? `上次${d.last.side === "buy" ? "买" : "卖"}${d.last.kind === "setup9" ? "9" : "13"}` : "—";
+      const near = d.setupSide && d.setupCount >= d.setupLength - 2 && d.setupCount <= d.setupLength;
+      return { main: d.setupSide ? `${d.setupSide === "buy" ? "跌" : "涨"} ${Math.min(d.setupCount, d.setupLength)}/${d.setupLength}` : "未计数", sub, tone: near || (d.countdown?.count ?? 0) >= d.countdownLength - 2 ? "warn" : "neutral" };
     }
     case "levels": {
       if (!m.s1 || !m.r1) return { main: m.s1 ? `撑 ${fmtPct(m.s1.distancePct, 1)}` : m.r1 ? `阻 ${fmtPct(m.r1.distancePct, 1)}` : "—", sub: "", tone: "neutral" };
@@ -88,7 +88,10 @@ function majority(tones: Tone[]): Tone {
 
 function summarize(kind: MtfKind, mtf: LightSummary[]): string {
   if (kind === "td") {
-    const near = mtf.filter((m) => (m.tdDetail.setupSide && m.tdDetail.setupCount >= 7 && m.tdDetail.setupCount <= 9) || (m.tdDetail.countdown?.count ?? 0) >= 11);
+    const near = mtf.filter((m) => {
+      const d = m.tdDetail;
+      return (d.setupSide && d.setupCount >= d.setupLength - 2 && d.setupCount <= d.setupLength) || (d.countdown?.count ?? 0) >= d.countdownLength - 2;
+    });
     if (near.length >= 2) return `${near.map((m) => TF_LABEL[m.tf]).join("、")} 同时接近 9 或 13，多周期共振时反转的可能性更大，值得重点留意。`;
     if (near.length === 1) return `只有 ${TF_LABEL[near[0].tf]} 接近 9 或 13，单一周期的信号可靠性有限。`;
     return "各周期都没有接近 9 或 13，目前没有明显的时机信号。";

@@ -1,6 +1,9 @@
 import type { Candle, Timeframe } from "../types.ts";
 import * as ta from "./core.ts";
 import { zigzag } from "./zigzag.ts";
+import { DEFAULT_ENGINE_PARAMS, type EngineParams } from "../params.ts";
+
+type LP = EngineParams["levels"];
 
 /**
  * Support / resistance confluence. Many independent, public methods each
@@ -41,25 +44,6 @@ export const METHOD_NAME: Record<Method, string> = {
   round: "整数关口",
 };
 
-/** How much one contribution of a method counts. */
-const METHOD_WEIGHT: Record<Method, number> = {
-  swing: 1.3,
-  fractal: 0.6,
-  volume: 1.4,
-  pivot: 1.1,
-  camarilla: 0.7,
-  fibPivot: 0.6,
-  fib: 0.9,
-  prevHL: 1.2,
-  donchian: 0.7,
-  keltner: 0.4,
-  bollinger: 0.4,
-  ma: 0.9,
-  avwap: 0.9,
-  round: 0.5,
-};
-
-const TF_WEIGHT: Record<Timeframe, number> = { "5m": 0.35, "15m": 0.5, "1h": 0.75, "4h": 1, "1d": 1.5, "1w": 2 };
 const TF_NAME: Record<Timeframe, string> = { "5m": "5分钟", "15m": "15分钟", "1h": "1小时", "4h": "4小时", "1d": "日线", "1w": "周线" };
 
 export interface LevelCandidate {
@@ -147,8 +131,9 @@ const monthKey = (d: Date) => `${d.getUTCFullYear()}-${d.getUTCMonth()}`;
 
 // ---------------------------------------------------------------- per-timeframe methods
 
-export function levelCandidates(c: Candle[], tf: Timeframe, lookback = 300): LevelCandidate[] {
-  const w = TF_WEIGHT[tf];
+export function levelCandidates(c: Candle[], tf: Timeframe, lp: LP = DEFAULT_ENGINE_PARAMS.levels, lookback = 300): LevelCandidate[] {
+  const w = lp.tfWeight[tf];
+  if (!w) return [];
   const n = c.length;
   const L = n - 1;
   const recent = c.slice(-lookback);
@@ -157,7 +142,8 @@ export function levelCandidates(c: Candle[], tf: Timeframe, lookback = 300): Lev
   const tfn = TF_NAME[tf];
   const out: LevelCandidate[] = [];
   const add = (price: number, method: Method, label: string, mult = 1) => {
-    if (Number.isFinite(price) && price > 0) out.push({ price, method, label: `${tfn}${label}`, tf, weight: METHOD_WEIGHT[method] * w * mult });
+    const mw = lp.methodWeight[method];
+    if (mw > 0 && Number.isFinite(price) && price > 0) out.push({ price, method, label: `${tfn}${label}`, tf, weight: mw * w * mult });
   };
 
   // swing highs/lows (zigzag), newer swings weigh more
@@ -224,11 +210,13 @@ export function levelCandidates(c: Candle[], tf: Timeframe, lookback = 300): Lev
 }
 
 /** Calendar-period methods computed from daily candles: pivots and prior day/week/month highs & lows. */
-export function periodCandidates(daily: Candle[], price: number): LevelCandidate[] {
+export function periodCandidates(daily: Candle[], price: number, lp: LP = DEFAULT_ENGINE_PARAMS.levels): LevelCandidate[] {
   const out: LevelCandidate[] = [];
   if (daily.length < 3) return out;
   const add = (p: number, method: Method, label: string, tf: Timeframe, mult = 1) => {
-    if (Number.isFinite(p) && p > 0) out.push({ price: p, method, label, tf, weight: METHOD_WEIGHT[method] * TF_WEIGHT[tf] * mult });
+    // a zero method or timeframe weight turns the contribution off
+    const w = lp.methodWeight[method] * lp.tfWeight[tf];
+    if (w > 0 && Number.isFinite(p) && p > 0) out.push({ price: p, method, label, tf, weight: w * mult });
   };
   const prevDay = daily[daily.length - 2];
   const weeks = periods(daily, (d) => {
@@ -285,7 +273,7 @@ export function periodCandidates(daily: Candle[], price: number): LevelCandidate
 // ---------------------------------------------------------------- clustering
 
 /** Cluster candidates within `tol` (absolute price) and rank. */
-export function clusterLevels(cands: LevelCandidate[], price: number, tol: number, maxPerSide = 5): { supports: Level[]; resistances: Level[] } {
+export function clusterLevels(cands: LevelCandidate[], price: number, tol: number, maxPerSide = 5, lp: LP = DEFAULT_ENGINE_PARAMS.levels): { supports: Level[]; resistances: Level[] } {
   const sorted = [...cands].sort((a, b) => a.price - b.price);
   const clusters: LevelCandidate[][] = [];
   for (const cand of sorted) {
@@ -305,7 +293,7 @@ export function clusterLevels(cands: LevelCandidate[], price: number, tol: numbe
       if (!arr.includes(x.label)) arr.push(x.label);
     }
     // independent methods and timeframes agreeing matter more than repeats of one method
-    const score = wsum * (1 + 0.3 * (byMethod.size - 1)) * (1 + 0.15 * (tfs.length - 1));
+    const score = wsum * (1 + lp.methodBonus * (byMethod.size - 1)) * (1 + lp.tfBonus * (tfs.length - 1));
     return {
       price: p,
       score,
@@ -330,7 +318,7 @@ export function clusterLevels(cands: LevelCandidate[], price: number, tol: numbe
     distancePct: ((r.price - price) / price) * 100,
   });
   // ignore levels that sit on the current price or are very far away
-  const usable = raw.filter((r) => Math.abs(r.price - price) > tol && Math.abs(r.price - price) / price < 0.3);
+  const usable = raw.filter((r) => Math.abs(r.price - price) > tol && Math.abs(r.price - price) / price < lp.maxDistancePct / 100);
   const pick = (side: "support" | "resistance") =>
     usable
       .filter((r) => (side === "support" ? r.price < price : r.price > price))
@@ -339,7 +327,7 @@ export function clusterLevels(cands: LevelCandidate[], price: number, tol: numbe
       .sort((a, b) => b.rank - a.rank)
       // keep picked levels apart so a beginner sees distinct zones, not a crowd
       .reduce<(typeof raw)[number][]>((acc, x) => {
-        if (acc.length < maxPerSide && acc.every((y) => Math.abs(y.price - x.r.price) > tol * 1.5)) acc.push(x.r);
+        if (acc.length < maxPerSide && acc.every((y) => Math.abs(y.price - x.r.price) > tol * lp.spacing)) acc.push(x.r);
         return acc;
       }, []);
   const sup = pick("support"), res = pick("resistance");

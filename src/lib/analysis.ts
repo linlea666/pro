@@ -1,5 +1,8 @@
 import { getKlines, ttlFor } from "./data/klines.ts";
 import { logger } from "./server/log.ts";
+import { currentParams } from "./server/params-store.ts";
+import { DEFAULT_ENGINE_PARAMS, type EngineParams } from "./params.ts";
+import { TF_SECONDS } from "./types.ts";
 import type { Candle, Timeframe } from "./types.ts";
 import { BEGINNER_TIMEFRAMES, TIMEFRAMES } from "./types.ts";
 import * as ta from "./ta/core.ts";
@@ -30,22 +33,22 @@ const LEVEL_TFS: Record<Timeframe, Timeframe[]> = {
   "1w": ["1d", "1w"],
 };
 
-async function keyLevels(coin: string, tf: Timeframe, price: number, atr: number) {
+async function keyLevels(coin: string, tf: Timeframe, price: number, atr: number, lp: EngineParams["levels"]) {
   const tfs = LEVEL_TFS[tf];
   const [series, daily] = await Promise.all([Promise.all(tfs.map((x) => getKlines(coin, x))), getKlines(coin, "1d")]);
-  const cands = [...series.flatMap((s, k) => levelCandidates(s.candles, tfs[k])), ...periodCandidates(daily.candles, price)];
-  return clusterLevels(cands, price, Math.max(atr * 0.6, price * 0.0025));
+  const cands = [...series.flatMap((s, k) => levelCandidates(s.candles, tfs[k], lp)), ...periodCandidates(daily.candles, price, lp)];
+  return clusterLevels(cands, price, Math.max(atr * lp.bandAtr, (price * lp.bandMinPct) / 100), 5, lp);
 }
 
-/** Bars after a signal used to judge it, and the human description. */
-export const HORIZON: Record<Timeframe, { bars: number; text: string }> = {
-  "5m": { bars: 24, text: "2 小时" },
-  "15m": { bars: 16, text: "4 小时" },
-  "1h": { bars: 24, text: "1 天" },
-  "4h": { bars: 18, text: "3 天" },
-  "1d": { bars: 10, text: "10 天" },
-  "1w": { bars: 4, text: "1 个月" },
-};
+/** Human description of "N bars later" on a timeframe, e.g. 18 × 4h → "3 天". */
+export function horizonText(tf: Timeframe, bars: number): string {
+  const sec = bars * TF_SECONDS[tf];
+  const fmt = (v: number) => (Number.isInteger(v) ? String(v) : v.toFixed(1));
+  if (sec < 3600) return `${Math.round(sec / 60)} 分钟`;
+  if (sec < 86400) return `${fmt(sec / 3600)} 小时`;
+  if (sec < 14 * 86400) return `${fmt(sec / 86400)} 天`;
+  return `${fmt(sec / 604800)} 周`;
+}
 
 export interface TdMarker {
   t: number;
@@ -53,6 +56,8 @@ export interface TdMarker {
   /** 1–9 setup counts, or 13 */
   n: number;
   kind: "setup" | "countdown";
+  /** completes the setup (9) or countdown (13) */
+  final: boolean;
   perfected?: boolean;
 }
 
@@ -120,10 +125,11 @@ function tdMarkers(td: TdState, c: Candle[], from: number): TdMarker[] {
   const perfect = new Map(td.events.filter((e) => e.kind === "setup9").map((e) => [e.i, e.perfected]));
   for (let i = from; i < c.length; i++) {
     const b = td.buySetup[i], s = td.sellSetup[i];
-    if (b >= 1 && b <= 9) out.push({ t: c[i].t, side: "buy", n: b, kind: "setup", perfected: b === 9 ? perfect.get(i) : undefined });
-    if (s >= 1 && s <= 9) out.push({ t: c[i].t, side: "sell", n: s, kind: "setup", perfected: s === 9 ? perfect.get(i) : undefined });
-    if (td.buyCountdown[i] > 0) out.push({ t: c[i].t, side: "buy", n: td.buyCountdown[i], kind: "countdown" });
-    if (td.sellCountdown[i] > 0) out.push({ t: c[i].t, side: "sell", n: td.sellCountdown[i], kind: "countdown" });
+    const S = td.current.setupLength, CD = td.current.countdownLength;
+    if (b >= 1 && b <= S) out.push({ t: c[i].t, side: "buy", n: b, kind: "setup", final: b === S, perfected: b === S ? perfect.get(i) : undefined });
+    if (s >= 1 && s <= S) out.push({ t: c[i].t, side: "sell", n: s, kind: "setup", final: s === S, perfected: s === S ? perfect.get(i) : undefined });
+    if (td.buyCountdown[i] > 0) out.push({ t: c[i].t, side: "buy", n: td.buyCountdown[i], kind: "countdown", final: td.buyCountdown[i] === CD });
+    if (td.sellCountdown[i] > 0) out.push({ t: c[i].t, side: "sell", n: td.sellCountdown[i], kind: "countdown", final: td.sellCountdown[i] === CD });
   }
   return out;
 }
@@ -138,11 +144,14 @@ function crossUps(a: number[], b: number[]) {
 const cache = new Map<string, { at: number; value?: Analysis; pending?: Promise<Analysis> }>();
 
 export async function analyze(coin: string, tf: Timeframe): Promise<Analysis> {
-  const key = `${coin}:${tf}`;
+  // the parameter version is part of the key, so saving new parameters takes effect at once
+  const params = currentParams();
+  const key = `${coin}:${tf}:${params.version}`;
   const hit = cache.get(key);
   if (hit?.value && Date.now() - hit.at < ttlFor(tf)) return hit.value;
   if (hit?.pending) return hit.pending;
-  const pending = analyzeLogged(coin, tf);
+  for (const k of cache.keys()) if (!k.endsWith(`:${params.version}`)) cache.delete(k);
+  const pending = analyzeLogged(coin, tf, params.engine);
   cache.set(key, { at: hit?.at ?? 0, value: hit?.value, pending });
   try {
     const value = await pending;
@@ -155,10 +164,15 @@ export async function analyze(coin: string, tf: Timeframe): Promise<Analysis> {
   }
 }
 
-async function analyzeLogged(coin: string, tf: Timeframe): Promise<Analysis> {
+/** Uncached analysis with explicit parameters (used by the admin's trial run). */
+export async function analyzeWith(coin: string, tf: Timeframe, ep: EngineParams): Promise<Analysis> {
+  return analyzeInner(coin, tf, ep);
+}
+
+async function analyzeLogged(coin: string, tf: Timeframe, ep: EngineParams): Promise<Analysis> {
   const t0 = Date.now();
   try {
-    const a = await analyzeInner(coin, tf);
+    const a = await analyzeInner(coin, tf, ep);
     const ms = Date.now() - t0;
     logger[ms > 3000 ? "warn" : "debug"]("engine", `分析完成 ${coin} ${tf}${ms > 3000 ? "（偏慢）" : ""}`, { durationMs: ms, bars: a.candles.length });
     return a;
@@ -168,7 +182,7 @@ async function analyzeLogged(coin: string, tf: Timeframe): Promise<Analysis> {
   }
 }
 
-async function analyzeInner(coin: string, tf: Timeframe): Promise<Analysis> {
+async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFAULT_ENGINE_PARAMS): Promise<Analysis> {
   const [main, hourly] = await Promise.all([getKlines(coin, tf), getKlines(coin, "1h")]);
   const c = main.candles;
   const L = c.length - 1;
@@ -176,41 +190,43 @@ async function analyzeInner(coin: string, tf: Timeframe): Promise<Analysis> {
   const close = ta.closes(c);
   const atr = ta.atr(c, 14);
 
-  const panel = computeIndicators(c);
-  const td = computeTd(c);
-  const trend = computeTrend(c, panel);
+  const panel = computeIndicators(c, undefined, ep.indicators);
+  const td = computeTd(c, ep.td);
+  const trend = computeTrend(c, panel, ep.trend);
 
-  const { supports, resistances } = await keyLevels(coin, tf, price, atr[L]);
+  const { supports, resistances } = await keyLevels(coin, tf, price, atr[L], ep.levels);
 
   // major swings only, so the retracement describes a move a beginner would notice
   const fib = autoFib(c, zigzag(c, atr, 5));
   const chan = computeChan(c.slice(-DISPLAY_BARS));
 
-  const verdict = buildVerdict({ tf, price, atr: atr[L], trend, panel, td, supports, resistances, lastIdx: L });
+  const verdict = buildVerdict({ tf, price, atr: atr[L], trend, panel, td, supports, resistances, lastIdx: L, vp: ep.verdict });
 
   // ---------------- historical stats
-  const H = HORIZON[tf].bars;
+  const H = ep.horizon[tf];
+  const { rsiLow, rsiHigh } = ep.indicators;
   const ev = (side: "buy" | "sell", kind: TdEvent["kind"]) => td.events.filter((e) => e.side === side && e.kind === kind).map((e) => e.i);
   const e12 = ta.ema(close, 12), e26 = ta.ema(close, 26);
   const r = ta.rsi(close);
   const rsiIn = (below: boolean) => {
     const out: number[] = [];
     for (let i = 1; i < r.length; i++) {
-      if (below ? r[i] < 30 && r[i - 1] >= 30 : r[i] > 70 && r[i - 1] <= 70) out.push(i);
+      if (below ? r[i] < rsiLow && r[i - 1] >= rsiLow : r[i] > rsiHigh && r[i - 1] <= rsiHigh) out.push(i);
     }
     return out;
   };
-  const strong = Math.round(panel.readings.length * 0.4);
+  const strong = Math.max(1, Math.round((panel.readings.length * ep.indicators.strongPct) / 100));
+  const S = ep.td.setupLength, CD = ep.td.countdownLength;
   const resoBull: number[] = [], resoBear: number[] = [];
   for (let i = 1; i < c.length; i++) {
     if (panel.net[i] >= strong && panel.net[i - 1] < strong) resoBull.push(i);
     if (panel.net[i] <= -strong && panel.net[i - 1] > -strong) resoBear.push(i);
   }
   const defs: [string, string, "bull" | "bear", number[]][] = [
-    ["td_buy9", "TD 买入 9", "bull", ev("buy", "setup9")],
-    ["td_buy13", "TD 买入 13", "bull", ev("buy", "countdown13")],
-    ["td_sell9", "TD 卖出 9", "bear", ev("sell", "setup9")],
-    ["td_sell13", "TD 卖出 13", "bear", ev("sell", "countdown13")],
+    ["td_buy9", `TD 买入 ${S}`, "bull", ev("buy", "setup9")],
+    ["td_buy13", `TD 买入 ${CD}`, "bull", ev("buy", "countdown13")],
+    ["td_sell9", `TD 卖出 ${S}`, "bear", ev("sell", "setup9")],
+    ["td_sell13", `TD 卖出 ${CD}`, "bear", ev("sell", "countdown13")],
     ["ema_golden", "EMA 金叉", "bull", crossUps(e12, e26)],
     ["ema_death", "EMA 死叉", "bear", crossUps(e26, e12)],
     ["rsi_oversold", "RSI 进入超卖", "bull", rsiIn(true)],
@@ -278,7 +294,7 @@ async function analyzeInner(coin: string, tf: Timeframe): Promise<Analysis> {
     stats,
     indicatorStats,
     active,
-    horizonText: HORIZON[tf].text,
+    horizonText: horizonText(tf, H),
   };
 }
 
@@ -297,6 +313,8 @@ export interface LightSummary {
   tdDetail: {
     setupSide: TdState["current"]["setupSide"];
     setupCount: number;
+    setupLength: number;
+    countdownLength: number;
     countdown: { side: "buy" | "sell"; count: number } | null;
     last: { side: "buy" | "sell"; kind: TdEvent["kind"]; barsAgo: number; invalidated: boolean } | null;
   };
@@ -321,10 +339,12 @@ export function summarize(a: Analysis): LightSummary {
     score: a.verdict.score,
     trend: a.trend.label,
     trendScore: a.trend.current,
-    td: cur.setupSide ? `${cur.setupSide === "buy" ? "跌" : "涨"} ${Math.min(cur.setupCount, 9)}/9` : "—",
+    td: cur.setupSide ? `${cur.setupSide === "buy" ? "跌" : "涨"} ${Math.min(cur.setupCount, cur.setupLength)}/${cur.setupLength}` : "—",
     tdDetail: {
       setupSide: cur.setupSide,
       setupCount: cur.setupCount,
+      setupLength: cur.setupLength,
+      countdownLength: cur.countdownLength,
       countdown: cur.countdown ? { side: cur.countdown.side, count: cur.countdown.count } : null,
       last: cur.lastSignal ? { side: cur.lastSignal.side, kind: cur.lastSignal.kind, barsAgo: cur.lastSignal.barsAgo, invalidated: cur.lastSignal.invalidated } : null,
     },

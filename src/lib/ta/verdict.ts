@@ -1,6 +1,7 @@
 import type { Timeframe } from "../types.ts";
 import { TF_HORIZON, TF_LABEL } from "../types.ts";
 import type { IndicatorPanel } from "./indicators.ts";
+import { DEFAULT_ENGINE_PARAMS, type EngineParams } from "../params.ts";
 import type { Level } from "./levels.ts";
 import type { TdState } from "./td.ts";
 import type { TrendResult } from "./trend.ts";
@@ -33,7 +34,6 @@ export interface Verdict {
   atrPct: number;
 }
 
-const W = { trend: 0.4, momentum: 0.25, position: 0.2, timing: 0.15 };
 const clamp = (v: number, a = -100, b = 100) => Math.max(a, Math.min(b, v));
 export const fmtPrice = (v: number) =>
   v >= 1000 ? v.toLocaleString("en-US", { maximumFractionDigits: 0 }) : v >= 1 ? v.toFixed(v >= 100 ? 1 : 3) : v.toPrecision(4);
@@ -71,7 +71,9 @@ export function buildVerdict(args: {
   supports: Level[];
   resistances: Level[];
   lastIdx: number;
+  vp?: EngineParams["verdict"];
 }): Verdict {
+  const W = args.vp ?? DEFAULT_ENGINE_PARAMS.verdict;
   const { tf, price, atr, trend, panel, td, supports, resistances, lastIdx } = args;
 
   // ---- momentum & flow: momentum, volume, pattern categories
@@ -112,7 +114,7 @@ export function buildVerdict(args: {
     { key: "timing", label: "时机 (TD)", score: timing.score, text: timing.text },
   ];
   const score = Math.round(W.trend * trend.current + W.momentum * momentum + W.position * position + W.timing * timing.score);
-  const light: Light = score >= 18 ? "green" : score <= -18 ? "red" : "yellow";
+  const light: Light = score >= W.threshold ? "green" : score <= -W.threshold ? "red" : "yellow";
   const sign = Math.sign(score);
   const agree = components.filter((c) => Math.sign(c.score) === sign && Math.abs(c.score) >= 10).length;
   const confidence: Verdict["confidence"] = Math.abs(score) >= 35 && agree >= 3 ? "高" : Math.abs(score) >= 18 && agree >= 2 ? "中" : "低";

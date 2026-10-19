@@ -68,3 +68,25 @@ test("forwardStats compares against the base rate", () => {
   assert.equal(s.baseWinRate, 100);
   assert.equal(s.reliability, "样本不足");
 });
+
+test("params: defaults resolve, overrides clamp, invalid values rejected", async () => {
+  const { DEFAULT_PARAMS, resolveParams, validateParams, diffFromDefaults, engineParams } = await import("../src/lib/params.ts");
+  assert.equal(resolveParams({})["td.setupLength"], 9);
+  assert.equal(resolveParams({ "td.setupLength": 99 })["td.setupLength"], 13);
+  assert.equal(resolveParams({ "unknown.key": 1 })["unknown.key"], undefined);
+  assert.match(validateParams({ "ind.rsiLow": 5 }) ?? "", /RSI/);
+  assert.match(validateParams({ ...DEFAULT_PARAMS, "ind.rsiLow": 40, "ind.rsiHigh": 60, "trend.mild": 50 }) ?? "", /趋势成立线/);
+  assert.equal(validateParams(DEFAULT_PARAMS), null);
+  assert.deepEqual(diffFromDefaults({ ...DEFAULT_PARAMS, "levels.bandAtr": 1 }), { "levels.bandAtr": 1 });
+  const w = engineParams({ "verdict.w.trend": 50, "verdict.w.momentum": 50, "verdict.w.position": 0, "verdict.w.timing": 0 }).verdict;
+  assert.equal(w.trend + w.momentum + w.position + w.timing, 1);
+});
+
+test("TD honours a custom setup length", () => {
+  const closes = [100, 101, 102, 103, 104, 105, ...Array.from({ length: 12 }, (_, i) => 104 - i)];
+  const td = computeTd(series(closes), { setupLength: 7, setupLookback: 4, countdownLength: 13, countdownLookback: 2 });
+  const ev = td.events.find((e) => e.kind === "setup9" && e.side === "buy");
+  assert.ok(ev);
+  assert.equal(td.buySetup[ev!.i], 7);
+  assert.equal(td.current.setupLength, 7);
+});
