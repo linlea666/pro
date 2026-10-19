@@ -13,7 +13,9 @@ import { clusterLevels, levelCandidates, periodCandidates, type Level } from "./
 import { zigzag } from "./ta/zigzag.ts";
 import { autoFib, type FibResult } from "./ta/fib.ts";
 import { computeChan, type ChanResult } from "./ta/chan.ts";
-import { forwardStats, type SignalStats } from "./ta/stats.ts";
+import { forwardStats, labelStats, type SignalStats } from "./ta/stats.ts";
+import { bufferAtr, structureAnchors } from "./ta/risk.ts";
+import { getCalibration } from "./server/riskcalib.ts";
 import { buildVerdict, type Verdict } from "./ta/verdict.ts";
 
 /**
@@ -87,8 +89,16 @@ export interface Analysis {
   tf: Timeframe;
   source: string;
   updatedAt: number;
+  /** latest traded price (the bar still forming, if any) */
   price: number;
+  /** close of the last completed bar — what every conclusion below is computed from */
+  closedPrice: number;
+  /** open time of the last completed bar */
+  lastClosedT: number;
+  /** the bar still forming: drawn on the chart, never analysed (null in a replay or right at a close) */
+  forming: { t: number; closesAt: number } | null;
   change24h: number;
+  /** completed bars, plus the forming bar at the end when there is one; series below stop one bar earlier then */
   candles: Candle[];
   verdict: Verdict;
   indicators: {
@@ -129,13 +139,13 @@ export interface Replay {
     closePct: number;
     maxPct: number;
     minPct: number;
-    /** was the traffic light right over the stats horizon? null while not enough bars have passed */
+    /** was a green/red light right over the stats horizon? null for yellow, or while not enough bars have passed */
     correct: boolean | null;
     stopHit: boolean | null;
   } | null;
 }
 
-export type IndicatorStat = Pick<SignalStats, "samples" | "winRate" | "avgReturn" | "baseWinRate" | "reliability">;
+export type IndicatorStat = Pick<SignalStats, "samples" | "winRate" | "winLo" | "winHi" | "avgReturn" | "baseWinRate" | "pValue" | "reliability">;
 
 const clean = (arr: number[]) => arr.map((v) => (Number.isFinite(v) ? Math.round(v * 1e6) / 1e6 : null));
 
@@ -204,9 +214,9 @@ export async function analyze(coin: string, tf: Timeframe): Promise<Analysis> {
   }
 }
 
-/** Uncached analysis with explicit parameters (used by the admin's trial run). */
-export async function analyzeWith(coin: string, tf: Timeframe, ep: EngineParams): Promise<Analysis> {
-  return analyzeInner(coin, tf, ep);
+/** Uncached analysis with explicit parameters (the admin's trial run; the scorecard's history, with `asOf`). */
+export async function analyzeWith(coin: string, tf: Timeframe, ep: EngineParams, asOf?: number): Promise<Analysis> {
+  return analyzeInner(coin, tf, ep, asOf);
 }
 
 const replayCache = new Map<string, Promise<Analysis>>();
@@ -243,15 +253,22 @@ async function analyzeLogged(coin: string, tf: Timeframe, ep: EngineParams): Pro
 
 async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFAULT_ENGINE_PARAMS, asOf: number | null = null): Promise<Analysis> {
   const [main, hourlyRaw] = await Promise.all([getKlines(coin, tf), getKlines(coin, "1h")]);
-  const endSec = asOf == null ? null : asOf + TF_SECONDS[tf];
+  const sec = TF_SECONDS[tf];
+  const nowSec = Math.floor(Date.now() / 1000);
+  // Everything is computed on completed bars only, so a conclusion cannot flip back and forth
+  // inside one bar. Live: completed by now; replay: completed by the end of the chosen bar.
+  const endSec = asOf == null ? nowSec : asOf + sec;
   const allCandles = main.candles;
   const c = cutoff(allCandles, tf, endSec);
+  const formingBar = asOf == null ? (allCandles.find((x) => x.t + sec > nowSec) ?? null) : null;
   if (asOf != null) {
     if (!allCandles.some((x) => x.t === asOf)) throw new ReplayError("找不到这根 K 线，请在图上重新选择");
     if (c.length < 300) throw new ReplayError("这根 K 线太早了，之前的数据不足以计算指标，请选择更近的时间");
-    if (c.length === allCandles.length) throw new ReplayError("这是最新的 K 线，不需要回放");
+    if (!allCandles.slice(c.length).some((x) => x.t + sec <= nowSec)) throw new ReplayError("这是最近一根已收盘的 K 线，后面还没有走势可看");
   }
-  const hourly = { candles: cutoff(hourlyRaw.candles, "1h", endSec) };
+  if (c.length < 60) throw new Error(`${coin} ${tf} 已收盘的 K 线太少（${c.length} 根）`);
+  // the 24h change shown next to the price stays live
+  const hourly = { candles: asOf == null ? hourlyRaw.candles : cutoff(hourlyRaw.candles, "1h", endSec) };
   const L = c.length - 1;
   const price = c[L].c;
   const close = ta.closes(c);
@@ -267,10 +284,20 @@ async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFA
   const fib = autoFib(c, zigzag(c, atr, 5));
   const chan = computeChan(c.slice(-DISPLAY_BARS));
 
-  const verdict = buildVerdict({ tf, price, atr: atr[L], trend, panel, td, supports, resistances, lastIdx: L, vp: ep.verdict });
-
   // ---------------- historical stats
   const H = ep.horizon[tf];
+
+  const cal = getCalibration(coin, tf);
+  const verdict = buildVerdict({
+    tf, price, atr: atr[L], trend, panel, td, supports, resistances, lastIdx: L, vp: ep.verdict,
+    risk: {
+      buffer: bufferAtr(cal, ep.verdict.stopQuantile),
+      below: structureAnchors(c, tf, "below", 0.3, atr).slice(0, 2).map((x) => x.price),
+      above: structureAnchors(c, tf, "above", 0.3, atr).slice(0, 2).map((x) => x.price),
+      cal,
+      horizonText: horizonText(tf, cal?.horizon ?? H),
+    },
+  });
   const { rsiLow, rsiHigh } = ep.indicators;
   const ev = (side: "buy" | "sell", kind: TdEvent["kind"]) => td.events.filter((e) => e.side === side && e.kind === kind).map((e) => e.i);
   const e12 = ta.ema(close, 12), e26 = ta.ema(close, 26);
@@ -301,19 +328,23 @@ async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFA
     ["reso_bull", `多指标共振看多（≥${strong}）`, "bull", resoBull],
     ["reso_bear", `多指标共振看空（≥${strong}）`, "bear", resoBear],
   ];
-  const stats = defs.map(([key, name, side, idx]) => forwardStats(c, key, name, side, idx, H));
+  const stats = defs.map(([key, name, side, idx]) => forwardStats(c, key, name, side, idx, H, ep.stats));
 
   // each indicator's own track record: bars where it flipped to bullish / bearish
   const indicatorStats: Analysis["indicatorStats"] = {};
-  const lite = (s: SignalStats): IndicatorStat => ({ samples: s.samples, winRate: s.winRate, avgReturn: s.avgReturn, baseWinRate: s.baseWinRate, reliability: s.reliability });
+  const lite = (s: SignalStats): IndicatorStat => ({ samples: s.samples, winRate: s.winRate, winLo: s.winLo, winHi: s.winHi, avgReturn: s.avgReturn, baseWinRate: s.baseWinRate, pValue: s.pValue, reliability: s.reliability });
+  const perIndicator: [string, SignalStats, SignalStats][] = [];
   for (const [id, bias] of panel.byId) {
     const up: number[] = [], dn: number[] = [];
     for (let i = 1; i < bias.length; i++) {
       if (bias[i] === 1 && bias[i - 1] !== 1) up.push(i);
       if (bias[i] === -1 && bias[i - 1] !== -1) dn.push(i);
     }
-    indicatorStats[id] = { bull: lite(forwardStats(c, id, id, "bull", up, H)), bear: lite(forwardStats(c, id, id, "bear", dn, H)) };
+    perIndicator.push([id, forwardStats(c, id, id, "bull", up, H, ep.stats), forwardStats(c, id, id, "bear", dn, H, ep.stats)]);
   }
+  // every statistic on the page is one test among many: label them together
+  labelStats([...stats, ...perIndicator.flatMap(([, b, s]) => [b, s])], ep.stats);
+  for (const [id, b, s] of perIndicator) indicatorStats[id] = { bull: lite(b), bear: lite(s) };
 
   // signals that fired recently
   const recentWindow = Math.max(3, Math.round(H / 3));
@@ -334,10 +365,13 @@ async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFA
     tf,
     source: main.source,
     updatedAt: main.fetchedAt,
-    price,
+    price: formingBar ? formingBar.c : price,
+    closedPrice: price,
+    lastClosedT: c[L].t,
+    forming: formingBar ? { t: formingBar.t, closesAt: formingBar.t + sec } : null,
     // hourly history may not reach back to an old replay point; use this timeframe's own bars then
     change24h: hourly.candles.length > 25 ? change24h(hourly.candles) : changeOverDay(c, tf),
-    candles: slice(c),
+    candles: formingBar ? [...slice(c), formingBar] : slice(c),
     verdict,
     indicators: {
       readings: panel.readings,
@@ -363,7 +397,7 @@ async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFA
     indicatorStats,
     active,
     horizonText: horizonText(tf, H),
-    replay: asOf == null ? undefined : replayOutcome(asOf, allCandles.slice(c.length, c.length + 200), price, H, tf, verdict),
+    replay: asOf == null ? undefined : replayOutcome(asOf, allCandles.slice(c.length).filter((x) => x.t + sec <= nowSec).slice(0, 200), price, H, tf, verdict),
   };
 }
 
@@ -375,9 +409,8 @@ function replayOutcome(asOf: number, future: Candle[], price: number, H: number,
   const maxPct = pct(Math.max(...win.map((x) => x.h)));
   const minPct = pct(Math.min(...win.map((x) => x.l)));
   const complete = win.length >= H;
-  // a "wait" light counts as right when nothing big happened (move under 2 average bars)
-  const quiet = Math.abs(closePct) < 2 * v.atrPct;
-  const correct = !complete ? null : v.light === "green" ? closePct > 0 : v.light === "red" ? closePct < 0 : quiet;
+  // only a directional call can be right or wrong; "wait" is judged by nothing (quiet markets are simply common)
+  const correct = !complete || v.light === "yellow" ? null : v.light === "green" ? closePct > 0 : closePct < 0;
   let stopHit: boolean | null = null;
   if (v.stopRef != null) stopHit = v.stopRef < price ? win.some((x) => x.l <= v.stopRef!) : win.some((x) => x.h >= v.stopRef!);
   return { asOf, future, outcome: { bars: win.length, horizonText: horizonText(tf, win.length), closePct, maxPct, minPct, correct, stopHit } };
@@ -438,7 +471,7 @@ export function summarize(a: Analysis): LightSummary {
     r1: lvl(a.levels.resistances[0]),
     fib: a.fib ? { direction: a.fib.direction, ratio: Math.round(a.fib.currentRatio * 1000) / 1000 } : null,
     chan: {
-      last: lastPoint ? { type: lastPoint.type, barsAgo: a.candles.length - 1 - a.candles.findIndex((x) => x.t === lastPoint.t) } : null,
+      last: lastPoint ? { type: lastPoint.type, barsAgo: a.candles.length - (a.forming ? 2 : 1) - a.candles.findIndex((x) => x.t === lastPoint.t) } : null,
       pos: z ? (a.price > z.zg ? "above" : a.price < z.zd ? "below" : "inside") : null,
     },
   };

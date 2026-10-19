@@ -1,20 +1,15 @@
 import { NextResponse } from "next/server";
 import { clientIp } from "@/lib/server/guard";
 import { logger } from "@/lib/server/log";
+import { allow } from "@/lib/server/ratelimit";
 import { withRoute } from "@/lib/server/route";
 
 /** Browser-side error reports. Public, so it is size- and rate-limited per IP. */
-const WINDOW_MS = 60_000;
-const MAX_PER_WINDOW = 20;
-const hits = new Map<string, { n: number; start: number }>();
 
 export const POST = withRoute("client-log", async (req: Request) => {
   const ip = clientIp(req.headers);
-  const now = Date.now();
-  const h = hits.get(ip);
-  if (!h || now - h.start > WINDOW_MS) hits.set(ip, { n: 1, start: now });
-  else if (++h.n > MAX_PER_WINDOW) return new NextResponse(null, { status: 204 });
-  if (hits.size > 5000) hits.clear();
+  // over the limit: accept silently so a broken page doesn't retry in a loop
+  if (!allow("client-log", ip, 20, 60_000).ok) return new NextResponse(null, { status: 204 });
 
   const text = await req.text();
   if (text.length > 10_000) return new NextResponse(null, { status: 204 });

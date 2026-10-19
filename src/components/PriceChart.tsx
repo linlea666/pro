@@ -279,7 +279,7 @@ export function PriceChart({ candles, height = 440, lines = [], priceLines = [],
           <span>低 <b className="text-ink-2">{shown.l}</b></span>
           <span>收 <b className="text-ink-2">{shown.c}</b></span>
           <span style={{ color: chg >= 0 ? "var(--up)" : "var(--down)" }}>{chg >= 0 ? "↑" : "↓"} {chg.toFixed(2)}%</span>
-          {(hover?.extras ?? lines.map((l) => ({ title: l.title, color: l.color, v: l.data[candles.length - 1] }))).map((e) => (
+          {(hover?.extras ?? lines.map((l) => ({ title: l.title, color: l.color, v: lastValue(l.data) }))).map((e) => (
             <span key={e.title}>
               <span className="mr-1 inline-block h-0.5 w-3 align-middle" style={{ background: e.color }} />
               {e.title} {e.v == null ? "—" : Number(e.v).toFixed(2)}
@@ -290,4 +290,10 @@ export function PriceChart({ candles, height = 440, lines = [], priceLines = [],
       <div ref={box} className="w-full" />
     </div>
   );
+}
+
+/** Newest defined value: indicator series stop one bar early while the last bar is still forming. */
+function lastValue(d: (number | null | undefined)[]) {
+  for (let i = d.length - 1; i >= 0; i--) if (d[i] != null) return d[i];
+  return null;
 }

@@ -15,7 +15,8 @@ SL_ENV="$SL_ETC/signallight.env"
 SL_USER="${SL_USER:-signallight}"
 SL_SERVICE="signallight"
 SL_REPO="${SL_REPO:-https://github.com/linlea666/pro.git}"
-SL_BRANCH="${SL_BRANCH:-main}"
+# empty = deploy the newest v* release tag; set (--branch) to follow a branch instead
+SL_BRANCH="${SL_BRANCH:-}"
 SL_KEEP_RELEASES="${SL_KEEP_RELEASES:-3}"
 # testing hook: run without systemd (containers)
 SL_NO_SYSTEMD="${SL_NO_SYSTEMD:-0}"
@@ -52,14 +53,37 @@ current_release() { readlink -f "$SL_HOME/current" 2>/dev/null || true; }
 
 release_version() { cat "$1/.version" 2>/dev/null || echo "unknown"; }
 
+# Which git ref to deploy. Prints "<ref> <commit, 10 chars>", or nothing if the repository is unreachable.
+# Default: the newest v* release tag (falls back to main while no tag exists); SL_BRANCH overrides.
+resolve_ref() {
+  local ref lines sha
+  if [ -n "$SL_BRANCH" ]; then
+    ref="$SL_BRANCH"
+    sha=$(git ls-remote "$SL_REPO" "refs/heads/$ref" | cut -c1-10)
+  else
+    ref=$(git ls-remote --tags --refs "$SL_REPO" 'v*' 2>/dev/null | sed 's#.*refs/tags/##' | sort -V | tail -1)
+    if [ -z "$ref" ]; then
+      ref=main
+      sha=$(git ls-remote "$SL_REPO" refs/heads/main | cut -c1-10)
+    else
+      # annotated tags point at a tag object; the peeled entry (^{}) is the commit
+      lines=$(git ls-remote "$SL_REPO" "refs/tags/$ref" "refs/tags/$ref^{}")
+      sha=$(echo "$lines" | grep -F '^{}' | cut -c1-10)
+      [ -n "$sha" ] || sha=$(echo "$lines" | head -1 | cut -c1-10)
+    fi
+  fi
+  [ -n "$sha" ] && echo "$ref $sha"
+  return 0
+}
+
 # Build a new release from git. Prints the release directory on success.
-build_release() {
-  local ts tmp sha rel
+build_release() { # build_release <branch or tag>
+  local ref="$1" ts tmp sha rel
   ts=$(date +%Y%m%d%H%M%S)
   tmp="$SL_HOME/releases/.tmp-$ts"
   mkdir -p "$SL_HOME/releases"
-  info "拉取代码：$SL_REPO（$SL_BRANCH 分支）" >&2
-  git clone --quiet --depth 1 --branch "$SL_BRANCH" "$SL_REPO" "$tmp" >&2 || { rm -rf "$tmp"; die "拉取代码失败，请检查网络或仓库地址"; }
+  info "拉取代码：$SL_REPO（$ref）" >&2
+  git clone --quiet --depth 1 --branch "$ref" "$SL_REPO" "$tmp" >&2 || { rm -rf "$tmp"; die "拉取代码失败，请检查网络或仓库地址"; }
   sha=$(git -C "$tmp" rev-parse --short=10 HEAD)
   rel="$SL_HOME/releases/$ts-$sha"
   echo "$sha" >"$tmp/.version"

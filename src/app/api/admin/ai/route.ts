@@ -23,7 +23,7 @@ export const POST = withRoute("admin.ai.save", async (req: Request) => {
   const before = publicConfig(getAiConfig());
   try {
     const after = publicConfig(saveAiConfig(body));
-    const changed = (["enabled", "baseUrl", "model", "effort", "dailyLimit", "timeoutSec", "fallback"] as const).filter((k) => before[k] !== after[k]);
+    const changed = (["enabled", "baseUrl", "model", "effort", "dailyLimit", "perIpHourly", "timeoutSec", "fallback"] as const).filter((k) => before[k] !== after[k]);
     logger.info("audit", "修改 AI 配置", {
       username: admin.username,
       changed: Object.fromEntries(changed.map((k) => [k, { from: before[k], to: after[k] }])),

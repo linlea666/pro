@@ -5,11 +5,16 @@ import { DEFAULT_ENGINE_PARAMS, type EngineParams } from "../params.ts";
 import type { Level } from "./levels.ts";
 import type { TdState } from "./td.ts";
 import type { TrendResult } from "./trend.ts";
+import { DEFAULT_BUFFER_ATR, noiseProb, type Calibration } from "./risk.ts";
 
 /**
  * The traffic light: one composite score per symbol/timeframe, translated
  * into plain language with a risk reference. Weights:
  * trend 40% · momentum & flow 25% · position vs levels 20% · TD timing 15%.
+ *
+ * The stop reference ("认错位") sits beyond the nearest intact structural swing
+ * point, by the sweep depth that held levels typically suffer, and says how
+ * likely ordinary noise is to reach it within the holding horizon.
  */
 
 export type Light = "green" | "yellow" | "red";
@@ -25,13 +30,33 @@ export interface Verdict {
   light: Light;
   lightText: string;
   score: number;
-  confidence: "高" | "中" | "低";
+  /** how many of the 4 components point the same way as the total (|score| ≥ 10); not a probability */
+  agreement: number;
   headline: string;
   components: Component[];
   plan: string[];
   stopRef: number | null;
   stopText: string;
+  /** structural swing point the stop is anchored to (null: fell back to the nearest level) */
+  stopAnchor: number | null;
+  /** distance from price to the stop, in ATR */
+  stopAtr: number | null;
+  /** % chance plain noise reaches the stop within the holding horizon (null: not calibrated yet) */
+  stopNoisePct: number | null;
+  /** a wider stop at the next structural point, offered when the first one is likely to be swept */
+  stopAlt: number | null;
   atrPct: number;
+}
+
+export interface RiskInputs {
+  /** sweep buffer beyond the anchor, in ATR */
+  buffer: number;
+  /** intact swing lows below price / highs above price, nearest first */
+  below: number[];
+  above: number[];
+  cal: Calibration | null;
+  /** e.g. "3 天" */
+  horizonText: string;
 }
 
 const clamp = (v: number, a = -100, b = 100) => Math.max(a, Math.min(b, v));
@@ -72,6 +97,7 @@ export function buildVerdict(args: {
   resistances: Level[];
   lastIdx: number;
   vp?: EngineParams["verdict"];
+  risk?: RiskInputs;
 }): Verdict {
   const W = args.vp ?? DEFAULT_ENGINE_PARAMS.verdict;
   const { tf, price, atr, trend, panel, td, supports, resistances, lastIdx } = args;
@@ -116,8 +142,7 @@ export function buildVerdict(args: {
   const score = Math.round(W.trend * trend.current + W.momentum * momentum + W.position * position + W.timing * timing.score);
   const light: Light = score >= W.threshold ? "green" : score <= -W.threshold ? "red" : "yellow";
   const sign = Math.sign(score);
-  const agree = components.filter((c) => Math.sign(c.score) === sign && Math.abs(c.score) >= 10).length;
-  const confidence: Verdict["confidence"] = Math.abs(score) >= 35 && agree >= 3 ? "高" : Math.abs(score) >= 18 && agree >= 2 ? "中" : "低";
+  const agreement = sign === 0 ? 0 : components.filter((c) => Math.sign(c.score) === sign && Math.abs(c.score) >= 10).length;
 
   const atrPct = (atr / price) * 100;
   const tfName = TF_LABEL[tf];
@@ -125,35 +150,70 @@ export function buildVerdict(args: {
 
   let headline: string;
   const plan: string[] = [];
-  let stopRef: number | null = null;
+
+  // ---- stop reference: beyond the nearest structural swing point by the sweep buffer
+  const risk = args.risk;
+  const buffer = risk?.buffer ?? DEFAULT_BUFFER_ATR;
+  const stopFor = (side: "long" | "short") => {
+    const anchors = side === "long" ? risk?.below ?? [] : risk?.above ?? [];
+    const fallback = side === "long" ? s1?.price : r1?.price;
+    const anchor = anchors[0] ?? fallback;
+    if (anchor == null) return null;
+    const sg = side === "long" ? -1 : 1;
+    const ref = anchor + sg * buffer * atr;
+    const alt = anchors[1] != null ? anchors[1] + sg * buffer * atr : null;
+    const k = Math.abs(price - ref) / atr;
+    return { ref, anchor, structural: anchors[0] != null, alt, k, noise: noiseProb(risk?.cal ?? null, k) };
+  };
+  const stopDetail = (st: NonNullable<ReturnType<typeof stopFor>>, side: "long" | "short") => {
+    const where = st.structural ? `${side === "long" ? "结构低点" : "结构高点"} ${fmtPrice(st.anchor)}` : `${side === "long" ? "支撑" : "阻力"} ${fmtPrice(st.anchor)}`;
+    let t = `它在${where} ${side === "long" ? "下方" : "上方"}留了 ${buffer.toFixed(1)} 倍平均波幅的扫损缓冲，离现价 ${st.k.toFixed(1)} 倍波幅。`;
+    if (st.noise != null) {
+      t += `正常波动在 ${risk?.horizonText ?? "持有期"}内碰到这个距离的概率约 ${st.noise}%`;
+      t += st.noise > 50 ? `，止损偏近，只适合短线小仓位${st.alt != null ? `；更稳的认错位在 ${fmtPrice(st.alt)}` : ""}。` : "。";
+    }
+    return t;
+  };
+  let st: ReturnType<typeof stopFor> = null;
   let stopText = "";
   if (light === "green") {
     headline = `${tfName}级别偏多：${trend.label === "震荡" ? "虽然趋势还不明显，但多数信号向好" : `${trend.label}，多数信号同向`}${r1 ? `；上方 ${fmtPrice(r1.price)} 附近可能遇阻` : ""}。`;
-    if (s1) {
-      stopRef = s1.price - 0.5 * atr;
-      plan.push(`不追高：等价格回踩 ${fmtPrice(s1.price)} 附近、不再继续跌破时，再考虑分批买入。`);
-      stopText = `跌破 ${fmtPrice(stopRef)}（约 ${pct(((stopRef - price) / price) * 100)}）说明判断错了，应该认错离场。`;
-    }
+    if (s1) plan.push(`不追高：等价格回踩 ${fmtPrice(s1.price)} 附近、不再继续跌破时，再考虑分批买入。`);
+    st = stopFor("long");
+    if (st) stopText = `跌破 ${fmtPrice(st.ref)}（约 ${pct(((st.ref - price) / price) * 100)}）说明判断错了，应该认错离场。${stopDetail(st, "long")}`;
     if (r1) plan.push(`接近 ${fmtPrice(r1.price)} 时可以考虑先卖一部分锁定利润；放量突破后再看下一个阻力。`);
   } else if (light === "red") {
     headline = `${tfName}级别偏空：${trend.label === "震荡" ? "趋势不明，但多数信号偏弱" : `${trend.label}，多数信号同向`}${s1 ? `；下方 ${fmtPrice(s1.price)} 是第一道支撑` : ""}。`;
     plan.push("下跌途中不要急着抄底，“便宜了”不是买入理由。");
-    if (r1) {
-      stopRef = r1.price + 0.5 * atr;
-      plan.push(`已经持有的话，反弹到 ${fmtPrice(r1.price)} 附近可以考虑减仓。`);
-      stopText = `价格重新站上 ${fmtPrice(stopRef)}（约 ${pct(((stopRef - price) / price) * 100)}）才说明空头判断失效。`;
-    }
+    if (r1) plan.push(`已经持有的话，反弹到 ${fmtPrice(r1.price)} 附近可以考虑减仓。`);
+    st = stopFor("short");
+    if (st) stopText = `价格重新站上 ${fmtPrice(st.ref)}（约 ${pct(((st.ref - price) / price) * 100)}）才说明空头判断失效。${stopDetail(st, "short")}`;
     plan.push("想抄底的话，至少等出现 TD 买入 9/13，或价格重新站上短期阻力之后。");
   } else {
     headline = `${tfName}级别方向不明：多空信号互相打架，建议观望。`;
     if (r1 && s1) plan.push(`等价格有效突破 ${fmtPrice(r1.price)}（转强）或跌破 ${fmtPrice(s1.price)}（转弱）后再判断方向。`);
     plan.push("震荡行情里频繁买卖最容易亏手续费和本金，少动就是赚。");
-    if (s1) {
-      stopRef = s1.price - 0.5 * atr;
-      stopText = `如果一定要参与，止损可以参考 ${fmtPrice(stopRef)}（约 ${pct(((stopRef - price) / price) * 100)}）。`;
-    }
+    st = stopFor("long");
+    if (st) stopText = `如果一定要做多，认错位可以参考 ${fmtPrice(st.ref)}（约 ${pct(((st.ref - price) / price) * 100)}）。${stopDetail(st, "long")}`;
   }
+  const stopRef = st?.ref ?? null;
   plan.push(`这个周期适合的持有时间：${TF_HORIZON[tf]}。每根 K 线平均波动 ${atrPct.toFixed(1)}%，仓位要与之匹配。`);
 
-  return { light, lightText, score, confidence, headline, components, plan, stopRef, stopText, atrPct };
+  if (st) plan.push("止损离得越远，仓位就要越小：先定认错位，再按“每笔最多亏多少”算仓位。");
+  return {
+    light,
+    lightText,
+    score,
+    agreement,
+    headline,
+    components,
+    plan,
+    stopRef,
+    stopText,
+    stopAnchor: st?.structural ? st.anchor : null,
+    stopAtr: st ? Math.round(st.k * 100) / 100 : null,
+    stopNoisePct: st?.noise ?? null,
+    stopAlt: st?.alt ?? null,
+    atrPct,
+  };
 }

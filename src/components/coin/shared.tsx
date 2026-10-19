@@ -37,10 +37,10 @@ export function Explainer({ title, children, defaultOpen = false }: { title: str
 }
 
 const RELIABILITY_STYLE: Record<SignalStats["reliability"], { color: string; icon: string }> = {
-  靠谱: { color: "var(--up)", icon: "✓" },
-  一般: { color: "var(--warn)", icon: "~" },
-  不靠谱: { color: "var(--down)", icon: "✗" },
-  样本不足: { color: "var(--text-3)", icon: "?" },
+  证据较强: { color: "var(--up)", icon: "✓" },
+  证据弱: { color: "var(--warn)", icon: "~" },
+  历史上不利: { color: "var(--down)", icon: "✗" },
+  证据不足: { color: "var(--text-3)", icon: "?" },
 };
 
 export function ReliabilityBadge({ r }: { r: SignalStats["reliability"] }) {
@@ -81,7 +81,7 @@ export function StatsTable({ stats, horizonText, coin, tf, only }: { stats: Sign
   return (
     <div>
       <p className="mb-3 text-xs leading-relaxed text-ink-3">
-        统计范围：{coin} {TF_LABEL[tf]}最近约 2000 根 K 线。“对”的意思是：看多信号出现 {horizonText}后价格更高，看空信号出现后价格更低。竖线表示随便找个时间点的<Term k="胜率">随机胜率</Term>，信号要明显超过它才有用。
+        统计范围：{coin} {TF_LABEL[tf]}最近约 2000 根已收盘的 K 线。“对”的意思是：看多信号出现 {horizonText}后价格更高，看空信号出现后价格更低，并且已扣除约 0.15% 的来回手续费和滑点。相隔太近的信号只算一次，避免同一段行情被重复计数。竖线表示随便找个时间点的<Term k="胜率">随机胜率</Term>。一页上同时检验几十个信号，总会有几个碰巧显得好，所以只有扣掉这种“碰巧”之后仍明显好于随机的，才标“证据较强”；大多数信号只能算“证据弱”。
       </p>
       <div className="space-y-3">
         {rows.map((s) => (
@@ -99,8 +99,9 @@ export function StatsTable({ stats, horizonText, coin, tf, only }: { stats: Sign
                   "暂无样本"
                 ) : (
                   <>
-                    对的比例 <b className="text-ink">{s.winRate}%</b>（随机 {s.baseWinRate}%）· 按信号操作平均{(s.avgReturn ?? 0) >= 0 ? "赚" : "亏"}{" "}
-                    <b style={{ color: (s.avgReturn ?? 0) >= 0 ? "var(--up)" : "var(--down)" }}>{Math.abs(s.avgReturn ?? 0).toFixed(1)}%</b>
+                    对的比例 <b className="text-ink">{s.winRate}%</b>
+                    <span className="text-ink-3">（95% 区间 {s.winLo}–{s.winHi}%）</span>，随机 {s.baseWinRate}% · 扣除成本后平均{(s.avgReturn ?? 0) >= 0 ? "赚" : "亏"}{" "}
+                    <b style={{ color: (s.avgReturn ?? 0) >= 0 ? "var(--up)" : "var(--down)" }}>{Math.abs(s.avgReturn ?? 0).toFixed(2)}%</b>
                   </>
                 )}
               </div>
@@ -116,7 +117,7 @@ export function LevelsList({ supports, resistances, price, mode, onHover }: { su
   const row = (l: Level) => (
     <li
       key={`${l.side}${l.price}`}
-      className="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-panel-2"
+      className="grid grid-cols-[auto_1fr] items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-panel-2"
       onMouseEnter={() => onHover?.(l.price)}
       onMouseLeave={() => onHover?.(null)}
     >
@@ -135,7 +136,6 @@ export function LevelsList({ supports, resistances, price, mode, onHover }: { su
         </div>
         <MethodChips level={l} max={mode === "pro" ? 4 : 2} small />
       </div>
-      <Strength v={l.strength} />
     </li>
   );
   return (
@@ -173,18 +173,6 @@ export function MethodChips({ level, max = 3, small = false }: { level: Level; m
       ))}
       {level.methodIds.length > max && <span className={`${small ? "text-[10px]" : "text-[11px]"} text-ink-3`}>+{level.methodIds.length - max}</span>}
     </div>
-  );
-}
-
-export function Strength({ v }: { v: number }) {
-  const bars = v >= 75 ? 3 : v >= 45 ? 2 : 1;
-  return (
-    <span className="inline-flex items-end gap-0.5" title={`强度 ${v}/100`} aria-label={`强度 ${["弱", "中", "强"][bars - 1]}`}>
-      {[1, 2, 3].map((k) => (
-        <span key={k} className="w-1 rounded-sm" style={{ height: 4 + k * 3, background: k <= bars ? "var(--text-2)" : "var(--border)" }} />
-      ))}
-      <span className="ml-1 text-[11px] text-ink-3">{["弱", "中", "强"][bars - 1]}</span>
-    </span>
   );
 }
 

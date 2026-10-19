@@ -185,13 +185,27 @@ export const PARAM_MODULES: ParamModule[] = [
         title: "阈值",
         params: [n("verdict.threshold", "红绿灯阈值", 18, 5, 50, 1, "综合分 ≥ 阈值亮绿灯，≤ −阈值亮红灯，中间是黄灯。")],
       },
+      {
+        title: "止损参考",
+        params: [
+          n("verdict.stopQuantile", "扫损缓冲分位数", 80, 50, 95, 5, "止损放在结构高低点之外多远：取历史上“守住的位被刺穿多深”的这个分位数。80 表示八成守住的位刺穿得没这么深。", "%"),
+        ],
+      },
     ],
   },
   {
     id: "stats",
     title: "胜率统计",
-    hint: "判断一个信号“对不对”时，看它出现后多少根 K 线的价格。",
+    hint: "判断一个信号“对不对”时，看它出现后多少根 K 线的价格；以及给信号贴“证据较强”标签前要过的检验。",
     groups: [
+      {
+        title: "统计口径",
+        params: [
+          n("stats.minSamples", "最少样本数", 30, 10, 200, 1, "互不重叠的样本少于这个数，一律显示“证据不足”。", "次"),
+          n("stats.costPct", "往返交易成本", 0.15, 0, 1, 0.01, "每笔开仓加平仓的手续费与滑点，从每个样本的收益里扣掉。默认按合约吃单 0.05% × 2 加 0.05% 滑点。", "%"),
+          n("stats.alpha", "显著性水平", 0.05, 0.01, 0.2, 0.01, "多重检验校正后的错误发现率。越小越严格，贴“证据较强”的信号越少。"),
+        ],
+      },
       {
         title: "验证窗口",
         params: TFS.map((tf) => n(`stats.h.${tf}`, TF_NAME[tf], HORIZON_DEFAULT[tf], 2, 120, 1, `${TF_NAME[tf]}信号出现后看多少根 K 线`, "根")),
@@ -257,8 +271,9 @@ export interface EngineParams {
   td: { setupLength: number; setupLookback: number; countdownLength: number; countdownLookback: number };
   indicators: { enabled: Set<string>; rsiLow: number; rsiHigh: number; strongPct: number };
   trend: { adxFloor: number; adxSpan: number; diFull: number; mild: number; strong: number; weights: Record<string, number> };
-  verdict: { trend: number; momentum: number; position: number; timing: number; threshold: number };
+  verdict: { trend: number; momentum: number; position: number; timing: number; threshold: number; stopQuantile: number };
   horizon: Record<Timeframe, number>;
+  stats: { minSamples: number; costPct: number; alpha: number };
 }
 
 export function engineParams(values: ParamValues = DEFAULT_PARAMS): EngineParams {
@@ -296,8 +311,9 @@ export function engineParams(values: ParamValues = DEFAULT_PARAMS): EngineParams
       strong: num(p, "trend.strong"),
       weights: Object.fromEntries(TREND_VOTERS.map((id) => [id, num(p, `trend.w.${id}`)])),
     },
-    verdict: { trend: w.trend / sum, momentum: w.momentum / sum, position: w.position / sum, timing: w.timing / sum, threshold: num(p, "verdict.threshold") },
+    verdict: { trend: w.trend / sum, momentum: w.momentum / sum, position: w.position / sum, timing: w.timing / sum, threshold: num(p, "verdict.threshold"), stopQuantile: num(p, "verdict.stopQuantile") },
     horizon: Object.fromEntries(TFS.map((tf) => [tf, num(p, `stats.h.${tf}`)])) as Record<Timeframe, number>,
+    stats: { minSamples: num(p, "stats.minSamples"), costPct: num(p, "stats.costPct"), alpha: num(p, "stats.alpha") },
   };
 }
 

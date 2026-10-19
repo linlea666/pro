@@ -97,7 +97,7 @@ export function ReplayBar({
           {o ? (
             <>
               之后 {o.horizonText}实际走势：收盘 <b className="num" style={{ color: o.closePct >= 0 ? "var(--up)" : "var(--down)" }}>{fmtPct(o.closePct)}</b>，最高 <span className="num">{fmtPct(o.maxPct)}</span>，最低 <span className="num">{fmtPct(o.minPct)}</span>。 当时的结论是「{verdictWord}」
-              {o.correct == null ? "，后面的 K 线还不够，暂时无法判断对错" : o.correct ? <b className="text-up">，✓ 后来证明判断正确</b> : <b className="text-down">，✗ 后来证明判断错了</b>}
+              {o.correct == null ? (data.verdict.light === "yellow" ? "，观望不判断对错" : "，后面的 K 线还不够，暂时无法判断对错") : o.correct ? <b className="text-up">，✓ 后来证明判断正确</b> : <b className="text-down">，✗ 后来证明判断错了</b>}
               {o.stopHit != null && (o.stopHit ? "，认错位被触及过" : "，认错位没有被触及")}。
             </>
           ) : (

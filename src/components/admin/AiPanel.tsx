@@ -10,6 +10,7 @@ interface Config {
   model: string;
   effort: Effort;
   dailyLimit: number;
+  perIpHourly: number;
   timeoutSec: number;
   fallback: boolean;
   prompt: string;
@@ -65,8 +66,8 @@ export function AiPanel() {
 
   const load = (s: State) => {
     setSt(s);
-    const { enabled, baseUrl, model, effort, dailyLimit, timeoutSec, fallback, prompt } = s.config;
-    setF({ enabled, baseUrl, model, effort, dailyLimit, timeoutSec, fallback, prompt: prompt || s.config.defaultPrompt });
+    const { enabled, baseUrl, model, effort, dailyLimit, perIpHourly, timeoutSec, fallback, prompt } = s.config;
+    setF({ enabled, baseUrl, model, effort, dailyLimit, perIpHourly, timeoutSec, fallback, prompt: prompt || s.config.defaultPrompt });
     setApiKey("");
   };
   useEffect(() => {
@@ -185,7 +186,12 @@ export function AiPanel() {
           <label className="space-y-1">
             <span className="text-sm font-medium">每日生成上限</span>
             <input className={inputCls} type="number" min={0} value={f.dailyLimit} onChange={(e) => setF({ ...f, dailyLimit: Number(e.target.value) })} />
-            <span className="text-[11px] text-ink-3">同一个币、同一周期的同一根 K 线只生成一次。超过上限后显示最近一次的解读。</span>
+            <span className="text-[11px] text-ink-3">访客点“AI 分析”按钮才会生成；同一个币、同一周期的同一根已收盘 K 线只生成一次，其他人直接看缓存。超过上限后显示最近一次的解读。</span>
+          </label>
+          <label className="space-y-1">
+            <span className="text-sm font-medium">每个 IP 每小时最多生成</span>
+            <input className={inputCls} type="number" min={1} max={100} value={f.perIpHourly} onChange={(e) => setF({ ...f, perIpHourly: Number(e.target.value) })} />
+            <span className="text-[11px] text-ink-3">防止有人反复点按钮消耗额度（1–100 次）。看已有的缓存不计数。只在 1 小时及以上周期提供。</span>
           </label>
           <label className="space-y-1">
             <span className="text-sm font-medium">单次超时（秒）</span>

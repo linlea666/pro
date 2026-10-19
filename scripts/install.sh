@@ -2,11 +2,11 @@
 # 信号灯 SignalLight 一键安装（Ubuntu 22.04 / 24.04）
 #
 #   curl -fsSL https://raw.githubusercontent.com/linlea666/pro/main/scripts/install.sh | sudo bash
-#   sudo bash install.sh --port 3000 --admin-user admin --admin-pass 'YourPass123' --allow-ip 1.2.3.4
+#   sudo bash install.sh --port 3000 --admin-user admin --admin-pass 'YourPassword123' --allow-ip 1.2.3.4
 #
 # Options:
 #   --port N            对外端口（默认 3000）
-#   --branch NAME       部署的分支（默认 main）
+#   --branch NAME       部署某个分支（默认部署最新发布版本，即最新的 v* 标签）
 #   --repo URL          仓库地址（默认 https://github.com/linlea666/pro.git）
 #   --admin-user NAME   管理员用户名（默认 admin）
 #   --admin-pass PASS   管理员密码（不填则自动生成并打印）
@@ -112,7 +112,9 @@ chown root:"$SL_USER" "$SL_ENV"
 chmod 640 "$SL_ENV"
 
 # ---------------------------------------------------------------- 6. build
-REL=$(build_release)
+read -r REF _ <<<"$(resolve_ref)" || true
+[ -n "${REF:-}" ] || die "无法访问仓库 $SL_REPO"
+REL=$(build_release "$REF")
 VERSION=$(release_version "$REL")
 switch_to "$REL"
 info "初始化数据库"

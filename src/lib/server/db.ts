@@ -94,6 +94,29 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (coin, tf, t)
   ) WITHOUT ROWID;
   `,
+  // 5: stop-loss calibration per coin/timeframe, and the traffic light's own track record
+  `
+  CREATE TABLE risk_calib (
+    coin TEXT NOT NULL,
+    tf TEXT NOT NULL,
+    probe TEXT NOT NULL,
+    noise TEXT NOT NULL,
+    horizon INTEGER NOT NULL,
+    samples INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (coin, tf)
+  ) WITHOUT ROWID;
+  CREATE TABLE scorecard_points (
+    coin TEXT NOT NULL,
+    tf TEXT NOT NULL,
+    t INTEGER NOT NULL,
+    light TEXT NOT NULL,
+    score INTEGER NOT NULL,
+    close_pct REAL NOT NULL,
+    atr_pct REAL NOT NULL,
+    PRIMARY KEY (coin, tf, t)
+  ) WITHOUT ROWID;
+  `,
 ];
 
 let db: Database.Database | null = null;

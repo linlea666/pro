@@ -66,7 +66,7 @@ test("forwardStats compares against the base rate", () => {
   const s = forwardStats(c, "k", "k", "bull", [10, 30, 50, 70], 5);
   assert.equal(s.winRate, 100);
   assert.equal(s.baseWinRate, 100);
-  assert.equal(s.reliability, "样本不足");
+  assert.equal(s.reliability, "证据不足");
 });
 
 test("params: defaults resolve, overrides clamp, invalid values rejected", async () => {

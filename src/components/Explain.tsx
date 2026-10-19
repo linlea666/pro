@@ -174,7 +174,7 @@ export function Explain({ k, children, variant = "term", now, stats, className =
 }
 
 function StatLine({ side, s, horizon }: { side: "bull" | "bear"; s: IndicatorStat; horizon: string }) {
-  const color = s.reliability === "靠谱" ? "var(--up)" : s.reliability === "不靠谱" ? "var(--down)" : s.reliability === "一般" ? "var(--warn)" : "var(--text-3)";
+  const color = s.reliability === "证据较强" ? "var(--up)" : s.reliability === "历史上不利" ? "var(--down)" : s.reliability === "证据弱" ? "var(--warn)" : "var(--text-3)";
   return (
     <p className="mt-1">
       {side === "bull" ? "↑ 转为看多" : "↓ 转为看空"}之后 {horizon}，价格{side === "bull" ? "更高" : "更低"}的比例{" "}
@@ -182,7 +182,7 @@ function StatLine({ side, s, horizon }: { side: "bull" | "bear"; s: IndicatorSta
         "暂无样本"
       ) : (
         <>
-          <b className="text-ink">{s.winRate}%</b>（随机 {s.baseWinRate}%，{s.samples} 次）
+          <b className="text-ink">{s.winRate}%</b>（95% 区间 {s.winLo}–{s.winHi}%，随机 {s.baseWinRate}%，{s.samples} 次，已扣成本）
         </>
       )}{" "}
       <b style={{ color }}>{s.reliability}</b>

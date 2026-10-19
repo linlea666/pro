@@ -1,12 +1,15 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { logger } from "@/lib/server/log";
-import { withRoute } from "@/lib/server/route";
+import { limited, withRoute } from "@/lib/server/route";
+import { getSetting } from "@/lib/server/settings";
 import { multiTimeframe } from "@/lib/analysis";
 import { getCoin } from "@/lib/symbols";
 
 export const dynamic = "force-dynamic";
 
 async function handler(req: NextRequest) {
+  const over = limited(req, "mtf", getSetting("rate.publicPerMin"));
+  if (over) return over;
   const coin = getCoin(req.nextUrl.searchParams.get("coin") ?? "");
   if (!coin) return NextResponse.json({ error: "unknown coin" }, { status: 400 });
   try {

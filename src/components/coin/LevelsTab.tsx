@@ -6,7 +6,7 @@ import { BEGINNER_TIMEFRAMES, TF_LABEL, TIMEFRAMES, type Timeframe } from "@/lib
 import { PriceChart, type PriceLineSpec } from "../PriceChart";
 import { Term } from "../Term";
 import { fmtPct, fmtPrice } from "./format";
-import { Explainer, MethodChips, Section, Strength } from "./shared";
+import { Explainer, MethodChips, Section } from "./shared";
 import { MtfStrip } from "./MtfStrip";
 import type { TabProps } from "./CoinView";
 
@@ -102,7 +102,7 @@ export function LevelsTab({ a, mtf, mode, onTf }: TabProps) {
               <>
                 价格 <b className="num text-ink">{fmtPrice(a.price)}</b> 夹在支撑 <b className="num text-up">{fmtPrice(s1.price)}</b>（{fmtPct(s1.distancePct, 1)}）和阻力{" "}
                 <b className="num text-down">{fmtPrice(r1.price)}</b>（{fmtPct(r1.distancePct, 1)}）之间。
-                {Math.abs(s1.distancePct) < Math.abs(r1.distancePct) ? "离支撑更近：如果想买，这里的风险收益比相对好。" : "离阻力更近：现在追买的空间有限，等回踩或突破更稳。"}
+                {Math.abs(s1.distancePct) < Math.abs(r1.distancePct) ? "离支撑更近：做多的认错位离得近，做空的空间相对小。" : "离阻力更近：做空的认错位离得近，做多的空间相对小。"}
               </>
             ) : (
               "附近没有找到足够强的价位。"
@@ -133,9 +133,7 @@ export function LevelsTab({ a, mtf, mode, onTf }: TabProps) {
                     </span>
                   </div>
                   <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-ink-3">
-                    <Strength v={l.strength} />
-                    <span>· 共振分 {l.score}</span>
-                    <span>· {l.methods.length} 种方法 · {l.contributions} 个贡献</span>
+                    <span>{l.methods.length} 种方法 · {l.contributions} 个贡献</span>
                     <span>· {l.timeframes.map((t) => TF_LABEL[t]).join(" / ")}</span>
                   </div>
                   <MethodChips level={l} max={mode === "pro" ? 8 : 3} />

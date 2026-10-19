@@ -12,6 +12,7 @@ import { MtfStrip } from "./MtfStrip";
 import { Explain } from "../Explain";
 import { PositionCalc } from "./PositionCalc";
 import { AiCard } from "./AiCard";
+import { ScorecardCard } from "./ScorecardCard";
 import type { Mode } from "./CoinView";
 
 export function Overview({ a, mtf, mode, onTf, onTab }: { a: Analysis; mtf: LightSummary[] | null; mode: Mode; onTf: (t: Timeframe) => void; onTab: (t: string) => void }) {
@@ -46,7 +47,8 @@ export function Overview({ a, mtf, mode, onTf, onTab }: { a: Analysis; mtf: Ligh
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 text-xs text-ink-3">
                 <span>{TF_LABEL[a.tf]}结论 · 适合{TF_HORIZON[a.tf]}</span>
-                <span className="rounded-full border border-line px-2 py-0.5">信心：{v.confidence}</span>
+                {a.forming && <span title="结论只用已收盘的 K 线计算，盘中不会来回跳">本根 K 线尚未收盘，结论基于上一根收盘</span>}
+                <span className="rounded-full border border-line px-2 py-0.5" title="四个分项（趋势、动能、TD、位置）里，和结论同方向的有几个。这不是“准确率”。">分项一致度 {v.agreement}/4</span>
                 <span className="num rounded-full border border-line px-2 py-0.5" title="−100 极度偏空 … +100 极度偏多">综合分 {v.score > 0 ? "+" : ""}{v.score}</span>
               </div>
               <h2 className="mt-1.5 text-xl font-semibold leading-snug" style={{ color: meta.color }}>
@@ -118,7 +120,7 @@ export function Overview({ a, mtf, mode, onTf, onTab }: { a: Analysis; mtf: Ligh
                   <p className="mt-1 text-xs leading-relaxed text-ink-2">
                     {s.stats.winRate == null
                       ? "历史样本太少，无法判断可靠性。"
-                      : `过去在${a.coin} ${TF_LABEL[a.tf]}出现 ${s.stats.samples} 次，${a.horizonText}后${s.side === "bull" ? "上涨" : "下跌"}的比例 ${s.stats.winRate}%（随机 ${s.stats.baseWinRate}%），按信号操作平均${(s.stats.avgReturn ?? 0) >= 0 ? "赚" : "亏"} ${Math.abs(s.stats.avgReturn ?? 0).toFixed(1)}%。`}
+                      : `过去在${a.coin} ${TF_LABEL[a.tf]}出现 ${s.stats.samples} 次（不重叠计数），${a.horizonText}后${s.side === "bull" ? "上涨" : "下跌"}的比例 ${s.stats.winRate}%（95% 区间 ${s.stats.winLo}–${s.stats.winHi}%，随机 ${s.stats.baseWinRate}%），扣除成本后平均${(s.stats.avgReturn ?? 0) >= 0 ? "赚" : "亏"} ${Math.abs(s.stats.avgReturn ?? 0).toFixed(2)}%。`}
                   </p>
                 </li>
               ))}
@@ -131,6 +133,7 @@ export function Overview({ a, mtf, mode, onTf, onTab }: { a: Analysis; mtf: Ligh
         </Section>
 
         <PositionCalc price={a.price} stopRef={v.stopRef} coin={a.coin} />
+        {!a.replay && <ScorecardCard coin={a.coin} tf={a.tf} horizonText={a.horizonText} />}
       </div>
     </div>
   );

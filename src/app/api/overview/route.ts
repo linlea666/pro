@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server";
 import { logger } from "@/lib/server/log";
-import { withRoute } from "@/lib/server/route";
+import { limited, withRoute } from "@/lib/server/route";
+import { getSetting } from "@/lib/server/settings";
 import { getOverview } from "@/lib/overview";
 
 export const dynamic = "force-dynamic";
 
-async function handler() {
+async function handler(req: Request) {
+  const over = limited(req, "overview", getSetting("rate.publicPerMin"));
+  if (over) return over;
   try {
     return NextResponse.json(await getOverview(), { headers: { "cache-control": "public, max-age=30" } });
   } catch (e) {

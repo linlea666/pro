@@ -3,6 +3,7 @@ import { SESSION_COOKIE, SESSION_TTL_MS, ipAllowed, login } from "@/lib/server/a
 import { env } from "@/lib/server/env";
 import { clientIp } from "@/lib/server/guard";
 import { logger } from "@/lib/server/log";
+import { allow } from "@/lib/server/ratelimit";
 import { withRoute } from "@/lib/server/route";
 
 export const dynamic = "force-dynamic";
@@ -12,6 +13,11 @@ export const POST = withRoute("admin.login", async (req: Request) => {
   if (!ipAllowed(ip)) {
     logger.warn("audit", "白名单外的 IP 尝试登录后台", { ip });
     return NextResponse.json({ error: "当前 IP 不允许访问后台" }, { status: 403 });
+  }
+  // per-IP lockout stops one guesser; this caps guessing spread over many IPs
+  if (!allow("login-global", "*", 20, 60_000).ok) {
+    logger.warn("audit", "登录请求过于频繁，已临时拒绝", { ip });
+    return NextResponse.json({ error: "登录请求过于频繁，请一分钟后再试" }, { status: 429 });
   }
   const body = (await req.json().catch(() => ({}))) as { username?: string; password?: string };
   const username = String(body.username ?? "").trim();

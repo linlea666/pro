@@ -31,7 +31,7 @@ export function verifyPassword(password: string, stored: string): boolean {
 }
 
 export function validatePassword(password: string): string | null {
-  if (password.length < 8) return "密码至少 8 位";
+  if (password.length < 12) return "密码至少 12 位";
   if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) return "密码需要同时包含字母和数字";
   return null;
 }
@@ -117,12 +117,15 @@ export function logout(token: string | undefined) {
   if (token) getDb().prepare("DELETE FROM sessions WHERE token_hash = ?").run(sha256(token));
 }
 
-export function changePassword(adminId: number, current: string, next: string): string | null {
+/** Change the password and sign out every other session of this admin (e.g. a stolen cookie). */
+export function changePassword(adminId: number, current: string, next: string, keepToken?: string): string | null {
   const row = getDb().prepare("SELECT password_hash FROM admins WHERE id = ?").get(adminId) as { password_hash: string } | undefined;
   if (!row || !verifyPassword(current, row.password_hash)) return "当前密码不正确";
   const bad = validatePassword(next);
   if (bad) return bad;
-  getDb().prepare("UPDATE admins SET password_hash = ? WHERE id = ?").run(hashPassword(next), adminId);
+  const d = getDb();
+  d.prepare("UPDATE admins SET password_hash = ? WHERE id = ?").run(hashPassword(next), adminId);
+  d.prepare("DELETE FROM sessions WHERE admin_id = ? AND token_hash != ?").run(adminId, keepToken ? sha256(keepToken) : "");
   return null;
 }
 

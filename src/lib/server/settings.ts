@@ -8,6 +8,8 @@ export const SETTING_DEFAULTS = {
   "log.archiveKeepWeeks": 52,
   "backup.keepDaily": 7,
   "precompute.enabled": true,
+  "rate.publicPerMin": 60,
+  "rate.replayPerMin": 20,
 } as const;
 
 export type SettingKey = keyof typeof SETTING_DEFAULTS;

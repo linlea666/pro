@@ -9,9 +9,13 @@ import { logger } from "./log.ts";
 /**
  * AI interpretation ("AI 解读"). The model only sees the structured snapshot
  * our engines computed — never raw candles — and must answer in a fixed JSON
- * shape. One interpretation per coin / timeframe / bar is generated and
- * cached; a daily quota caps spend.
+ * shape. Visitors ask for it with a button (never automatically); one
+ * interpretation per coin / timeframe / closed bar is generated and cached,
+ * and a daily quota plus a per-IP hourly limit cap spend.
  */
+
+/** Short timeframes change too fast for a paid write-up to stay useful. */
+export const AI_TFS: Timeframe[] = ["1h", "4h", "1d", "1w"];
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -23,6 +27,8 @@ export interface AiConfig {
   model: string;
   effort: Effort;
   dailyLimit: number;
+  /** generations one visitor IP may trigger per hour */
+  perIpHourly: number;
   timeoutSec: number;
   /** server-side refusal fallback (fallbacks: "default") */
   fallback: boolean;
@@ -41,6 +47,7 @@ const DEFAULT_CONFIG: AiConfig = {
   model: DEFAULT_MODEL,
   effort: "medium",
   dailyLimit: 200,
+  perIpHourly: 5,
   timeoutSec: 90,
   fallback: true,
   prompt: "",
@@ -55,7 +62,7 @@ export const DEFAULT_PROMPT = `你是「信号灯」网站的技术分析讲解�
 2. 不预测具体价格或涨跌幅，不说“一定”“必涨”“稳赚”这类绝对的话；用“偏多 / 偏空 / 观望”和“可能”来表达倾向。
 3. 说清楚各个周期是否一致；不一致时，分别说明大周期和小周期的状态，以及这对新手意味着什么。
 4. 必须给出认错位：价格到哪里说明当前判断错了，数字只能取自快照里的支撑、阻力或止损参考。
-5. 如果快照中的历史胜率显示某个信号“不靠谱”或“样本不足”，要提醒读者不要过度依赖它。
+5. 如果快照中的历史胜率显示某个信号“历史上不利”“证据弱”或“证据不足”，要提醒读者不要过度依赖它。
 6. 不给买卖指令，不建议仓位大小；可以描述“想参与的人通常会等什么条件出现”。
 7. 快照之外的信息（新闻、链上数据、消息面、宏观）一律不要编造或引用。
 8. 每个字段都要简短：headline 不超过 30 个字，其余每段不超过 80 个字，watch 给 2–3 条。`;
@@ -70,7 +77,7 @@ const OUTPUT_SCHEMA = {
     levels: { type: "string", description: "关键支撑阻力怎么看" },
     watch: { type: "array", items: { type: "string" }, description: "接下来值得关注的 2–3 个条件" },
     invalidation: { type: "string", description: "认错位：价格到哪里说明判断错了" },
-    caution: { type: "string", description: "风险提醒，包括不靠谱的信号" },
+    caution: { type: "string", description: "风险提醒，包括证据弱或历史上不利的信号" },
   },
   required: ["headline", "summary", "timeframes", "levels", "watch", "invalidation", "caution"],
   additionalProperties: false,
@@ -105,6 +112,7 @@ export function saveAiConfig(input: AiConfigInput): AiConfig {
   if (input.model !== undefined) next.model = String(input.model).trim() || DEFAULT_MODEL;
   if (input.effort !== undefined) next.effort = input.effort;
   if (input.dailyLimit !== undefined) next.dailyLimit = Math.max(0, Math.min(100_000, Math.floor(Number(input.dailyLimit))));
+  if (input.perIpHourly !== undefined) next.perIpHourly = Math.max(1, Math.min(100, Math.floor(Number(input.perIpHourly))));
   if (input.timeoutSec !== undefined) next.timeoutSec = Math.max(10, Math.min(600, Math.floor(Number(input.timeoutSec))));
   if (input.fallback !== undefined) next.fallback = Boolean(input.fallback);
   if (input.prompt !== undefined) next.prompt = String(input.prompt).slice(0, 8000);
@@ -185,7 +193,7 @@ const round = (v: number) => (Math.abs(v) >= 100 ? Math.round(v * 10) / 10 : Mat
 /** Compact, display-ready facts for one coin/timeframe plus the other timeframes. */
 export function buildSnapshot(a: Analysis, mtf: LightSummary[]) {
   const v = a.verdict;
-  const lvl = (l: Analysis["levels"]["supports"][number]) => ({ price: round(l.price), distancePct: Math.round(l.distancePct * 100) / 100, strength: l.strength, methods: l.methods.slice(0, 3) });
+  const lvl = (l: Analysis["levels"]["supports"][number]) => ({ price: round(l.price), distancePct: Math.round(l.distancePct * 100) / 100, methods: l.methods.slice(0, 3) });
   return {
     coin: a.coin,
     timeframe: TF_LABEL[a.tf],
@@ -194,10 +202,13 @@ export function buildSnapshot(a: Analysis, mtf: LightSummary[]) {
     verdict: {
       light: v.lightText,
       score: v.score,
-      confidence: v.confidence,
+      partsAgreeing: `${v.agreement}/4`,
       headline: v.headline,
       parts: v.components.map((c) => ({ part: c.label, score: c.score, text: c.text })),
       stopReference: v.stopRef ? round(v.stopRef) : null,
+      stopAnchor: v.stopAnchor ? round(v.stopAnchor) : null,
+      stopDistanceAtr: v.stopAtr,
+      stopNoiseTouchPct: v.stopNoisePct,
       avgCandleMovePct: Math.round(v.atrPct * 100) / 100,
     },
     otherTimeframes: mtf.map((m) => ({ timeframe: TF_LABEL[m.tf], light: m.lightText, trend: m.trend, td: m.td })),
@@ -321,18 +332,33 @@ function latestCached(coin: string, tf: Timeframe): Interpretation | null {
   return r ? { content: JSON.parse(r.content), model: r.model, createdAt: r.created_at, barTime: r.bar_t, cached: true, stale: true } : null;
 }
 
-/** Get (or generate once) the interpretation for the current bar. */
+const cacheKey = (c: AiConfig, coin: string, tf: Timeframe, barTime: number) => `${coin}|${tf}|${barTime}|${c.revision}|${promptHash(c)}`;
+
+function cachedAt(key: string): Interpretation | null {
+  const hit = getDb().prepare("SELECT content, model, created_at, bar_t FROM ai_cache WHERE key = ?").get(key) as
+    | { content: string; model: string; created_at: number; bar_t: number }
+    | undefined;
+  return hit ? { content: JSON.parse(hit.content), model: hit.model, createdAt: hit.created_at, barTime: hit.bar_t, cached: true } : null;
+}
+
+/** The interpretation already generated for the last closed bar, if anyone asked for it. Never calls the model. */
+export async function peekInterpretation(coin: string, tf: Timeframe): Promise<Interpretation | null> {
+  const c = getAiConfig();
+  if (!c.enabled || !c.apiKeyEnc) return null;
+  const a = await analyze(coin, tf);
+  return cachedAt(cacheKey(c, coin, tf, a.lastClosedT));
+}
+
+/** Get (or generate once) the interpretation for the last closed bar. */
 export async function interpret(coin: string, tf: Timeframe): Promise<Interpretation> {
   const c = getAiConfig();
   if (!c.enabled || !c.apiKeyEnc) throw new AiError("AI 解读未启用", "disabled");
   const a = await analyze(coin, tf);
-  const barTime = a.candles[a.candles.length - 1].t;
-  const key = `${coin}|${tf}|${barTime}|${c.revision}|${promptHash(c)}`;
+  const barTime = a.lastClosedT;
+  const key = cacheKey(c, coin, tf, barTime);
 
-  const hit = getDb().prepare("SELECT content, model, created_at, bar_t FROM ai_cache WHERE key = ?").get(key) as
-    | { content: string; model: string; created_at: number; bar_t: number }
-    | undefined;
-  if (hit) return { content: JSON.parse(hit.content), model: hit.model, createdAt: hit.created_at, barTime: hit.bar_t, cached: true };
+  const hit = cachedAt(key);
+  if (hit) return hit;
   const p = pending.get(key);
   if (p) return p;
 
