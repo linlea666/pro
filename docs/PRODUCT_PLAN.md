@@ -51,10 +51,10 @@
 | 引擎 | 实现要点 |
 |---|---|
 | 数据 | Binance 公共行情镜像 → OKX 两级回退，服务端缓存（按周期设置 TTL） |
-| 指标 | EMA/SMA、MACD、RSI、KDJ/Stoch、CCI、威廉、ROC、ADX/DMI、PSAR、Aroon、布林、ATR、Keltner、OBV、MFI、CMF、ADL、强力指数、量比、VWAP、一目均衡、K 线形态、背离检测 |
+| 指标 | 28 个：EMA/SMA、MACD、RSI、KD、CCI、威廉、ROC、ADX/DMI、PSAR、Aroon、布林、ATR、Keltner、OBV、MFI、CMF、ADL、强力指数、量比、VWAP、一目均衡、回归斜率、K 线形态、RSI 背离 |
 | TD 序列 | Setup 9（含完美 9）、TDST、Countdown 13（含第 13 根条件、取消与回收规则）、Risk Level |
-| 支撑阻力 | 摆动高低点 + 成交量分布 POC/价值区 + 经典 Pivot + 整数关口 + 均线，按 ATR 聚类打分，并汇总多个周期 |
-| 趋势强度 | 自研：方向票按 ADX 加权，输出 −100..+100 的连续曲线 |
+| 支撑阻力 | 14 种方法（摆动高低、分形、成交量分布、经典/Camarilla/斐波那契 Pivot、前日/周/月高低、Donchian、Keltner、布林、均线、锚定 VWAP、斐波那契回撤、整数关口）× 15m–1w 多个周期，按 ATR 聚类、共振打分 |
+| 趋势强度 | 自研：10 个趋势指标加权投票 × ADX 力度 × DI 优势，输出 −100..+100 的连续曲线 |
 | 斐波那契 | 用 ZigZag 自动识别最近的主波段，算回撤和扩展；也支持在图上手动点选 |
 | 缠论 | 包含关系合并 → 分型 → 笔 → 中枢 → 一/二/三类买卖点（简化版） |
 | 信号统计 | 对每类信号做历史前向收益统计：胜率、平均收益、样本数，样本不足时明确提示 |
