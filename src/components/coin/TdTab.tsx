@@ -1,17 +1,18 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { Analysis, LightSummary } from "@/lib/analysis";
+
 import { TF_LABEL } from "@/lib/types";
 import { PriceChart, type MarkerSpec, type PriceLineSpec } from "../PriceChart";
 import { Term } from "../Term";
 import { fmtPct, fmtPrice } from "./format";
 import { Explainer, Section, StatsTable } from "./shared";
-import type { Mode } from "./CoinView";
+import type { TabProps } from "./CoinView";
+import { MtfStrip } from "./MtfStrip";
 
 const UP = "#199e70", DOWN = "#e66767";
 
-export function TdTab({ a, mtf, mode }: { a: Analysis; mtf: LightSummary[] | null; mode: Mode }) {
+export function TdTab({ a, mtf, mode, onTf }: TabProps) {
   const [allNumbers, setAllNumbers] = useState(mode === "pro");
   const cur = a.td.current;
 
@@ -81,12 +82,13 @@ export function TdTab({ a, mtf, mode }: { a: Analysis; mtf: LightSummary[] | nul
       </div>
 
       <div className="space-y-4">
+        <MtfStrip kind="td" mtf={mtf} current={a.tf} onTf={onTf} />
         <Section title={`现在的状态 · ${TF_LABEL[a.tf]}`}>
           <p className="text-[13px] leading-relaxed">{nowText}</p>
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-            <Stat label="下跌计数（买入 Setup）" value={`${cur.setupSide === "buy" ? Math.min(cur.setupCount, 9) : 0} / 9`} />
-            <Stat label="上涨计数（卖出 Setup）" value={`${cur.setupSide === "sell" ? Math.min(cur.setupCount, 9) : 0} / 9`} />
-            <Stat label="13 计数进度" value={cur.countdown ? `${sideText(cur.countdown.side)} ${cur.countdown.count} / 13` : "未开始"} />
+            <Stat label={<Term k="Setup9">下跌计数（买入 Setup）</Term>} value={`${cur.setupSide === "buy" ? Math.min(cur.setupCount, 9) : 0} / 9`} />
+            <Stat label={<Term k="Setup9">上涨计数（卖出 Setup）</Term>} value={`${cur.setupSide === "sell" ? Math.min(cur.setupCount, 9) : 0} / 9`} />
+            <Stat label={<Term k="Countdown13">13 计数进度</Term>} value={cur.countdown ? `${sideText(cur.countdown.side)} ${cur.countdown.count} / 13` : "未开始"} />
             <Stat label={<Term k="TDST">TDST</Term>} value={cur.tdstResistance ? `阻力 ${fmtPrice(cur.tdstResistance)}` : "—"} sub={cur.tdstSupport ? `支撑 ${fmtPrice(cur.tdstSupport)}` : undefined} />
           </div>
         </Section>
@@ -101,7 +103,7 @@ export function TdTab({ a, mtf, mode }: { a: Analysis; mtf: LightSummary[] | nul
                 出现在 {ls.barsAgo} 根 K 线前，价格 {fmtPrice(ls.price)}。
               </p>
               <p className="mt-1 text-ink-2">
-                之后价格 {fmtPct(ls.changePct)}，
+                之后价格 {fmtPct(ls.changePct)}（<Term k="RiskLevel">风险位</Term>是这个信号的认错线），
                 {ls.invalidated
                   ? `已经${ls.side === "buy" ? "跌破" : "突破"}风险位 ${fmtPrice(ls.riskLevel)}，这个信号失败了。`
                   : (ls.side === "buy") === ls.changePct > 0
@@ -112,24 +114,6 @@ export function TdTab({ a, mtf, mode }: { a: Analysis; mtf: LightSummary[] | nul
           ) : (
             <p className="text-[13px] text-ink-3">最近没有完整的 9 或 13 信号。</p>
           )}
-        </Section>
-
-        <Section title="各周期 TD 状态">
-          {mtf ? (
-            <table className="w-full text-[13px]">
-              <tbody>
-                {mtf.map((m) => (
-                  <tr key={m.tf} className="border-b border-line last:border-0">
-                    <td className="py-1.5 text-ink-3">{TF_LABEL[m.tf]}</td>
-                    <td className="py-1.5 text-right num">{m.td === "—" ? "未计数" : m.td.replace("跌", "下跌计数").replace("涨", "上涨计数")}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <div className="h-24 animate-pulse rounded bg-panel-2" />
-          )}
-          <p className="mt-2 text-[11px] text-ink-3">多个周期同时接近 9 或 13 时，反转的可能性更大，这叫“多周期共振”。</p>
         </Section>
 
         <Section title="以前灵不灵？">

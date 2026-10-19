@@ -8,6 +8,7 @@ import { logger } from "../server/log.ts";
  */
 
 const TTL_MS: Record<Timeframe, number> = {
+  "5m": 20_000,
   "15m": 30_000,
   "1h": 60_000,
   "4h": 120_000,
@@ -15,8 +16,10 @@ const TTL_MS: Record<Timeframe, number> = {
   "1w": 600_000,
 };
 
-const BINANCE_INTERVAL: Record<Timeframe, string> = { "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d", "1w": "1w" };
-const OKX_BAR: Record<Timeframe, string> = { "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1Dutc", "1w": "1Wutc" };
+const BINANCE_INTERVAL: Record<Timeframe, string> = { "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d", "1w": "1w" };
+const OKX_BAR: Record<Timeframe, string> = { "5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1Dutc", "1w": "1Wutc" };
+
+export const ttlFor = (tf: Timeframe) => TTL_MS[tf];
 
 export interface KlineResult {
   candles: Candle[];

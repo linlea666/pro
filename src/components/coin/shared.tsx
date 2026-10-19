@@ -1,12 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import type { LightSummary } from "@/lib/analysis";
 import type { Level } from "@/lib/ta/levels";
 import type { SignalStats } from "@/lib/ta/stats";
 import { TF_LABEL, type Timeframe } from "@/lib/types";
-import { LightPill, lightMeta } from "../Light";
+import { LightPill } from "../Light";
 import { Term } from "../Term";
+import { Explain } from "../Explain";
 import { fmtPct, fmtPrice } from "./format";
 
 export function Section({ title, extra, children, className = "" }: { title: React.ReactNode; extra?: React.ReactNode; children: React.ReactNode; className?: string }) {
@@ -63,6 +63,19 @@ function WinBar({ win, base }: { win: number | null; base: number }) {
   );
 }
 
+const STAT_TERM: Record<string, string> = {
+  td_buy9: "Setup9",
+  td_sell9: "Setup9",
+  td_buy13: "Countdown13",
+  td_sell13: "Countdown13",
+  ema_golden: "金叉",
+  ema_death: "金叉",
+  rsi_oversold: "RSI",
+  rsi_overbought: "RSI",
+  reso_bull: "共振",
+  reso_bear: "共振",
+};
+
 export function StatsTable({ stats, horizonText, coin, tf, only }: { stats: SignalStats[]; horizonText: string; coin: string; tf: Timeframe; only?: string[] }) {
   const rows = only ? stats.filter((s) => only.includes(s.key)) : stats;
   return (
@@ -75,7 +88,7 @@ export function StatsTable({ stats, horizonText, coin, tf, only }: { stats: Sign
           <div key={s.key} className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1">
             <div className="flex items-center gap-2 text-sm">
               <span style={{ color: s.side === "bull" ? "var(--up)" : "var(--down)" }} aria-hidden="true">{s.side === "bull" ? "↑" : "↓"}</span>
-              <span>{s.name}</span>
+              <Explain k={STAT_TERM[s.key] ?? "胜率"} variant="term">{s.name}</Explain>
               <span className="text-[11px] text-ink-3">{s.samples} 次</span>
             </div>
             <ReliabilityBadge r={s.reliability} />
@@ -117,9 +130,10 @@ export function LevelsList({ supports, resistances, price, mode, onHover }: { su
         </div>
         <div className="truncate text-[11px] text-ink-3" title={l.labels.join("、")}>
           {mode === "pro"
-            ? `方法 ${l.methods.length} · 贡献 ${l.contributions} · ${l.methods.slice(0, 3).join(" / ")}`
+            ? `方法 ${l.methods.length} · 贡献 ${l.contributions} · ${l.timeframes.map((t) => TF_LABEL[t]).join("/")}`
             : `${l.methods.length} 种方法同时指向这里 · ${l.timeframes.map((t) => TF_LABEL[t]).join("/")}`}
         </div>
+        <MethodChips level={l} max={mode === "pro" ? 4 : 2} small />
       </div>
       <Strength v={l.strength} />
     </li>
@@ -137,6 +151,31 @@ export function LevelsList({ supports, resistances, price, mode, onHover }: { su
   );
 }
 
+/** Clickable method badges for a level; each opens the method's explanation. */
+export function MethodChips({ level, max = 3, small = false }: { level: Level; max?: number; small?: boolean }) {
+  return (
+    <div className={`flex flex-wrap gap-1 ${small ? "mt-1" : "mt-1.5"}`}>
+      {level.methodIds.slice(0, max).map((id, k) => (
+        <Explain
+          key={id}
+          k={`lvl:${id}`}
+          variant="plain"
+          className={`rounded border border-line px-1.5 ${small ? "py-0 text-[10px]" : "py-0.5 text-[11px]"} text-ink-2 hover:border-ink-3 hover:text-ink`}
+          now={
+            <>
+              这个价位（{fmtPrice(level.price)}，距现价 {fmtPct(level.distancePct, 1)}）由 {(level.labelsByMethod[id] ?? []).join("、")} 给出，同时还有 {level.methods.length - 1} 种其他方法指向这里。
+            </>
+          }
+        >
+          {k === 0 ? "★ " : ""}
+          {level.methods[k]}
+        </Explain>
+      ))}
+      {level.methodIds.length > max && <span className={`${small ? "text-[10px]" : "text-[11px]"} text-ink-3`}>+{level.methodIds.length - max}</span>}
+    </div>
+  );
+}
+
 export function Strength({ v }: { v: number }) {
   const bars = v >= 75 ? 3 : v >= 45 ? 2 : 1;
   return (
@@ -146,39 +185,6 @@ export function Strength({ v }: { v: number }) {
       ))}
       <span className="ml-1 text-[11px] text-ink-3">{["弱", "中", "强"][bars - 1]}</span>
     </span>
-  );
-}
-
-export function MtfMatrix({ mtf, current, onTf }: { mtf: LightSummary[] | null; current: Timeframe; onTf?: (t: Timeframe) => void }) {
-  if (!mtf) return <div className="h-24 animate-pulse rounded-lg bg-panel-2" />;
-  const greens = mtf.filter((m) => m.light === "green").length;
-  const reds = mtf.filter((m) => m.light === "red").length;
-  const summary =
-    greens >= 4 ? "大小周期几乎都偏多，方向一致性很高。" : reds >= 4 ? "大小周期几乎都偏空，方向一致性很高。" : greens > reds ? "偏多的周期更多，但并非全部同向。" : reds > greens ? "偏空的周期更多，但并非全部同向。" : "各周期看法不一，整体方向不明朗。";
-  return (
-    <div>
-      <div className="grid grid-cols-5 gap-1.5">
-        {mtf.map((m) => {
-          const meta = lightMeta(m.light);
-          return (
-            <button
-              key={m.tf}
-              onClick={() => onTf?.(m.tf)}
-              className="min-w-0 rounded-lg border px-1 py-2 text-center transition hover:brightness-110"
-              style={{ borderColor: m.tf === current ? meta.color : "var(--border)", background: meta.soft }}
-            >
-              <div className="text-[11px] text-ink-3">{TF_LABEL[m.tf]}</div>
-              <div className="mt-0.5 whitespace-nowrap text-[13px] font-semibold sm:text-sm" style={{ color: meta.color }}>
-                {meta.icon}
-                {m.lightText}
-              </div>
-              <div className="mt-0.5 truncate text-[10px] text-ink-3">{m.trend}</div>
-            </button>
-          );
-        })}
-      </div>
-      <p className="mt-2 text-xs text-ink-2">{summary}</p>
-    </div>
   );
 }
 

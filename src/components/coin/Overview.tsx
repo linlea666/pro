@@ -7,7 +7,9 @@ import { PriceChart, type OverlayLine, type PriceLineSpec } from "../PriceChart"
 import { TrafficLight, lightMeta } from "../Light";
 import { Term } from "../Term";
 import { fmtPrice } from "./format";
-import { LevelsList, MtfMatrix, ReliabilityBadge, Section } from "./shared";
+import { LevelsList, ReliabilityBadge, Section } from "./shared";
+import { MtfStrip } from "./MtfStrip";
+import { Explain } from "../Explain";
 import { PositionCalc } from "./PositionCalc";
 import type { Mode } from "./CoinView";
 
@@ -56,7 +58,7 @@ export function Overview({ a, mtf, mode, onTf, onTab }: { a: Analysis; mtf: Ligh
             {v.components.map((c) => (
               <div key={c.key} className="bg-panel p-4">
                 <div className="flex items-center gap-2 text-xs text-ink-3">
-                  <span>{c.label}</span>
+                  <Explain k={`v:${c.key}`} variant="term">{c.label}</Explain>
                   <ScoreBar v={c.score} />
                 </div>
                 <p className="mt-1.5 text-[13px] leading-relaxed text-ink-2">{c.text}</p>
@@ -94,10 +96,8 @@ export function Overview({ a, mtf, mode, onTf, onTab }: { a: Analysis; mtf: Ligh
       </div>
 
       <div className="space-y-4">
-        <Section title="多周期信号灯" extra={<span className="text-[11px] text-ink-3">点击切换周期</span>}>
-          <MtfMatrix mtf={mtf} current={a.tf} onTf={onTf} />
-          {mode === "beginner" && <p className="mt-2 text-[11px] leading-relaxed text-ink-3">大周期决定方向，小周期决定时机。日线偏多时，在 4 小时、1 小时回调时找机会更稳。</p>}
-        </Section>
+        <MtfStrip kind="light" mtf={mtf} current={a.tf} onTf={onTf} title="多周期信号灯" />
+        {mode === "beginner" && <p className="-mt-2 px-1 text-[11px] leading-relaxed text-ink-3">大周期决定方向，小周期决定时机。日线偏多时，在 4 小时、1 小时回调时找机会更稳。</p>}
 
         <Section title="最近出现的信号" extra={<button className="text-[11px] text-accent" onClick={() => onTab("td")}>查看全部 →</button>}>
           {a.active.length === 0 ? (

@@ -59,8 +59,8 @@ const METHOD_WEIGHT: Record<Method, number> = {
   round: 0.5,
 };
 
-const TF_WEIGHT: Record<Timeframe, number> = { "15m": 0.5, "1h": 0.75, "4h": 1, "1d": 1.5, "1w": 2 };
-const TF_NAME: Record<Timeframe, string> = { "15m": "15分钟", "1h": "1小时", "4h": "4小时", "1d": "日线", "1w": "周线" };
+const TF_WEIGHT: Record<Timeframe, number> = { "5m": 0.35, "15m": 0.5, "1h": 0.75, "4h": 1, "1d": 1.5, "1w": 2 };
+const TF_NAME: Record<Timeframe, string> = { "5m": "5分钟", "15m": "15分钟", "1h": "1小时", "4h": "4小时", "1d": "日线", "1w": "周线" };
 
 export interface LevelCandidate {
   price: number;
@@ -79,6 +79,9 @@ export interface Level {
   side: "support" | "resistance";
   /** distinct methods, strongest first */
   methods: string[];
+  methodIds: Method[];
+  /** contributing labels grouped by method, e.g. { swing: ["日线摆动高点"] } */
+  labelsByMethod: Partial<Record<Method, string[]>>;
   /** number of individual contributions in the cluster */
   contributions: number;
   labels: string[];
@@ -282,7 +285,7 @@ export function periodCandidates(daily: Candle[], price: number): LevelCandidate
 // ---------------------------------------------------------------- clustering
 
 /** Cluster candidates within `tol` (absolute price) and rank. */
-export function clusterLevels(cands: LevelCandidate[], price: number, tol: number, maxPerSide = 4): { supports: Level[]; resistances: Level[] } {
+export function clusterLevels(cands: LevelCandidate[], price: number, tol: number, maxPerSide = 5): { supports: Level[]; resistances: Level[] } {
   const sorted = [...cands].sort((a, b) => a.price - b.price);
   const clusters: LevelCandidate[][] = [];
   for (const cand of sorted) {
@@ -296,13 +299,19 @@ export function clusterLevels(cands: LevelCandidate[], price: number, tol: numbe
     const byMethod = new Map<Method, number>();
     for (const x of g) byMethod.set(x.method, (byMethod.get(x.method) ?? 0) + x.weight);
     const tfs = [...new Set(g.map((x) => x.tf))];
+    const labelsByMethod: Partial<Record<Method, string[]>> = {};
+    for (const x of g) {
+      const arr = (labelsByMethod[x.method] ??= []);
+      if (!arr.includes(x.label)) arr.push(x.label);
+    }
     // independent methods and timeframes agreeing matter more than repeats of one method
     const score = wsum * (1 + 0.3 * (byMethod.size - 1)) * (1 + 0.15 * (tfs.length - 1));
     return {
       price: p,
       score,
-      methods: [...byMethod.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => METHOD_NAME[m]),
+      methodIds: [...byMethod.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m),
       contributions: g.length,
+      labelsByMethod,
       labels: [...new Set(g.map((x) => x.label))],
       timeframes: tfs,
     };
@@ -312,7 +321,9 @@ export function clusterLevels(cands: LevelCandidate[], price: number, tol: numbe
     strength: Math.round((r.score / max) * 100),
     score: Math.round(r.score * 10) / 10,
     side: r.price < price ? "support" : "resistance",
-    methods: r.methods,
+    methods: r.methodIds.map((m) => METHOD_NAME[m]),
+    methodIds: r.methodIds,
+    labelsByMethod: r.labelsByMethod,
     contributions: r.contributions,
     labels: r.labels,
     timeframes: r.timeframes,

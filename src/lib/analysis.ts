@@ -1,7 +1,7 @@
-import { getKlines } from "./data/klines.ts";
+import { getKlines, ttlFor } from "./data/klines.ts";
 import { logger } from "./server/log.ts";
 import type { Candle, Timeframe } from "./types.ts";
-import { TIMEFRAMES } from "./types.ts";
+import { BEGINNER_TIMEFRAMES, TIMEFRAMES } from "./types.ts";
 import * as ta from "./ta/core.ts";
 import { computeIndicators, type IndicatorReading } from "./ta/indicators.ts";
 import { computeTd, type TdEvent, type TdState } from "./ta/td.ts";
@@ -22,6 +22,7 @@ const DISPLAY_BARS = 600;
 
 /** Higher timeframes that also feed the support/resistance cluster. */
 const LEVEL_TFS: Record<Timeframe, Timeframe[]> = {
+  "5m": ["5m", "15m", "1h"],
   "15m": ["15m", "1h", "4h"],
   "1h": ["15m", "1h", "4h", "1d"],
   "4h": ["15m", "1h", "4h", "1d"],
@@ -38,6 +39,7 @@ async function keyLevels(coin: string, tf: Timeframe, price: number, atr: number
 
 /** Bars after a signal used to judge it, and the human description. */
 export const HORIZON: Record<Timeframe, { bars: number; text: string }> = {
+  "5m": { bars: 24, text: "2 小时" },
   "15m": { bars: 16, text: "4 小时" },
   "1h": { bars: 24, text: "1 天" },
   "4h": { bars: 18, text: "3 天" },
@@ -90,9 +92,13 @@ export interface Analysis {
   fib: FibResult | null;
   chan: ChanResult;
   stats: SignalStats[];
+  /** per indicator: how price moved after it turned bullish / bearish */
+  indicatorStats: Record<string, { bull: IndicatorStat; bear: IndicatorStat }>;
   active: ActiveSignal[];
   horizonText: string;
 }
+
+export type IndicatorStat = Pick<SignalStats, "samples" | "winRate" | "avgReturn" | "baseWinRate" | "reliability">;
 
 const clean = (arr: number[]) => arr.map((v) => (Number.isFinite(v) ? Math.round(v * 1e6) / 1e6 : null));
 
@@ -128,7 +134,28 @@ function crossUps(a: number[], b: number[]) {
   return out;
 }
 
+// Results are cached for as long as the underlying candles are.
+const cache = new Map<string, { at: number; value?: Analysis; pending?: Promise<Analysis> }>();
+
 export async function analyze(coin: string, tf: Timeframe): Promise<Analysis> {
+  const key = `${coin}:${tf}`;
+  const hit = cache.get(key);
+  if (hit?.value && Date.now() - hit.at < ttlFor(tf)) return hit.value;
+  if (hit?.pending) return hit.pending;
+  const pending = analyzeLogged(coin, tf);
+  cache.set(key, { at: hit?.at ?? 0, value: hit?.value, pending });
+  try {
+    const value = await pending;
+    cache.set(key, { at: Date.now(), value });
+    return value;
+  } catch (e) {
+    if (hit?.value) cache.set(key, { at: hit.at, value: hit.value });
+    else cache.delete(key);
+    throw e;
+  }
+}
+
+async function analyzeLogged(coin: string, tf: Timeframe): Promise<Analysis> {
   const t0 = Date.now();
   try {
     const a = await analyzeInner(coin, tf);
@@ -193,6 +220,18 @@ async function analyzeInner(coin: string, tf: Timeframe): Promise<Analysis> {
   ];
   const stats = defs.map(([key, name, side, idx]) => forwardStats(c, key, name, side, idx, H));
 
+  // each indicator's own track record: bars where it flipped to bullish / bearish
+  const indicatorStats: Analysis["indicatorStats"] = {};
+  const lite = (s: SignalStats): IndicatorStat => ({ samples: s.samples, winRate: s.winRate, avgReturn: s.avgReturn, baseWinRate: s.baseWinRate, reliability: s.reliability });
+  for (const [id, bias] of panel.byId) {
+    const up: number[] = [], dn: number[] = [];
+    for (let i = 1; i < bias.length; i++) {
+      if (bias[i] === 1 && bias[i - 1] !== 1) up.push(i);
+      if (bias[i] === -1 && bias[i - 1] !== -1) dn.push(i);
+    }
+    indicatorStats[id] = { bull: lite(forwardStats(c, id, id, "bull", up, H)), bear: lite(forwardStats(c, id, id, "bear", dn, H)) };
+  }
+
   // signals that fired recently
   const recentWindow = Math.max(3, Math.round(H / 3));
   const active: ActiveSignal[] = [];
@@ -237,20 +276,67 @@ async function analyzeInner(coin: string, tf: Timeframe): Promise<Analysis> {
     fib,
     chan,
     stats,
+    indicatorStats,
     active,
     horizonText: HORIZON[tf].text,
   };
 }
 
-// ------------------------------------------------------------------ light summaries
+// ------------------------------------------------------------------ per-timeframe summaries
 
+/** Compact state of every module on one timeframe, for the multi-timeframe strips. */
 export interface LightSummary {
   tf: Timeframe;
   light: Verdict["light"];
   lightText: string;
   score: number;
   trend: string;
+  trendScore: number;
+  /** short TD text, e.g. "涨 5/9" */
   td: string;
+  tdDetail: {
+    setupSide: TdState["current"]["setupSide"];
+    setupCount: number;
+    countdown: { side: "buy" | "sell"; count: number } | null;
+    last: { side: "buy" | "sell"; kind: TdEvent["kind"]; barsAgo: number; invalidated: boolean } | null;
+  };
+  votes: { bull: number; bear: number; total: number };
+  s1: { price: number; distancePct: number } | null;
+  r1: { price: number; distancePct: number } | null;
+  fib: { direction: "up" | "down"; ratio: number } | null;
+  chan: { last: { type: string; barsAgo: number } | null; pos: "above" | "inside" | "below" | null };
+}
+
+export function summarize(a: Analysis): LightSummary {
+  const cur = a.td.current;
+  const s = a.indicators.summary;
+  const cats = Object.values(s);
+  const z = a.chan.zhongshus[a.chan.zhongshus.length - 1];
+  const lastPoint = a.chan.points[a.chan.points.length - 1];
+  const lvl = (l?: Level) => (l ? { price: l.price, distancePct: Math.round(l.distancePct * 100) / 100 } : null);
+  return {
+    tf: a.tf,
+    light: a.verdict.light,
+    lightText: a.verdict.lightText,
+    score: a.verdict.score,
+    trend: a.trend.label,
+    trendScore: a.trend.current,
+    td: cur.setupSide ? `${cur.setupSide === "buy" ? "跌" : "涨"} ${Math.min(cur.setupCount, 9)}/9` : "—",
+    tdDetail: {
+      setupSide: cur.setupSide,
+      setupCount: cur.setupCount,
+      countdown: cur.countdown ? { side: cur.countdown.side, count: cur.countdown.count } : null,
+      last: cur.lastSignal ? { side: cur.lastSignal.side, kind: cur.lastSignal.kind, barsAgo: cur.lastSignal.barsAgo, invalidated: cur.lastSignal.invalidated } : null,
+    },
+    votes: { bull: cats.reduce((x, k) => x + k.bull, 0), bear: cats.reduce((x, k) => x + k.bear, 0), total: a.indicators.total },
+    s1: lvl(a.levels.supports[0]),
+    r1: lvl(a.levels.resistances[0]),
+    fib: a.fib ? { direction: a.fib.direction, ratio: Math.round(a.fib.currentRatio * 1000) / 1000 } : null,
+    chan: {
+      last: lastPoint ? { type: lastPoint.type, barsAgo: a.candles.length - 1 - a.candles.findIndex((x) => x.t === lastPoint.t) } : null,
+      pos: z ? (a.price > z.zg ? "above" : a.price < z.zd ? "below" : "inside") : null,
+    },
+  };
 }
 
 export interface CoinSnapshot {
@@ -261,34 +347,19 @@ export interface CoinSnapshot {
   lights: LightSummary[];
 }
 
-async function lightFor(coin: string, tf: Timeframe): Promise<{ s: LightSummary; candles: Candle[] }> {
-  const { candles: c } = await getKlines(coin, tf);
-  const L = c.length - 1;
-  const price = c[L].c;
-  const atr = ta.atr(c, 14);
-  const panel = computeIndicators(c);
-  const td = computeTd(c);
-  const trend = computeTrend(c, panel);
-  const { supports, resistances } = await keyLevels(coin, tf, price, atr[L]);
-  const v = buildVerdict({ tf, price, atr: atr[L], trend, panel, td, supports, resistances, lastIdx: L });
-  const cur = td.current;
-  const tdText = cur.setupSide ? `${cur.setupSide === "buy" ? "跌" : "涨"} ${Math.min(cur.setupCount, 9)}/9` : "—";
-  return { s: { tf, light: v.light, lightText: v.lightText, score: v.score, trend: trend.label, td: tdText }, candles: c };
-}
-
 export async function snapshot(coin: string, tfs: Timeframe[] = ["1h", "4h", "1d"]): Promise<CoinSnapshot> {
-  const res = await Promise.all(tfs.map((tf) => lightFor(coin, tf)));
-  const hourly = res.find((r) => r.s.tf === "1h")?.candles ?? res[0].candles;
+  const [res, hourly] = await Promise.all([Promise.all(tfs.map((tf) => analyze(coin, tf))), getKlines(coin, "1h")]);
+  const h = hourly.candles;
   return {
     coin,
-    price: hourly[hourly.length - 1].c,
-    change24h: change24h(hourly),
-    spark: hourly.slice(-48).map((x) => x.c),
-    lights: res.map((r) => r.s),
+    price: h[h.length - 1].c,
+    change24h: change24h(h),
+    spark: h.slice(-48).map((x) => x.c),
+    lights: res.map(summarize),
   };
 }
 
-export async function multiTimeframe(coin: string): Promise<LightSummary[]> {
-  const res = await Promise.all(TIMEFRAMES.map((tf) => lightFor(coin, tf)));
-  return res.map((r) => r.s);
+export async function multiTimeframe(coin: string, withFiveMinute = false): Promise<LightSummary[]> {
+  const res = await Promise.all((withFiveMinute ? TIMEFRAMES : BEGINNER_TIMEFRAMES).map((tf) => analyze(coin, tf)));
+  return res.map(summarize);
 }

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import type { Analysis, LightSummary } from "@/lib/analysis";
 import { COINS, getCoin } from "@/lib/symbols";
-import { TF_HORIZON, TF_LABEL, TIMEFRAMES, type Timeframe } from "@/lib/types";
+import { BEGINNER_TIMEFRAMES, TF_HORIZON, TF_LABEL, TIMEFRAMES, type Timeframe } from "@/lib/types";
 import { ago, fmtPct, fmtPrice, signColor } from "./format";
 import { Overview } from "./Overview";
 import { TdTab } from "./TdTab";
@@ -27,6 +27,14 @@ type TabId = (typeof TABS)[number]["id"];
 
 export type Mode = "beginner" | "pro";
 
+/** Props every module tab receives. */
+export interface TabProps {
+  a: Analysis;
+  mtf: LightSummary[] | null;
+  mode: Mode;
+  onTf: (t: Timeframe) => void;
+}
+
 export function CoinView({ coinId, initialTf, initialTab }: { coinId: string; initialTf: Timeframe; initialTab: string }) {
   const coin = getCoin(coinId)!;
   const [tf, setTf] = useState<Timeframe>(initialTf);
@@ -41,10 +49,14 @@ export function CoinView({ coinId, initialTf, initialTab }: { coinId: string; in
     try {
       const m = localStorage.getItem("sl-mode");
       if (m === "pro" || m === "beginner") setMode(m);
+      // a 5-minute link only makes sense in pro mode
+      if (initialTf === "5m") setMode("pro");
     } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const changeMode = (m: Mode) => {
     setMode(m);
+    if (m === "beginner" && tf === "5m") setTf("15m");
     try {
       localStorage.setItem("sl-mode", m);
     } catch {}
@@ -56,7 +68,7 @@ export function CoinView({ coinId, initialTf, initialTab }: { coinId: string; in
       try {
         const [a, m] = await Promise.all([
           fetch(`/api/analysis?coin=${coinId}&tf=${tf}`).then((r) => r.json()),
-          fetch(`/api/mtf?coin=${coinId}`).then((r) => r.json()),
+          fetch(`/api/mtf?coin=${coinId}${mode === "pro" ? "&pro=1" : ""}`).then((r) => r.json()),
         ]);
         if (a.error) throw new Error(a.error);
         setData(a);
@@ -68,7 +80,7 @@ export function CoinView({ coinId, initialTf, initialTab }: { coinId: string; in
         setLoading(false);
       }
     },
-    [coinId, tf],
+    [coinId, tf, mode],
   );
 
   useEffect(() => {
@@ -129,7 +141,7 @@ export function CoinView({ coinId, initialTf, initialTab }: { coinId: string; in
       {/* timeframe */}
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs text-ink-3">看多久的行情：</span>
-        {TIMEFRAMES.map((t) => (
+        {(mode === "pro" ? TIMEFRAMES : BEGINNER_TIMEFRAMES).map((t) => (
           <button key={t} onClick={() => setTf(t)} className="chip" data-active={t === tf} title={TF_HORIZON[t]}>
             {TF_LABEL[t]}
             {mode === "beginner" && <span className="ml-1 hidden text-[11px] opacity-70 md:inline">· {TF_HORIZON[t].replace(/（.*）/, "")}</span>}
@@ -164,12 +176,12 @@ export function CoinView({ coinId, initialTf, initialTab }: { coinId: string; in
       {fresh && (
         <div className={loading ? "opacity-60 transition" : "transition"}>
           {tab === "overview" && <Overview a={data} mtf={mtf} mode={mode} onTf={setTf} onTab={(t) => setTab(t as TabId)} />}
-          {tab === "td" && <TdTab a={data} mtf={mtf} mode={mode} />}
-          {tab === "indicators" && <IndicatorsTab a={data} mode={mode} />}
-          {tab === "levels" && <LevelsTab a={data} mode={mode} />}
-          {tab === "trend" && <TrendTab a={data} mode={mode} />}
-          {tab === "fib" && <FibTab a={data} mode={mode} />}
-          {tab === "chan" && <ChanTab a={data} mode={mode} />}
+          {tab === "td" && <TdTab a={data} mtf={mtf} mode={mode} onTf={setTf} />}
+          {tab === "indicators" && <IndicatorsTab a={data} mtf={mtf} mode={mode} onTf={setTf} />}
+          {tab === "levels" && <LevelsTab a={data} mtf={mtf} mode={mode} onTf={setTf} />}
+          {tab === "trend" && <TrendTab a={data} mtf={mtf} mode={mode} onTf={setTf} />}
+          {tab === "fib" && <FibTab a={data} mtf={mtf} mode={mode} onTf={setTf} />}
+          {tab === "chan" && <ChanTab a={data} mtf={mtf} mode={mode} onTf={setTf} />}
           <p className="mt-4 text-right text-[11px] text-ink-3">
             数据来源 {data.source === "binance" ? "Binance" : "OKX"} 公开行情 · 更新于 {ago(data.updatedAt)} · 每分钟自动刷新
           </p>

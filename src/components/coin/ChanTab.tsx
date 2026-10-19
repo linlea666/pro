@@ -1,12 +1,13 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { Analysis } from "@/lib/analysis";
 import { PriceChart, type MarkerSpec, type Segment } from "../PriceChart";
 import { Term } from "../Term";
 import { fmtPrice } from "./format";
 import { Explainer, Section } from "./shared";
-import type { Mode } from "./CoinView";
+import type { TabProps } from "./CoinView";
+import { MtfStrip } from "./MtfStrip";
+import { Explain } from "../Explain";
 
 const POINT_TEXT: Record<string, string> = {
   "1买": "下跌末端力度衰竭，可能见底（风险最大、位置最低）",
@@ -17,7 +18,7 @@ const POINT_TEXT: Record<string, string> = {
   "3卖": "向下跌破中枢后反弹不回中枢，下跌延续",
 };
 
-export function ChanTab({ a, mode }: { a: Analysis; mode: Mode }) {
+export function ChanTab({ a, mtf, mode, onTf }: TabProps) {
   const ch = a.chan;
   const [showZs, setShowZs] = useState(true);
 
@@ -71,6 +72,7 @@ export function ChanTab({ a, mode }: { a: Analysis; mode: Mode }) {
         </Explainer>
       </div>
       <div className="space-y-4">
+        <MtfStrip kind="chan" mtf={mtf} current={a.tf} onTf={onTf} />
         <Section title="结构概况">
           <p className="text-[13px] leading-relaxed text-ink-2">{ch.explain}</p>
           <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
@@ -94,7 +96,9 @@ export function ChanTab({ a, mode }: { a: Analysis; mode: Mode }) {
                 return (
                   <li key={`${p.t}${p.type}`} className="rounded-lg bg-panel-2 p-2.5">
                     <div className="flex items-center gap-2 text-sm">
-                      <b style={{ color: buy ? "var(--up)" : "var(--down)" }}>{buy ? "↑" : "↓"} {p.type}</b>
+                      <Explain k="三买" variant="plain" now={POINT_TEXT[p.type]}>
+                        <b style={{ color: buy ? "var(--up)" : "var(--down)" }}>{buy ? "↑" : "↓"} {p.type}</b>
+                      </Explain>
                       <span className="num text-xs text-ink-3">{fmtPrice(p.price)}</span>
                       <span className="ml-auto text-[11px] text-ink-3">{new Date(p.t * 1000).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
                     </div>

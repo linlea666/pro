@@ -1,17 +1,18 @@
 "use client";
 
 import { useMemo } from "react";
-import type { Analysis } from "@/lib/analysis";
 import { TF_LABEL } from "@/lib/types";
 import { PriceChart, type OverlayLine, type SubPane } from "../PriceChart";
 import { Term } from "../Term";
 import { biasColor, biasIcon } from "./format";
 import { Explainer, Section } from "./shared";
-import type { Mode } from "./CoinView";
+import type { TabProps } from "./CoinView";
+import { MtfStrip } from "./MtfStrip";
+import { Explain } from "../Explain";
 
 const TREND_IDS = ["ema_cross", "golden_cross", "ma_stack", "price_sma200", "macd", "adx", "psar", "aroon", "ichimoku", "slope"];
 
-export function TrendTab({ a, mode }: { a: Analysis; mode: Mode }) {
+export function TrendTab({ a, mtf, mode, onTf }: TabProps) {
   const t = a.trend;
   const color = t.current >= 15 ? "var(--up)" : t.current <= -15 ? "var(--down)" : "var(--warn)";
 
@@ -57,6 +58,7 @@ export function TrendTab({ a, mode }: { a: Analysis; mode: Mode }) {
         </Explainer>
       </div>
       <div className="space-y-4">
+        <MtfStrip kind="trend" mtf={mtf} current={a.tf} onTf={onTf} />
         <Section title={`当前趋势 · ${TF_LABEL[a.tf]}`}>
           <div className="flex items-baseline gap-3">
             <span className="text-2xl font-semibold" style={{ color }}>
@@ -74,7 +76,10 @@ export function TrendTab({ a, mode }: { a: Analysis; mode: Mode }) {
               <li key={r.id} className="flex gap-2 text-[13px]">
                 <span className="w-4 shrink-0 text-center" style={{ color: biasColor(r.bias) }}>{biasIcon(r.bias)}</span>
                 <div>
-                  <div className="font-medium">{r.name}</div>
+                  <div className="flex items-center gap-1.5 font-medium">
+                    {r.name}
+                    <Explain k={`ind:${r.id}`} variant="icon" now={r.reason} stats={{ ...a.indicatorStats[r.id], horizonText: a.horizonText, scope: `${a.coin} ${TF_LABEL[a.tf]}` }} />
+                  </div>
                   <div className="text-xs text-ink-2">{r.reason}</div>
                 </div>
               </li>

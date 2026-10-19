@@ -8,10 +8,13 @@ export interface Candle {
   v: number;
 }
 
-export type Timeframe = "15m" | "1h" | "4h" | "1d" | "1w";
-export const TIMEFRAMES: Timeframe[] = ["15m", "1h", "4h", "1d", "1w"];
+export type Timeframe = "5m" | "15m" | "1h" | "4h" | "1d" | "1w";
+/** All supported timeframes; 5m is only offered in pro mode. */
+export const TIMEFRAMES: Timeframe[] = ["5m", "15m", "1h", "4h", "1d", "1w"];
+export const BEGINNER_TIMEFRAMES: Timeframe[] = ["15m", "1h", "4h", "1d", "1w"];
 
 export const TF_SECONDS: Record<Timeframe, number> = {
+  "5m": 300,
   "15m": 900,
   "1h": 3600,
   "4h": 14400,
@@ -20,6 +23,7 @@ export const TF_SECONDS: Record<Timeframe, number> = {
 };
 
 export const TF_LABEL: Record<Timeframe, string> = {
+  "5m": "5分钟",
   "15m": "15分钟",
   "1h": "1小时",
   "4h": "4小时",
@@ -29,6 +33,7 @@ export const TF_LABEL: Record<Timeframe, string> = {
 
 /** How beginners should think about each timeframe. */
 export const TF_HORIZON: Record<Timeframe, string> = {
+  "5m": "日内（几十分钟）",
   "15m": "超短线（几小时）",
   "1h": "短线（1–3 天）",
   "4h": "波段（几天到两周）",

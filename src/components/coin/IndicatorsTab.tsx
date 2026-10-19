@@ -1,13 +1,15 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { Analysis } from "@/lib/analysis";
 import { CATEGORY_LABEL, type Category } from "@/lib/types";
 import { PriceChart, type OverlayLine, type SubPane } from "../PriceChart";
 import { Term } from "../Term";
 import { biasColor, biasIcon, biasText } from "./format";
 import { Explainer, Section, StatsTable } from "./shared";
-import type { Mode } from "./CoinView";
+import type { TabProps } from "./CoinView";
+import { MtfStrip } from "./MtfStrip";
+import { Explain } from "../Explain";
+import { TF_LABEL } from "@/lib/types";
 
 const CATS: Category[] = ["trend", "momentum", "volatility", "volume", "pattern"];
 const CAT_HINT: Record<Category, string> = {
@@ -18,7 +20,7 @@ const CAT_HINT: Record<Category, string> = {
   pattern: "K 线组合形态",
 };
 
-export function IndicatorsTab({ a, mode }: { a: Analysis; mode: Mode }) {
+export function IndicatorsTab({ a, mtf, mode, onTf }: TabProps) {
   const [cat, setCat] = useState<Category | "all">("all");
   const [pane, setPane] = useState<"resonance" | "rsi" | "macd">("resonance");
   const s = a.indicators.summary;
@@ -120,6 +122,7 @@ export function IndicatorsTab({ a, mode }: { a: Analysis; mode: Mode }) {
       </div>
 
       <div className="space-y-4">
+        <MtfStrip kind="indicators" mtf={mtf} current={a.tf} onTf={onTf} />
         <Section title="分类看">
           <div className="mb-3 flex flex-wrap gap-1.5">
             <button className="chip !text-xs" data-active={cat === "all"} onClick={() => setCat("all")}>
@@ -137,6 +140,12 @@ export function IndicatorsTab({ a, mode }: { a: Analysis; mode: Mode }) {
               <li key={r.id} className="rounded-lg border border-line p-2.5">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium">{r.name}</span>
+                  <Explain
+                    k={`ind:${r.id}`}
+                    variant="icon"
+                    now={r.reason}
+                    stats={{ ...a.indicatorStats[r.id], horizonText: a.horizonText, scope: `${a.coin} ${TF_LABEL[a.tf]}` }}
+                  />
                   {mode === "pro" && r.value != null && <span className="num text-[11px] text-ink-3">{Math.abs(r.value) > 1e6 ? r.value.toExponential(2) : r.value.toFixed(2)}</span>}
                   <span className="ml-auto inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium" style={{ color: biasColor(r.bias), border: `1px solid ${biasColor(r.bias)}` }}>
                     {biasIcon(r.bias)} {biasText(r.bias)}

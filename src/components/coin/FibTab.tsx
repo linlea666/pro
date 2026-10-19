@@ -1,18 +1,18 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { Analysis } from "@/lib/analysis";
 import { fibFromSwing, type FibResult } from "@/lib/ta/fib";
 import type { Pivot } from "@/lib/ta/zigzag";
 import { PriceChart, type PriceLineSpec, type Segment } from "../PriceChart";
 import { Term } from "../Term";
 import { fmtPrice } from "./format";
 import { Explainer, Section } from "./shared";
-import type { Mode } from "./CoinView";
+import type { TabProps } from "./CoinView";
+import { MtfStrip } from "./MtfStrip";
 
 const KEY_RATIOS = new Set([0.382, 0.5, 0.618]);
 
-export function FibTab({ a, mode }: { a: Analysis; mode: Mode }) {
+export function FibTab({ a, mtf, mode, onTf }: TabProps) {
   const [manual, setManual] = useState<{ a?: Pivot; b?: Pivot } | null>(null);
   useEffect(() => setManual(null), [a.coin, a.tf]);
 
@@ -83,6 +83,7 @@ export function FibTab({ a, mode }: { a: Analysis; mode: Mode }) {
         </Explainer>
       </div>
       <div className="space-y-4">
+        <MtfStrip kind="fib" mtf={mtf} current={a.tf} onTf={onTf} />
         <Section title="当前回调程度">
           {fib ? (
             <>
