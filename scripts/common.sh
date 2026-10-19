@@ -90,7 +90,7 @@ service_restart() {
   if [ "$SL_NO_SYSTEMD" = "1" ]; then
     pkill -u "$SL_USER" -f "server.mjs" 2>/dev/null || true
     sleep 1
-    as_user bash -c "set -a; . '$SL_ENV'; set +a; cd '$SL_HOME/current' && nohup ./scripts/start.sh >>'$SL_DATA/stdout.log' 2>&1 &"
+    as_user bash -c "set -a; . '$SL_ENV'; set +a; (cd '$SL_HOME/current' && exec setsid nohup ./scripts/start.sh) >>'$SL_DATA/stdout.log' 2>&1 </dev/null &"
   else
     systemctl restart "$SL_SERVICE"
   fi
