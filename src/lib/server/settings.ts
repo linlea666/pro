@@ -5,6 +5,7 @@ export const SETTING_DEFAULTS = {
   "log.retentionDays": 90,
   "log.maxDbMB": 2048,
   "log.weeklyArchive": false,
+  "log.archiveKeepWeeks": 52,
   "backup.keepDaily": 7,
 } as const;
 

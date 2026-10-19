@@ -21,7 +21,9 @@ export function withRoute<R extends Request, C>(name: string, handler: (req: R, 
         res = NextResponse.json({ error: "服务器内部错误", trace }, { status: 500 });
       }
       const ms = Date.now() - start;
-      const level = res.status >= 500 ? "error" : res.status >= 400 ? "warn" : "info";
+      // the admin UI polls its own read endpoints; keep those out of the stored log unless they fail
+      const quiet = req.method === "GET" && url.pathname.startsWith("/api/admin/");
+      const level = res.status >= 500 ? "error" : res.status >= 400 ? "warn" : quiet ? "debug" : "info";
       logger[level]("http", `${req.method} ${url.pathname} ${res.status}`, { durationMs: ms, query: url.search || undefined });
       res.headers.set("x-trace-id", trace);
       return res;

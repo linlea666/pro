@@ -8,6 +8,7 @@ type Settings = Record<string, { value: number | boolean; default: number | bool
 const FIELDS: { key: string; label: string; hint: string; unit?: string; kind: "number" | "bool" }[] = [
   { key: "log.retentionDays", label: "日志保留天数", hint: "超过这个天数的日志每天凌晨自动删除（7–365）", unit: "天", kind: "number" },
   { key: "log.maxDbMB", label: "数据库大小上限", hint: "超过上限时优先删除最旧的“信息 / 调试”级日志，错误日志会保留", unit: "MB", kind: "number" },
+  { key: "log.archiveKeepWeeks", label: "日志归档保留周数", hint: "在“日志中心”开启周归档后，超出周数的最旧归档文件会被删除", unit: "周", kind: "number" },
   { key: "backup.keepDaily", label: "自动备份保留份数", hint: "每天自动备份一次数据库，超出份数的最旧备份会被删除", unit: "份", kind: "number" },
 ];
 

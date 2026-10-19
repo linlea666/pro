@@ -16,7 +16,7 @@ case "$cmd" in
     curl -fsS --max-time 5 "http://127.0.0.1:$(port)/api/health" && echo || echo "  ${c_red}无响应${c_off}"
     echo "${c_bold}数据源连通性：${c_off}"
     check_sources
-    echo "${c_bold}磁盘：${c_off}数据目录 $(du -sh "$SL_DATA" 2>/dev/null | cut -f1)，剩余 $(df -h / | awk 'NR==2 {print $4}')"
+    echo "${c_bold}磁盘：${c_off}数据库与备份 $(du -sh --exclude=.home "$SL_DATA" 2>/dev/null | cut -f1)，剩余 $(df -h / | awk 'NR==2 {print $4}')"
     if [ "$SL_NO_SYSTEMD" != "1" ]; then
       echo "${c_bold}最近的错误：${c_off}"
       journalctl -u "$SL_SERVICE" --since "-24h" --no-pager -p warning -n 10 2>/dev/null || true

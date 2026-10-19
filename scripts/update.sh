@@ -50,6 +50,7 @@ if wait_healthy "$NEW_VER" 90; then
 fi
 
 warn "新版本健康检查失败，开始自动回滚"
+touch "$REL/.failed"
 [ "$SL_NO_SYSTEMD" = "1" ] || journalctl -u "$SL_SERVICE" -n 40 --no-pager >&2 || true
 service_stop
 switch_to "$PREV"

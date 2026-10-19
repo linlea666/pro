@@ -13,7 +13,8 @@ mapfile -t RELEASES < <(ls -1dt "$SL_HOME"/releases/*/ 2>/dev/null | sed 's#/$##
 if [ "${1:-}" = "--list" ]; then
   for r in "${RELEASES[@]}"; do
     mark=" "; [ "$r" = "$CUR" ] && mark="*"
-    echo " $mark $(basename "$r")"
+    note=""; [ -f "$r/.failed" ] && note="  （更新失败的版本）"
+    echo " $mark $(basename "$r")$note"
   done
   echo "（* 为当前版本）"
   exit 0
@@ -28,8 +29,9 @@ for a in "$@"; do
   esac
 done
 if [ -z "$TARGET" ]; then
+  # newest release that isn't current and didn't fail its own deployment
   for r in "${RELEASES[@]}"; do
-    if [ "$r" != "$CUR" ]; then TARGET="$r"; break; fi
+    if [ "$r" != "$CUR" ] && [ ! -f "$r/.failed" ]; then TARGET="$r"; break; fi
   done
 fi
 [ -n "$TARGET" ] && [ -d "$TARGET" ] || die "没有可回滚的版本（sudo signallight rollback --list 查看）"
@@ -44,6 +46,7 @@ if [ "$RESTORE_DB" = "1" ]; then
   LAST=$(ls -1t "$SL_DATA"/backups/pre-update-*.db 2>/dev/null | head -1 || true)
   [ -n "$LAST" ] && cli "$TARGET" restore "$LAST" >/dev/null && info "已恢复数据库备份 $(basename "$LAST")"
 fi
+rm -f "$TARGET/.failed"
 service_restart
 wait_healthy "$VER" 90 || die "回滚后服务未就绪，请执行 sudo signallight status"
 info "回滚完成，当前版本 $VER"

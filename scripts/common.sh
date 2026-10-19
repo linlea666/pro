@@ -90,7 +90,7 @@ service_restart() {
   if [ "$SL_NO_SYSTEMD" = "1" ]; then
     pkill -u "$SL_USER" -f "server.mjs" 2>/dev/null || true
     sleep 1
-    as_user bash -c "set -a; . '$SL_ENV'; set +a; (cd '$SL_HOME/current' && exec setsid nohup ./scripts/start.sh) >>'$SL_DATA/stdout.log' 2>&1 </dev/null &"
+    as_user bash -c "set -a; . '$SL_ENV'; set +a; (cd '$SL_HOME/current' && exec setsid nohup ./scripts/start.sh) >>'$SL_DATA/stdout.log' 2>&1 </dev/null 9>&- &"
   else
     systemctl restart "$SL_SERVICE"
   fi
@@ -118,8 +118,13 @@ wait_healthy() {
 }
 
 prune_releases() {
-  local cur keep="$SL_KEEP_RELEASES"
+  local cur keep="$SL_KEEP_RELEASES" d
   cur=$(current_release)
+  # failed deployments go first, then anything beyond the newest $keep good ones
+  for d in "$SL_HOME"/releases/*/; do
+    d=${d%/}
+    [ -f "$d/.failed" ] && [ "$d" != "$cur" ] && rm -rf "$d"
+  done
   ls -1dt "$SL_HOME"/releases/*/ 2>/dev/null | sed 's#/$##' | tail -n +"$((keep + 1))" | while read -r d; do
     [ "$d" = "$cur" ] || rm -rf "$d"
   done

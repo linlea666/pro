@@ -5,6 +5,7 @@ import { env } from "./env.ts";
 import { logger } from "./log.ts";
 import { getSetting, getState, setState } from "./settings.ts";
 import { sourceSummary } from "./health.ts";
+import { archiveWeek, weekLabel, weekStart } from "./archive.ts";
 
 /**
  * In-process scheduler. Runs a tick every 10 minutes; each job records when it
@@ -79,6 +80,16 @@ async function tick() {
       const r = cleanupLogs();
       logger.info("system", "日志清理完成", { ...r, retentionDays: getSetting("log.retentionDays"), durationMs: Date.now() - t });
       done("cleanup");
+    }
+    if (getSetting("log.weeklyArchive")) {
+      // archive the last completed week once
+      const lastWeek = weekStart(weekStart(Date.now()) - 1);
+      const label = weekLabel(lastWeek);
+      if (getState("job.archivedWeek") !== label) {
+        const r = await archiveWeek(lastWeek);
+        logger.info("system", `日志周归档完成 ${label}`, { rows: r.rows, file: path.basename(r.file) });
+        setState("job.archivedWeek", label);
+      }
     }
     if (due("backup", DAY)) {
       const file = await backupNow("auto");
