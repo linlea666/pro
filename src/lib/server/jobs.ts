@@ -71,6 +71,9 @@ async function tick() {
     if (due("hourlySummary", HOUR)) {
       const s = sourceSummary(1);
       if (Object.keys(s).length) logger.info("system", "数据源小时汇总", { sources: s });
+      const { precomputeStats } = await import("./precompute.ts");
+      const pre = precomputeStats();
+      if (pre.runs) logger.info("engine", "预计算状态", { ...pre });
       const mem = process.memoryUsage();
       logger.info("system", "进程状态", { rssMB: Math.round(mem.rss / 1048576), heapMB: Math.round(mem.heapUsed / 1048576), uptimeMin: Math.round(process.uptime() / 60), dbMB: dbSizeMB() });
       done("hourlySummary");
@@ -78,7 +81,9 @@ async function tick() {
     if (due("cleanup", DAY)) {
       const t = Date.now();
       const r = cleanupLogs();
-      logger.info("system", "日志清理完成", { ...r, retentionDays: getSetting("log.retentionDays"), durationMs: Date.now() - t });
+      const { pruneStoredKlines } = await import("../data/klines.ts");
+      const klines = pruneStoredKlines();
+      logger.info("system", "日志清理完成", { ...r, prunedKlines: klines, retentionDays: getSetting("log.retentionDays"), durationMs: Date.now() - t });
       done("cleanup");
     }
     if (getSetting("log.weeklyArchive")) {
@@ -110,6 +115,7 @@ export function startJobs() {
   process.on("unhandledRejection", (r) => logger.error("system", "未处理的 Promise 拒绝", { error: r }));
   process.on("uncaughtException", (e) => logger.error("system", "未捕获的异常", { error: e }));
   setTimeout(tick, 15_000);
+  import("./precompute.ts").then((m) => m.startPrecompute()).catch((e) => logger.error("system", "预计算启动失败", { error: e }));
   g.__slJobs = setInterval(tick, 10 * 60 * 1000);
   g.__slJobs.unref?.();
 }

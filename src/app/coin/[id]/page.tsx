@@ -3,13 +3,14 @@ import { CoinView } from "@/components/coin/CoinView";
 import { getCoin } from "@/lib/symbols";
 import { TIMEFRAMES, type Timeframe } from "@/lib/types";
 
-export default async function CoinPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ tf?: string; tab?: string }> }) {
+export default async function CoinPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ tf?: string; tab?: string; asOf?: string }> }) {
   const { id } = await params;
   const sp = await searchParams;
   const coin = getCoin(id);
   if (!coin) notFound();
   const tf = TIMEFRAMES.includes(sp.tf as Timeframe) ? (sp.tf as Timeframe) : "4h";
-  return <CoinView coinId={coin.id} initialTf={tf} initialTab={sp.tab ?? "overview"} />;
+  const asOf = Number(sp.asOf) > 0 ? Number(sp.asOf) : null;
+  return <CoinView coinId={coin.id} initialTf={tf} initialTab={sp.tab ?? "overview"} initialAsOf={asOf} />;
 }
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {

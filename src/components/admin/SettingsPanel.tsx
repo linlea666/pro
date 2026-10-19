@@ -75,6 +75,13 @@ export function SettingsPanel() {
                 </div>
               </div>
             ))}
+            <label className="flex cursor-pointer items-start gap-2 text-sm">
+              <input type="checkbox" className="mt-1" checked={Boolean(draft["precompute.enabled"])} onChange={(e) => setDraft({ ...draft, "precompute.enabled": e.target.checked })} />
+              <span>
+                后台预计算
+                <span className="block text-xs text-ink-3">每分钟提前算好所有币种和周期的分析，访问时直接读取结果。服务器配置很低（单核）时可以关闭。</span>
+              </span>
+            </label>
             <div className="flex flex-wrap gap-2 border-t border-line pt-4">
               <button className={btnCls} disabled={busy} onClick={save}>保存设置</button>
               <button className={btnGhost} disabled={busy} onClick={() => maintenance("backup")}>立即备份数据库</button>

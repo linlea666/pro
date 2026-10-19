@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Analysis, LightSummary } from "@/lib/analysis";
 import { COINS, getCoin } from "@/lib/symbols";
 import { BEGINNER_TIMEFRAMES, TF_HORIZON, TF_LABEL, TIMEFRAMES, type Timeframe } from "@/lib/types";
@@ -13,6 +13,8 @@ import { LevelsTab } from "./LevelsTab";
 import { TrendTab } from "./TrendTab";
 import { FibTab } from "./FibTab";
 import { ChanTab } from "./ChanTab";
+import { ReplayContext, type ReplayState } from "./replay";
+import { ReplayBar } from "./ReplayBar";
 
 const TABS = [
   { id: "overview", label: "总览", hint: "一句话结论" },
@@ -35,7 +37,7 @@ export interface TabProps {
   onTf: (t: Timeframe) => void;
 }
 
-export function CoinView({ coinId, initialTf, initialTab }: { coinId: string; initialTf: Timeframe; initialTab: string }) {
+export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: { coinId: string; initialTf: Timeframe; initialTab: string; initialAsOf?: number | null }) {
   const coin = getCoin(coinId)!;
   const [tf, setTf] = useState<Timeframe>(initialTf);
   const [tab, setTab] = useState<TabId>(TABS.some((t) => t.id === initialTab) ? (initialTab as TabId) : "overview");
@@ -44,6 +46,10 @@ export function CoinView({ coinId, initialTf, initialTab }: { coinId: string; in
   const [mtf, setMtf] = useState<LightSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // time machine: the bar the page is rewound to (null = live)
+  const [asOf, setAsOf] = useState<number | null>(initialAsOf);
+  const [picking, setPicking] = useState(false);
+  const live = useRef<Analysis | null>(null);
 
   useEffect(() => {
     try {
@@ -54,24 +60,17 @@ export function CoinView({ coinId, initialTf, initialTab }: { coinId: string; in
     } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const changeMode = (m: Mode) => {
-    setMode(m);
-    if (m === "beginner" && tf === "5m") setTf("15m");
-    try {
-      localStorage.setItem("sl-mode", m);
-    } catch {}
-  };
-
   const load = useCallback(
     async (quiet = false) => {
       if (!quiet) setLoading(true);
       try {
         const [a, m] = await Promise.all([
-          fetch(`/api/analysis?coin=${coinId}&tf=${tf}`).then((r) => r.json()),
-          fetch(`/api/mtf?coin=${coinId}${mode === "pro" ? "&pro=1" : ""}`).then((r) => r.json()),
+          fetch(`/api/analysis?coin=${coinId}&tf=${tf}${asOf ? `&asOf=${asOf}` : ""}`).then((r) => r.json()),
+          asOf ? Promise.resolve(null) : fetch(`/api/mtf?coin=${coinId}${mode === "pro" ? "&pro=1" : ""}`).then((r) => r.json()),
         ]);
         if (a.error) throw new Error(a.error);
         setData(a);
+        if (!asOf) live.current = a;
         if (Array.isArray(m)) setMtf(m);
         setError(null);
       } catch (e) {
@@ -80,23 +79,54 @@ export function CoinView({ coinId, initialTf, initialTab }: { coinId: string; in
         setLoading(false);
       }
     },
-    [coinId, tf, mode],
+    [coinId, tf, mode, asOf],
   );
 
   useEffect(() => {
     load();
+    if (asOf) return; // a replay never changes; no need to poll
     const id = setInterval(() => load(true), 60_000);
     return () => clearInterval(id);
-  }, [load]);
+  }, [load, asOf]);
+
+  // replay points belong to one timeframe's bars
+  const changeTf = useCallback((t: Timeframe) => {
+    setAsOf(null);
+    setPicking(false);
+    setTf(t);
+  }, []);
+
+  const changeMode = (m: Mode) => {
+    setMode(m);
+    if (m === "beginner" && tf === "5m") changeTf("15m");
+    try {
+      localStorage.setItem("sl-mode", m);
+    } catch {}
+  };
 
   useEffect(() => {
     const url = new URL(window.location.href);
     url.searchParams.set("tf", tf);
     url.searchParams.set("tab", tab);
+    if (asOf) url.searchParams.set("asOf", String(asOf));
+    else url.searchParams.delete("asOf");
     window.history.replaceState(null, "", url);
-  }, [tf, tab]);
+  }, [tf, tab, asOf]);
 
-  const fresh = data && data.coin === coinId && data.tf === tf;
+  const fresh = data && data.coin === coinId && data.tf === tf && (asOf ? data.replay?.asOf === asOf : !data.replay);
+
+  const replay = useMemo<ReplayState>(
+    () => ({
+      picking,
+      pick: (t: number) => {
+        setPicking(false);
+        setAsOf(t);
+      },
+      asOf: fresh ? (data?.replay?.asOf ?? null) : null,
+      future: fresh ? (data?.replay?.future ?? null) : null,
+    }),
+    [picking, fresh, data],
+  );
 
   return (
     <div className="space-y-4">
@@ -142,12 +172,26 @@ export function CoinView({ coinId, initialTf, initialTab }: { coinId: string; in
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs text-ink-3">看多久的行情：</span>
         {(mode === "pro" ? TIMEFRAMES : BEGINNER_TIMEFRAMES).map((t) => (
-          <button key={t} onClick={() => setTf(t)} className="chip" data-active={t === tf} title={TF_HORIZON[t]}>
+          <button key={t} onClick={() => changeTf(t)} className="chip" data-active={t === tf} title={TF_HORIZON[t]}>
             {TF_LABEL[t]}
             {mode === "beginner" && <span className="ml-1 hidden text-[11px] opacity-70 md:inline">· {TF_HORIZON[t].replace(/（.*）/, "")}</span>}
           </button>
         ))}
       </div>
+
+      <ReplayBar
+        tf={tf}
+        asOf={asOf}
+        picking={picking}
+        data={fresh ? data : null}
+        live={live.current}
+        error={asOf ? error : null}
+        onPicking={setPicking}
+        onAsOf={(t) => {
+          setPicking(false);
+          setAsOf(t);
+        }}
+      />
 
       {/* tabs */}
       <div className="-mx-4 overflow-x-auto border-b border-line px-4">
@@ -174,18 +218,21 @@ export function CoinView({ coinId, initialTf, initialTab }: { coinId: string; in
       )}
       {!fresh && !error && <Skeleton />}
       {fresh && (
+        <ReplayContext.Provider value={replay}>
         <div className={loading ? "opacity-60 transition" : "transition"}>
-          {tab === "overview" && <Overview a={data} mtf={mtf} mode={mode} onTf={setTf} onTab={(t) => setTab(t as TabId)} />}
-          {tab === "td" && <TdTab a={data} mtf={mtf} mode={mode} onTf={setTf} />}
-          {tab === "indicators" && <IndicatorsTab a={data} mtf={mtf} mode={mode} onTf={setTf} />}
-          {tab === "levels" && <LevelsTab a={data} mtf={mtf} mode={mode} onTf={setTf} />}
-          {tab === "trend" && <TrendTab a={data} mtf={mtf} mode={mode} onTf={setTf} />}
-          {tab === "fib" && <FibTab a={data} mtf={mtf} mode={mode} onTf={setTf} />}
-          {tab === "chan" && <ChanTab a={data} mtf={mtf} mode={mode} onTf={setTf} />}
+          {tab === "overview" && <Overview a={data} mtf={mtf} mode={mode} onTf={changeTf} onTab={(t) => setTab(t as TabId)} />}
+          {tab === "td" && <TdTab a={data} mtf={mtf} mode={mode} onTf={changeTf} />}
+          {tab === "indicators" && <IndicatorsTab a={data} mtf={mtf} mode={mode} onTf={changeTf} />}
+          {tab === "levels" && <LevelsTab a={data} mtf={mtf} mode={mode} onTf={changeTf} />}
+          {tab === "trend" && <TrendTab a={data} mtf={mtf} mode={mode} onTf={changeTf} />}
+          {tab === "fib" && <FibTab a={data} mtf={mtf} mode={mode} onTf={changeTf} />}
+          {tab === "chan" && <ChanTab a={data} mtf={mtf} mode={mode} onTf={changeTf} />}
           <p className="mt-4 text-right text-[11px] text-ink-3">
-            数据来源 {data.source === "binance" ? "Binance" : "OKX"} 公开行情 · 更新于 {ago(data.updatedAt)} · 每分钟自动刷新
+            数据来源 {data.source === "binance" ? "Binance" : data.source === "okx" ? "OKX" : "本地存储（交易所暂时无法访问）"} 公开行情 · 更新于 {ago(data.updatedAt)}
+            {!asOf && " · 每分钟自动刷新"}
           </p>
         </div>
+        </ReplayContext.Provider>
       )}
     </div>
   );

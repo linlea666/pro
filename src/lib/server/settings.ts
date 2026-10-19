@@ -7,6 +7,7 @@ export const SETTING_DEFAULTS = {
   "log.weeklyArchive": false,
   "log.archiveKeepWeeks": 52,
   "backup.keepDaily": 7,
+  "precompute.enabled": true,
 } as const;
 
 export type SettingKey = keyof typeof SETTING_DEFAULTS;

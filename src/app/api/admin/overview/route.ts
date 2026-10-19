@@ -4,6 +4,7 @@ import { env } from "@/lib/server/env";
 import { requireAdmin } from "@/lib/server/guard";
 import { sourceSummary, startedAt } from "@/lib/server/health";
 import { dbSizeMB } from "@/lib/server/jobs";
+import { precomputeStats } from "@/lib/server/precompute";
 import { withRoute } from "@/lib/server/route";
 
 export const dynamic = "force-dynamic";
@@ -30,6 +31,8 @@ export const GET = withRoute("admin.overview", async () => {
     allowlist: env.adminAllowlist.length > 0,
     secureCookies: env.secureCookies,
     sources: sourceSummary(24),
+    precompute: precomputeStats(),
+    storedKlines: (d.prepare("SELECT COUNT(*) n FROM klines").get() as { n: number }).n,
     logs: { byLevel, byCategory, recentErrors, hourly },
     requests: { count: requests.n, avgMs: requests.avg == null ? null : Math.round(requests.avg) },
   });

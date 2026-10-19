@@ -85,7 +85,7 @@ export function Overview({ a, mtf, mode, onTf, onTab }: { a: Analysis; mtf: Ligh
           </div>
         </section>
 
-        <AiCard coin={a.coin} tf={a.tf} />
+        {!a.replay && <AiCard coin={a.coin} tf={a.tf} />}
 
         <section className="card p-3">
           <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-xs text-ink-3">

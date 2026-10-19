@@ -33,10 +33,23 @@ const LEVEL_TFS: Record<Timeframe, Timeframe[]> = {
   "1w": ["1d", "1w"],
 };
 
-async function keyLevels(coin: string, tf: Timeframe, price: number, atr: number, lp: EngineParams["levels"]) {
+/**
+ * Replay cut-off. Candles of the analysed timeframe up to and including the
+ * chosen bar; other timeframes only bars that had fully closed by the end of
+ * that bar, so a replay never sees data from its future.
+ */
+function cutoff(c: Candle[], tf: Timeframe, endSec: number | null): Candle[] {
+  if (endSec == null) return c;
+  const sec = TF_SECONDS[tf];
+  return c.filter((x) => x.t + sec <= endSec);
+}
+
+async function keyLevels(coin: string, tf: Timeframe, price: number, atr: number, lp: EngineParams["levels"], endSec: number | null = null) {
   const tfs = LEVEL_TFS[tf];
   const [series, daily] = await Promise.all([Promise.all(tfs.map((x) => getKlines(coin, x))), getKlines(coin, "1d")]);
-  const cands = [...series.flatMap((s, k) => levelCandidates(s.candles, tfs[k], lp)), ...periodCandidates(daily.candles, price, lp)];
+  // calendar levels use the previous day/week/month; the day in progress at the cut-off is kept only as "today"
+  const days = endSec == null ? daily.candles : daily.candles.filter((x) => x.t < endSec);
+  const cands = [...series.flatMap((s, k) => levelCandidates(cutoff(s.candles, tfs[k], endSec), tfs[k], lp)), ...periodCandidates(days, price, lp)];
   return clusterLevels(cands, price, Math.max(atr * lp.bandAtr, (price * lp.bandMinPct) / 100), 5, lp);
 }
 
@@ -101,6 +114,25 @@ export interface Analysis {
   indicatorStats: Record<string, { bull: IndicatorStat; bear: IndicatorStat }>;
   active: ActiveSignal[];
   horizonText: string;
+  /** present when this is a time-machine replay */
+  replay?: Replay;
+}
+
+export interface Replay {
+  /** open time of the bar the analysis was rewound to */
+  asOf: number;
+  /** what actually happened next (up to 200 bars) */
+  future: Candle[];
+  outcome: {
+    bars: number;
+    horizonText: string;
+    closePct: number;
+    maxPct: number;
+    minPct: number;
+    /** was the traffic light right over the stats horizon? null while not enough bars have passed */
+    correct: boolean | null;
+    stopHit: boolean | null;
+  } | null;
 }
 
 export type IndicatorStat = Pick<SignalStats, "samples" | "winRate" | "avgReturn" | "baseWinRate" | "reliability">;
@@ -118,6 +150,14 @@ function change24h(c: Candle[]): number {
     }
   }
   return ((last.c - ref.c) / ref.c) * 100;
+}
+
+/** 24h change from the analysed timeframe itself (daily and weekly bars: versus the previous bar). */
+function changeOverDay(c: Candle[], tf: Timeframe): number {
+  const L = c.length - 1;
+  const back = Math.max(1, Math.round(86400 / TF_SECONDS[tf]));
+  const ref = c[Math.max(0, L - back)];
+  return ((c[L].c - ref.c) / ref.c) * 100;
 }
 
 function tdMarkers(td: TdState, c: Candle[], from: number): TdMarker[] {
@@ -169,6 +209,25 @@ export async function analyzeWith(coin: string, tf: Timeframe, ep: EngineParams)
   return analyzeInner(coin, tf, ep);
 }
 
+const replayCache = new Map<string, Promise<Analysis>>();
+
+/** Time machine: the analysis exactly as it would have looked at the close of bar `asOf`. */
+export async function analyzeAt(coin: string, tf: Timeframe, asOf: number): Promise<Analysis> {
+  const params = currentParams();
+  const key = `${coin}:${tf}:${asOf}:${params.version}`;
+  const hit = replayCache.get(key);
+  if (hit) return hit;
+  const p = analyzeInner(coin, tf, params.engine, asOf).catch((e) => {
+    replayCache.delete(key);
+    throw e;
+  });
+  replayCache.set(key, p);
+  if (replayCache.size > 300) replayCache.delete(replayCache.keys().next().value!);
+  return p;
+}
+
+export class ReplayError extends Error {}
+
 async function analyzeLogged(coin: string, tf: Timeframe, ep: EngineParams): Promise<Analysis> {
   const t0 = Date.now();
   try {
@@ -182,9 +241,17 @@ async function analyzeLogged(coin: string, tf: Timeframe, ep: EngineParams): Pro
   }
 }
 
-async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFAULT_ENGINE_PARAMS): Promise<Analysis> {
-  const [main, hourly] = await Promise.all([getKlines(coin, tf), getKlines(coin, "1h")]);
-  const c = main.candles;
+async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFAULT_ENGINE_PARAMS, asOf: number | null = null): Promise<Analysis> {
+  const [main, hourlyRaw] = await Promise.all([getKlines(coin, tf), getKlines(coin, "1h")]);
+  const endSec = asOf == null ? null : asOf + TF_SECONDS[tf];
+  const allCandles = main.candles;
+  const c = cutoff(allCandles, tf, endSec);
+  if (asOf != null) {
+    if (!allCandles.some((x) => x.t === asOf)) throw new ReplayError("找不到这根 K 线，请在图上重新选择");
+    if (c.length < 300) throw new ReplayError("这根 K 线太早了，之前的数据不足以计算指标，请选择更近的时间");
+    if (c.length === allCandles.length) throw new ReplayError("这是最新的 K 线，不需要回放");
+  }
+  const hourly = { candles: cutoff(hourlyRaw.candles, "1h", endSec) };
   const L = c.length - 1;
   const price = c[L].c;
   const close = ta.closes(c);
@@ -194,7 +261,7 @@ async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFA
   const td = computeTd(c, ep.td);
   const trend = computeTrend(c, panel, ep.trend);
 
-  const { supports, resistances } = await keyLevels(coin, tf, price, atr[L], ep.levels);
+  const { supports, resistances } = await keyLevels(coin, tf, price, atr[L], ep.levels, endSec);
 
   // major swings only, so the retracement describes a move a beginner would notice
   const fib = autoFib(c, zigzag(c, atr, 5));
@@ -268,7 +335,8 @@ async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFA
     source: main.source,
     updatedAt: main.fetchedAt,
     price,
-    change24h: change24h(hourly.candles),
+    // hourly history may not reach back to an old replay point; use this timeframe's own bars then
+    change24h: hourly.candles.length > 25 ? change24h(hourly.candles) : changeOverDay(c, tf),
     candles: slice(c),
     verdict,
     indicators: {
@@ -295,7 +363,24 @@ async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFA
     indicatorStats,
     active,
     horizonText: horizonText(tf, H),
+    replay: asOf == null ? undefined : replayOutcome(asOf, allCandles.slice(c.length, c.length + 200), price, H, tf, verdict),
   };
+}
+
+function replayOutcome(asOf: number, future: Candle[], price: number, H: number, tf: Timeframe, v: Verdict): Replay {
+  if (future.length === 0) return { asOf, future, outcome: null };
+  const win = future.slice(0, H);
+  const pct = (x: number) => Math.round(((x - price) / price) * 10000) / 100;
+  const closePct = pct(win[win.length - 1].c);
+  const maxPct = pct(Math.max(...win.map((x) => x.h)));
+  const minPct = pct(Math.min(...win.map((x) => x.l)));
+  const complete = win.length >= H;
+  // a "wait" light counts as right when nothing big happened (move under 2 average bars)
+  const quiet = Math.abs(closePct) < 2 * v.atrPct;
+  const correct = !complete ? null : v.light === "green" ? closePct > 0 : v.light === "red" ? closePct < 0 : quiet;
+  let stopHit: boolean | null = null;
+  if (v.stopRef != null) stopHit = v.stopRef < price ? win.some((x) => x.l <= v.stopRef!) : win.some((x) => x.h >= v.stopRef!);
+  return { asOf, future, outcome: { bars: win.length, horizonText: horizonText(tf, win.length), closePct, maxPct, minPct, correct, stopHit } };
 }
 
 // ------------------------------------------------------------------ per-timeframe summaries

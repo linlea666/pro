@@ -200,6 +200,8 @@ curl -fsSL https://raw.githubusercontent.com/linlea666/pro/main/scripts/install.
 
 ## 7. 里程碑
 
+> 状态（2026-10-19）：M1–M6 已全部完成并推送到仓库。
+
 | 阶段 | 内容 | 验收标准 |
 |---|---|---|
 | **M1 基础设施** | SQLite 与迁移、统一日志、追踪 ID、健康检查接口、管理员登录、后台框架、install / update 脚本 | 在全新 Ubuntu 24 上一条命令装好；改代码后执行 update 可以升级，失败能自动回滚 |

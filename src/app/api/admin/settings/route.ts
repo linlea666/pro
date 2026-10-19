@@ -12,6 +12,7 @@ const RULES: Record<SettingKey, (v: unknown) => string | null> = {
   "log.maxDbMB": (v) => (Number.isInteger(v) && (v as number) >= 100 && (v as number) <= 51200 ? null : "数据库上限需在 100–51200 MB 之间"),
   "log.weeklyArchive": (v) => (typeof v === "boolean" ? null : "取值必须是开或关"),
   "log.archiveKeepWeeks": (v) => (Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 520 ? null : "归档保留周数需在 1–520 之间"),
+  "precompute.enabled": (v) => (typeof v === "boolean" ? null : "取值必须是开或关"),
   "backup.keepDaily": (v) => (Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 60 ? null : "备份保留份数需在 1–60 之间"),
 };
 

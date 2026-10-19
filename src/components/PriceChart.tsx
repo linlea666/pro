@@ -16,6 +16,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import type { Candle } from "@/lib/types";
+import { useReplay } from "./coin/replay";
 
 export interface OverlayLine {
   data: (number | null)[];
@@ -93,8 +94,12 @@ export function PriceChart({ candles, height = 440, lines = [], priceLines = [],
   const chartRef = useRef<IChartApi | null>(null);
   const [hover, setHover] = useState<{ c: Candle; extras: { title: string; color: string; v: number | null }[] } | null>(null);
   const [themeTick, setThemeTick] = useState(0);
+  const replay = useReplay();
+  // charts without their own click handler pick the time-machine bar while picking
   const pickRef = useRef(onPick);
-  pickRef.current = onPick;
+  pickRef.current = onPick ?? (replay?.picking ? (p: { t: number }) => replay.pick(p.t) : undefined);
+  // only the chart that ends exactly at the replay point shows "what happened next"
+  const future = replay?.asOf != null && candles.length && candles[candles.length - 1].t === replay.asOf ? replay.future : null;
 
   useEffect(() => {
     const f = () => setThemeTick((x) => x + 1);
@@ -146,6 +151,21 @@ export function PriceChart({ candles, height = 440, lines = [], priceLines = [],
     });
     main.setData(candles.map((c) => ({ time: T(c.t), open: c.o, high: c.h, low: c.l, close: c.c })));
 
+    if (future?.length) {
+      const muted = cssVar("--text-3");
+      const after = chart.addSeries(CandlestickSeries, {
+        upColor: `${up}40`,
+        downColor: `${down}40`,
+        borderUpColor: `${up}80`,
+        borderDownColor: `${down}80`,
+        wickUpColor: `${muted}80`,
+        wickDownColor: `${muted}80`,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      after.setData(future.map((c) => ({ time: T(c.t), open: c.o, high: c.h, low: c.l, close: c.c })));
+    }
+
     if (showVolume) {
       const vol = chart.addSeries(HistogramSeries, { priceScaleId: "vol", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false });
       vol.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
@@ -184,8 +204,9 @@ export function PriceChart({ candles, height = 440, lines = [], priceLines = [],
       main.createPriceLine({ price: pl.price, color: pl.color, lineWidth: pl.width ?? 1, lineStyle: pl.dashed === false ? LineStyle.Solid : LineStyle.Dashed, axisLabelVisible: true, title: pl.title });
     }
 
-    if (markers.length) {
-      const ms: SeriesMarker<Time>[] = [...markers]
+    const allMarkers = future?.length ? [...markers, { t: candles[candles.length - 1].t, position: "aboveBar" as const, color: cssVar("--warn"), text: "回放点", shape: "arrowDown" as const, size: 1 }] : markers;
+    if (allMarkers.length) {
+      const ms: SeriesMarker<Time>[] = [...allMarkers]
         .sort((a, b) => a.t - b.t)
         .map((m) => ({ time: T(m.t), position: m.position, color: m.color, shape: m.shape ?? "circle", text: m.text, size: m.size ?? 0.1 }));
       createSeriesMarkers(main, ms);
@@ -213,7 +234,8 @@ export function PriceChart({ candles, height = 440, lines = [], priceLines = [],
     });
 
     const n = candles.length;
-    chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - initialBars), to: n + 4 });
+    const ahead = future?.length ? Math.min(future.length, Math.round(initialBars / 3)) : 4;
+    chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - initialBars + ahead), to: n + ahead });
 
     const indexOf = new Map(candles.map((c, i) => [c.t + shift, i]));
     chart.subscribeCrosshairMove((param) => {
@@ -241,14 +263,14 @@ export function PriceChart({ candles, height = 440, lines = [], priceLines = [],
       chartRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candles, lines, priceLines, markers, segments, panes, height, showVolume, themeTick]);
+  }, [candles, lines, priceLines, markers, segments, panes, height, showVolume, themeTick, future]);
 
   const last = candles[candles.length - 1];
   const shown = hover?.c ?? last;
   const chg = shown ? ((shown.c - shown.o) / shown.o) * 100 : 0;
 
   return (
-    <div className="relative">
+    <div className={`relative ${replay?.picking && !onPick ? "cursor-crosshair ring-2 ring-warn/60 rounded-lg" : ""}`}>
       {shown && (
         <div className="pointer-events-none absolute left-2 top-1 z-10 flex flex-wrap gap-x-3 gap-y-0.5 rounded-md bg-panel/80 px-2 py-1 text-[11px] text-ink-3 num">
           <span>{fmtTime(shown.t)}</span>

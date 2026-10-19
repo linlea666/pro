@@ -3,6 +3,7 @@
 import type { LightSummary } from "@/lib/analysis";
 import { TF_LABEL, type Timeframe } from "@/lib/types";
 import { fmtPct } from "./format";
+import { useReplay } from "./replay";
 
 /**
  * "多周期一览": one row of cells, one per timeframe, showing a single module's
@@ -114,6 +115,14 @@ function summarize(kind: MtfKind, mtf: LightSummary[]): string {
 }
 
 export function MtfStrip({ kind, mtf, current, onTf, title = "多周期一览" }: { kind: MtfKind; mtf: LightSummary[] | null; current: Timeframe; onTf?: (t: Timeframe) => void; title?: string }) {
+  const replay = useReplay();
+  if (replay?.asOf)
+    return (
+      <section className="card p-4">
+        <h2 className="text-[15px] font-semibold">{title}</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-ink-3">回放模式下只计算当前周期在那个时刻的状态，多周期一览暂不显示。</p>
+      </section>
+    );
   return (
     <section className="card p-4">
       <div className="mb-2.5 flex items-center gap-2">

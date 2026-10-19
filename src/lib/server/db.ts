@@ -80,6 +80,20 @@ const MIGRATIONS: string[] = [
     cache_read_tokens INTEGER NOT NULL DEFAULT 0
   );
   `,
+  // 4: local candle history, so refreshes only fetch the newest bars
+  `
+  CREATE TABLE klines (
+    coin TEXT NOT NULL,
+    tf TEXT NOT NULL,
+    t INTEGER NOT NULL,
+    o REAL NOT NULL,
+    h REAL NOT NULL,
+    l REAL NOT NULL,
+    c REAL NOT NULL,
+    v REAL NOT NULL,
+    PRIMARY KEY (coin, tf, t)
+  ) WITHOUT ROWID;
+  `,
 ];
 
 let db: Database.Database | null = null;

@@ -30,6 +30,8 @@ interface Data {
     hourly: { h: number; n: number; errors: number }[];
   };
   requests: { count: number; avgMs: number | null };
+  precompute: { lastRunAt: number | null; lastDurationMs: number | null; runs: number; failures: number; lastError: string | null };
+  storedKlines: number;
 }
 
 const SOURCE_NAME: Record<string, string> = { binance: "Binance 公共行情", okx: "OKX" };
@@ -77,6 +79,16 @@ export function OverviewPanel() {
         <Tile label="已运行" value={fmtDuration(d.uptimeSec)} sub={`Node ${d.node} · 内存 ${d.memoryMB} MB`} />
         <Tile label="24 小时接口请求" value={d.requests.count.toLocaleString()} sub={d.requests.avgMs == null ? "—" : `平均耗时 ${d.requests.avgMs} ms`} />
         <Tile label="24 小时错误 / 警告" value={`${lv.error ?? 0} / ${lv.warn ?? 0}`} tone={(lv.error ?? 0) > 0 ? "down" : undefined} sub={`数据库 ${d.dbMB} MB`} />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Tile
+          label="后台预计算"
+          value={d.precompute.lastRunAt ? `${((d.precompute.lastDurationMs ?? 0) / 1000).toFixed(1)} 秒 / 轮` : "未运行"}
+          sub={d.precompute.lastRunAt ? `最近一轮 ${fmtTime(d.precompute.lastRunAt)} · 共 ${d.precompute.runs} 轮${d.precompute.failures ? ` · 失败 ${d.precompute.failures} 次` : ""}` : "可在系统设置中开启"}
+          tone={d.precompute.failures ? "warn" : undefined}
+        />
+        <Tile label="本地 K 线" value={d.storedKlines.toLocaleString()} sub="交易所不可用时用它继续提供服务" />
       </div>
 
       <section className="card p-4">
