@@ -1,4 +1,5 @@
 import { getKlines } from "./data/klines.ts";
+import { logger } from "./server/log.ts";
 import type { Candle, Timeframe } from "./types.ts";
 import { TIMEFRAMES } from "./types.ts";
 import * as ta from "./ta/core.ts";
@@ -128,6 +129,19 @@ function crossUps(a: number[], b: number[]) {
 }
 
 export async function analyze(coin: string, tf: Timeframe): Promise<Analysis> {
+  const t0 = Date.now();
+  try {
+    const a = await analyzeInner(coin, tf);
+    const ms = Date.now() - t0;
+    logger[ms > 3000 ? "warn" : "debug"]("engine", `分析完成 ${coin} ${tf}${ms > 3000 ? "（偏慢）" : ""}`, { durationMs: ms, bars: a.candles.length });
+    return a;
+  } catch (e) {
+    logger.error("engine", `分析失败 ${coin} ${tf}`, { error: e, durationMs: Date.now() - t0 });
+    throw e;
+  }
+}
+
+async function analyzeInner(coin: string, tf: Timeframe): Promise<Analysis> {
   const [main, hourly] = await Promise.all([getKlines(coin, tf), getKlines(coin, "1h")]);
   const c = main.candles;
   const L = c.length - 1;

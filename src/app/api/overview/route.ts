@@ -1,13 +1,17 @@
 import { NextResponse } from "next/server";
+import { logger } from "@/lib/server/log";
+import { withRoute } from "@/lib/server/route";
 import { getOverview } from "@/lib/overview";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+async function handler() {
   try {
     return NextResponse.json(await getOverview(), { headers: { "cache-control": "public, max-age=30" } });
   } catch (e) {
-    console.error("[overview]", e);
+    logger.error("engine", "总览接口失败", { error: e });
     return NextResponse.json({ error: "行情数据暂时获取失败，请稍后再试" }, { status: 502 });
   }
 }
+
+export const GET = withRoute("overview", handler);

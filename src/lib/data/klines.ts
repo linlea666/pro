@@ -1,4 +1,6 @@
 import type { Candle, Timeframe } from "../types.ts";
+import { recordSource } from "../server/health.ts";
+import { logger } from "../server/log.ts";
 
 /**
  * Public market data with source fallback. Binance's public data mirror first
@@ -25,13 +27,24 @@ export interface KlineResult {
 type Entry = { at: number; value?: KlineResult; pending?: Promise<KlineResult> };
 const cache = new Map<string, Entry>();
 
-async function getJson(url: string, timeoutMs = 10_000): Promise<unknown> {
+async function getJson(source: "binance" | "okx", url: string, timeoutMs = 10_000): Promise<unknown> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const start = Date.now();
   try {
     const res = await fetch(url, { signal: ctrl.signal, cache: "no-store", headers: { accept: "application/json" } });
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${url}`);
-    return await res.json();
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json();
+    const ms = Date.now() - start;
+    recordSource(source, true, ms);
+    logger.debug("datasource", `${source} 请求成功`, { url, durationMs: ms });
+    return body;
+  } catch (e) {
+    const ms = Date.now() - start;
+    const msg = (e as Error).name === "AbortError" ? `超时 ${timeoutMs}ms` : (e as Error).message;
+    recordSource(source, false, ms, msg);
+    logger.warn("datasource", `${source} 请求失败：${msg}`, { url, durationMs: ms });
+    throw new Error(`${source}: ${msg}`);
   } finally {
     clearTimeout(timer);
   }
@@ -44,7 +57,7 @@ async function fromBinance(coin: string, tf: Timeframe, limit: number): Promise<
   while (out.length < limit) {
     const size = Math.min(1000, limit - out.length);
     const url = `https://data-api.binance.vision/api/v3/klines?symbol=${coin}USDT&interval=${BINANCE_INTERVAL[tf]}&limit=${size}${endTime ? `&endTime=${endTime}` : ""}`;
-    const rows = (await getJson(url)) as unknown[][];
+    const rows = (await getJson("binance", url)) as unknown[][];
     if (!Array.isArray(rows) || rows.length === 0) break;
     const page = rows.map((r) => ({
       t: Math.floor(Number(r[0]) / 1000),
@@ -69,7 +82,7 @@ async function fromOkx(coin: string, tf: Timeframe, limit: number): Promise<Cand
   for (let page = 0; page < 20 && out.length < limit; page++) {
     const endpoint = page === 0 ? "candles" : "history-candles";
     const url = `https://www.okx.com/api/v5/market/${endpoint}?instId=${coin}-USDT&bar=${OKX_BAR[tf]}&limit=${page === 0 ? 300 : 100}${after ? `&after=${after}` : ""}`;
-    const body = (await getJson(url)) as { code: string; data: string[][] };
+    const body = (await getJson("okx", url)) as { code: string; data: string[][] };
     if (body.code !== "0" || !Array.isArray(body.data) || body.data.length === 0) break;
     for (const r of body.data) {
       out.push({ t: Math.floor(Number(r[0]) / 1000), o: +r[1], h: +r[2], l: +r[3], c: +r[4], v: +r[5] });
@@ -92,7 +105,7 @@ export async function getKlines(coin: string, tf: Timeframe, limit = 2000): Prom
     try {
       return { candles: await fromBinance(coin, tf, limit), source: "binance", fetchedAt: Date.now() };
     } catch (e) {
-      console.warn(`[klines] binance failed for ${key}, falling back to OKX:`, (e as Error).message);
+      logger.warn("datasource", `Binance 获取失败，切换到 OKX：${coin} ${tf}`, { error: (e as Error).message });
       return { candles: await fromOkx(coin, tf, limit), source: "okx", fetchedAt: Date.now() };
     }
   })();
@@ -105,10 +118,12 @@ export async function getKlines(coin: string, tf: Timeframe, limit = 2000): Prom
   } catch (e) {
     // Serve stale data rather than nothing if both sources are down.
     if (hit?.value) {
+      logger.error("datasource", `所有数据源都失败，返回旧缓存：${coin} ${tf}`, { error: (e as Error).message, staleSec: Math.round((Date.now() - hit.at) / 1000) });
       cache.set(key, { at: hit.at, value: hit.value });
       return hit.value;
     }
     cache.delete(key);
+    logger.error("datasource", `所有数据源都失败：${coin} ${tf}`, { error: (e as Error).message });
     throw e;
   }
 }

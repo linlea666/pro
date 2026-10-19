@@ -1,5 +1,6 @@
 import { snapshot, type CoinSnapshot } from "./analysis.ts";
 import { COIN_IDS } from "./symbols.ts";
+import { logger } from "./server/log.ts";
 
 export interface Overview {
   coins: CoinSnapshot[];
@@ -16,7 +17,7 @@ export async function getOverview(): Promise<Overview> {
     if (r.status === "fulfilled") coins.push(r.value);
     else {
       failed.push(COIN_IDS[k]);
-      console.error("[overview]", COIN_IDS[k], r.reason);
+      logger.error("engine", `总览中 ${COIN_IDS[k]} 计算失败`, { error: r.reason });
     }
   });
   if (coins.length === 0) throw new Error("all coins failed");
