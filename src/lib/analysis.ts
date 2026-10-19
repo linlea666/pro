@@ -1,0 +1,280 @@
+import { getKlines } from "./data/klines.ts";
+import type { Candle, Timeframe } from "./types.ts";
+import { TIMEFRAMES } from "./types.ts";
+import * as ta from "./ta/core.ts";
+import { computeIndicators, type IndicatorReading } from "./ta/indicators.ts";
+import { computeTd, type TdEvent, type TdState } from "./ta/td.ts";
+import { computeTrend } from "./ta/trend.ts";
+import { clusterLevels, levelCandidates, periodCandidates, type Level } from "./ta/levels.ts";
+import { zigzag } from "./ta/zigzag.ts";
+import { autoFib, type FibResult } from "./ta/fib.ts";
+import { computeChan, type ChanResult } from "./ta/chan.ts";
+import { forwardStats, type SignalStats } from "./ta/stats.ts";
+import { buildVerdict, type Verdict } from "./ta/verdict.ts";
+
+/**
+ * Everything the coin page needs for one symbol/timeframe, computed on the
+ * server. Only display-ready results leave the server.
+ */
+
+const DISPLAY_BARS = 600;
+
+/** Higher timeframes that also feed the support/resistance cluster. */
+const LEVEL_TFS: Record<Timeframe, Timeframe[]> = {
+  "15m": ["15m", "1h", "4h"],
+  "1h": ["15m", "1h", "4h", "1d"],
+  "4h": ["15m", "1h", "4h", "1d"],
+  "1d": ["4h", "1d", "1w"],
+  "1w": ["1d", "1w"],
+};
+
+async function keyLevels(coin: string, tf: Timeframe, price: number, atr: number) {
+  const tfs = LEVEL_TFS[tf];
+  const [series, daily] = await Promise.all([Promise.all(tfs.map((x) => getKlines(coin, x))), getKlines(coin, "1d")]);
+  const cands = [...series.flatMap((s, k) => levelCandidates(s.candles, tfs[k])), ...periodCandidates(daily.candles, price)];
+  return clusterLevels(cands, price, Math.max(atr * 0.6, price * 0.0025));
+}
+
+/** Bars after a signal used to judge it, and the human description. */
+export const HORIZON: Record<Timeframe, { bars: number; text: string }> = {
+  "15m": { bars: 16, text: "4 小时" },
+  "1h": { bars: 24, text: "1 天" },
+  "4h": { bars: 18, text: "3 天" },
+  "1d": { bars: 10, text: "10 天" },
+  "1w": { bars: 4, text: "1 个月" },
+};
+
+export interface TdMarker {
+  t: number;
+  side: "buy" | "sell";
+  /** 1–9 setup counts, or 13 */
+  n: number;
+  kind: "setup" | "countdown";
+  perfected?: boolean;
+}
+
+export interface ActiveSignal {
+  key: string;
+  name: string;
+  side: "bull" | "bear";
+  barsAgo: number;
+  stats: SignalStats;
+}
+
+export interface Analysis {
+  coin: string;
+  tf: Timeframe;
+  source: string;
+  updatedAt: number;
+  price: number;
+  change24h: number;
+  candles: Candle[];
+  verdict: Verdict;
+  indicators: {
+    readings: IndicatorReading[];
+    summary: ReturnType<typeof computeIndicators>["summary"];
+    total: number;
+    resonance: { t: number; net: number; bull: number; bear: number }[];
+    overlays: { ema20: (number | null)[]; ema50: (number | null)[]; sma200: (number | null)[]; bbUpper: (number | null)[]; bbLower: (number | null)[] };
+    rsi: (number | null)[];
+    macd: { line: (number | null)[]; signal: (number | null)[]; hist: (number | null)[] };
+  };
+  td: {
+    markers: TdMarker[];
+    events: TdEvent[];
+    current: TdState["current"];
+  };
+  trend: { series: (number | null)[]; current: number; label: string; adx: number; explain: string; barsInState: number };
+  levels: { supports: Level[]; resistances: Level[] };
+  fib: FibResult | null;
+  chan: ChanResult;
+  stats: SignalStats[];
+  active: ActiveSignal[];
+  horizonText: string;
+}
+
+const clean = (arr: number[]) => arr.map((v) => (Number.isFinite(v) ? Math.round(v * 1e6) / 1e6 : null));
+
+function change24h(c: Candle[]): number {
+  const last = c[c.length - 1];
+  const target = last.t + (c[1] ? c[1].t - c[0].t : 0) - 86400;
+  let ref = c[0];
+  for (let i = c.length - 1; i >= 0; i--) {
+    if (c[i].t <= target) {
+      ref = c[i];
+      break;
+    }
+  }
+  return ((last.c - ref.c) / ref.c) * 100;
+}
+
+function tdMarkers(td: TdState, c: Candle[], from: number): TdMarker[] {
+  const out: TdMarker[] = [];
+  const perfect = new Map(td.events.filter((e) => e.kind === "setup9").map((e) => [e.i, e.perfected]));
+  for (let i = from; i < c.length; i++) {
+    const b = td.buySetup[i], s = td.sellSetup[i];
+    if (b >= 1 && b <= 9) out.push({ t: c[i].t, side: "buy", n: b, kind: "setup", perfected: b === 9 ? perfect.get(i) : undefined });
+    if (s >= 1 && s <= 9) out.push({ t: c[i].t, side: "sell", n: s, kind: "setup", perfected: s === 9 ? perfect.get(i) : undefined });
+    if (td.buyCountdown[i] > 0) out.push({ t: c[i].t, side: "buy", n: td.buyCountdown[i], kind: "countdown" });
+    if (td.sellCountdown[i] > 0) out.push({ t: c[i].t, side: "sell", n: td.sellCountdown[i], kind: "countdown" });
+  }
+  return out;
+}
+
+function crossUps(a: number[], b: number[]) {
+  const out: number[] = [];
+  for (let i = 1; i < a.length; i++) if (a[i] > b[i] && a[i - 1] <= b[i - 1]) out.push(i);
+  return out;
+}
+
+export async function analyze(coin: string, tf: Timeframe): Promise<Analysis> {
+  const [main, hourly] = await Promise.all([getKlines(coin, tf), getKlines(coin, "1h")]);
+  const c = main.candles;
+  const L = c.length - 1;
+  const price = c[L].c;
+  const close = ta.closes(c);
+  const atr = ta.atr(c, 14);
+
+  const panel = computeIndicators(c);
+  const td = computeTd(c);
+  const trend = computeTrend(c, panel);
+
+  const { supports, resistances } = await keyLevels(coin, tf, price, atr[L]);
+
+  // major swings only, so the retracement describes a move a beginner would notice
+  const fib = autoFib(c, zigzag(c, atr, 5));
+  const chan = computeChan(c.slice(-DISPLAY_BARS));
+
+  const verdict = buildVerdict({ tf, price, atr: atr[L], trend, panel, td, supports, resistances, lastIdx: L });
+
+  // ---------------- historical stats
+  const H = HORIZON[tf].bars;
+  const ev = (side: "buy" | "sell", kind: TdEvent["kind"]) => td.events.filter((e) => e.side === side && e.kind === kind).map((e) => e.i);
+  const e12 = ta.ema(close, 12), e26 = ta.ema(close, 26);
+  const r = ta.rsi(close);
+  const rsiIn = (below: boolean) => {
+    const out: number[] = [];
+    for (let i = 1; i < r.length; i++) {
+      if (below ? r[i] < 30 && r[i - 1] >= 30 : r[i] > 70 && r[i - 1] <= 70) out.push(i);
+    }
+    return out;
+  };
+  const strong = Math.round(panel.readings.length * 0.4);
+  const resoBull: number[] = [], resoBear: number[] = [];
+  for (let i = 1; i < c.length; i++) {
+    if (panel.net[i] >= strong && panel.net[i - 1] < strong) resoBull.push(i);
+    if (panel.net[i] <= -strong && panel.net[i - 1] > -strong) resoBear.push(i);
+  }
+  const defs: [string, string, "bull" | "bear", number[]][] = [
+    ["td_buy9", "TD 买入 9", "bull", ev("buy", "setup9")],
+    ["td_buy13", "TD 买入 13", "bull", ev("buy", "countdown13")],
+    ["td_sell9", "TD 卖出 9", "bear", ev("sell", "setup9")],
+    ["td_sell13", "TD 卖出 13", "bear", ev("sell", "countdown13")],
+    ["ema_golden", "EMA 金叉", "bull", crossUps(e12, e26)],
+    ["ema_death", "EMA 死叉", "bear", crossUps(e26, e12)],
+    ["rsi_oversold", "RSI 进入超卖", "bull", rsiIn(true)],
+    ["rsi_overbought", "RSI 进入超买", "bear", rsiIn(false)],
+    ["reso_bull", `多指标共振看多（≥${strong}）`, "bull", resoBull],
+    ["reso_bear", `多指标共振看空（≥${strong}）`, "bear", resoBear],
+  ];
+  const stats = defs.map(([key, name, side, idx]) => forwardStats(c, key, name, side, idx, H));
+
+  // signals that fired recently
+  const recentWindow = Math.max(3, Math.round(H / 3));
+  const active: ActiveSignal[] = [];
+  defs.forEach(([key, name, side, idx], k) => {
+    const lastI = idx[idx.length - 1];
+    if (lastI !== undefined && L - lastI <= recentWindow) active.push({ key, name, side, barsAgo: L - lastI, stats: stats[k] });
+  });
+
+  const from = Math.max(0, c.length - DISPLAY_BARS);
+  const slice = <T,>(a: T[]) => a.slice(from);
+  const ema20 = ta.ema(close, 20), ema50 = ta.ema(close, 50), sma200 = ta.sma(close, 200);
+  const bb = ta.bollinger(close);
+  const m = ta.macd(close);
+
+  return {
+    coin,
+    tf,
+    source: main.source,
+    updatedAt: main.fetchedAt,
+    price,
+    change24h: change24h(hourly.candles),
+    candles: slice(c),
+    verdict,
+    indicators: {
+      readings: panel.readings,
+      summary: panel.summary,
+      total: panel.readings.length,
+      resonance: slice(c.map((x, i) => ({ t: x.t, net: panel.net[i], bull: panel.bullCount[i], bear: panel.bearCount[i] }))),
+      overlays: {
+        ema20: clean(slice(ema20)),
+        ema50: clean(slice(ema50)),
+        sma200: clean(slice(sma200)),
+        bbUpper: clean(slice(bb.upper)),
+        bbLower: clean(slice(bb.lower)),
+      },
+      rsi: clean(slice(r)),
+      macd: { line: clean(slice(m.line)), signal: clean(slice(m.signal)), hist: clean(slice(m.hist)) },
+    },
+    td: { markers: tdMarkers(td, c, from), events: td.events.filter((e) => e.i >= from), current: td.current },
+    trend: { series: clean(slice(trend.score)), current: trend.current, label: trend.label, adx: Math.round(trend.adx), explain: trend.explain, barsInState: trend.barsInState },
+    levels: { supports, resistances },
+    fib,
+    chan,
+    stats,
+    active,
+    horizonText: HORIZON[tf].text,
+  };
+}
+
+// ------------------------------------------------------------------ light summaries
+
+export interface LightSummary {
+  tf: Timeframe;
+  light: Verdict["light"];
+  lightText: string;
+  score: number;
+  trend: string;
+  td: string;
+}
+
+export interface CoinSnapshot {
+  coin: string;
+  price: number;
+  change24h: number;
+  spark: number[];
+  lights: LightSummary[];
+}
+
+async function lightFor(coin: string, tf: Timeframe): Promise<{ s: LightSummary; candles: Candle[] }> {
+  const { candles: c } = await getKlines(coin, tf);
+  const L = c.length - 1;
+  const price = c[L].c;
+  const atr = ta.atr(c, 14);
+  const panel = computeIndicators(c);
+  const td = computeTd(c);
+  const trend = computeTrend(c, panel);
+  const { supports, resistances } = await keyLevels(coin, tf, price, atr[L]);
+  const v = buildVerdict({ tf, price, atr: atr[L], trend, panel, td, supports, resistances, lastIdx: L });
+  const cur = td.current;
+  const tdText = cur.setupSide ? `${cur.setupSide === "buy" ? "跌" : "涨"} ${Math.min(cur.setupCount, 9)}/9` : "—";
+  return { s: { tf, light: v.light, lightText: v.lightText, score: v.score, trend: trend.label, td: tdText }, candles: c };
+}
+
+export async function snapshot(coin: string, tfs: Timeframe[] = ["1h", "4h", "1d"]): Promise<CoinSnapshot> {
+  const res = await Promise.all(tfs.map((tf) => lightFor(coin, tf)));
+  const hourly = res.find((r) => r.s.tf === "1h")?.candles ?? res[0].candles;
+  return {
+    coin,
+    price: hourly[hourly.length - 1].c,
+    change24h: change24h(hourly),
+    spark: hourly.slice(-48).map((x) => x.c),
+    lights: res.map((r) => r.s),
+  };
+}
+
+export async function multiTimeframe(coin: string): Promise<LightSummary[]> {
+  const res = await Promise.all(TIMEFRAMES.map((tf) => lightFor(coin, tf)));
+  return res.map((r) => r.s);
+}

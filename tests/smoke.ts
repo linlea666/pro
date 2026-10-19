@@ -1,0 +1,16 @@
+import { analyze, multiTimeframe } from "../src/lib/analysis.ts";
+const a = await analyze("BTC", "4h");
+const L = a.candles.length - 1;
+console.log("price", a.price, "chg24h", a.change24h.toFixed(2), "source", a.source, "last t", new Date(a.candles[L].t*1000).toISOString());
+console.log("TD current", JSON.stringify(a.td.current, null, 1));
+console.log("TD events (last 6)", a.td.events.slice(-6).map(e => ({...e, t: new Date(e.t*1000).toISOString()})));
+console.log("verdict", JSON.stringify(a.verdict, null, 1));
+console.log("summary", a.indicators.summary);
+console.log("trend", a.trend.current, a.trend.label, a.trend.explain);
+console.log("levels", a.levels.supports.map(l=>[l.price.toFixed(0), l.strength, l.labels.join("/")]), a.levels.resistances.map(l=>[l.price.toFixed(0), l.strength, l.labels.join("/")]));
+console.log("fib", a.fib && {a: a.fib.a, b: a.fib.b, r: a.fib.currentRatio.toFixed(3), z: a.fib.zoneText});
+console.log("chan", a.chan.bis.length, a.chan.zhongshus.length, a.chan.points.slice(-4), a.chan.explain);
+console.log("stats", a.stats.map(s => `${s.name}: n=${s.samples} win=${s.winRate} avg=${s.avgReturn} base=${s.baseWinRate} ${s.reliability}`).join("\n"));
+console.log("active", a.active.map(x=>x.name+" "+x.barsAgo));
+console.log("mtf", await multiTimeframe("BTC"));
+console.log("json size KB", (JSON.stringify(a).length/1024).toFixed(0));
