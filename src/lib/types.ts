@@ -6,6 +6,8 @@ export interface Candle {
   l: number;
   c: number;
   v: number;
+  /** taker buy volume (base coin): the part of `v` bought by market orders; absent when the source does not report it */
+  tbv?: number;
 }
 
 export type Timeframe = "5m" | "15m" | "1h" | "4h" | "1d" | "1w";

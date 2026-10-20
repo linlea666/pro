@@ -110,6 +110,24 @@ async function tick() {
       if (r.requests || r.error) logger[r.error ? "warn" : "info"]("datasource", r.complete ? "K 线历史已补齐" : "K 线历史补充中", { ...r });
       done("history");
     }
+    // mark-price bars for research (stop hits on the mark price): kept current daily once complete
+    if (getState("job.markHistoryComplete") !== "1" || due("markHistory", DAY)) {
+      const { syncHistory } = await import("../data/history.ts");
+      const { MARK_SOURCE } = await import("../data/klines.ts");
+      const r = await syncHistory({ source: MARK_SOURCE, budgetMs: 30_000 });
+      setState("job.markHistoryComplete", r.complete ? "1" : "0");
+      if (r.error) logger.warn("datasource", "标记价格历史补充失败", { ...r });
+      done("markHistory");
+    }
+    // older open interest from Binance's public archive (the live API keeps 30 days): every tick until done, then daily
+    if (getState("job.oiArchiveComplete") !== "1" || due("oiArchive", DAY)) {
+      const { syncOpenInterestArchive } = await import("../data/archive.ts");
+      const r = await syncOpenInterestArchive();
+      setState("job.oiArchiveComplete", r.complete ? "1" : "0");
+      if (r.error) logger.warn("datasource", "持仓量归档下载失败，下次继续", { ...r });
+      else if (r.days) logger.info("datasource", r.complete ? "持仓量归档已补齐" : "持仓量归档补充中", { ...r });
+      done("oiArchive");
+    }
     // funding settlements and hourly open interest
     if (due("perp", HOUR - 60_000)) {
       const { syncPerpHistory } = await import("../data/perp.ts");

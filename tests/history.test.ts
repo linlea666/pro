@@ -29,7 +29,11 @@ globalThis.fetch = (async (url: string) => {
   for (let t = Math.ceil(Math.max(start, LISTED) / H) * H; t <= Math.min(end, NOW); t += H) {
     if (!(t > OUTAGE[0] && t < OUTAGE[1])) all.push(t);
   }
-  const rows = (q.has("startTime") ? all.slice(0, limit) : all.slice(-limit)).map((t) => [t * 1000, "1", "2", "0.5", "1.5", "10"]);
+  // SOL and ETH answer like the real API (taker buy volume in field 9); BTC like an older stub without it
+  const full = q.get("symbol") !== "BTCUSDT";
+  const rows = (q.has("startTime") ? all.slice(0, limit) : all.slice(-limit)).map((t) =>
+    full ? [t * 1000, "1", "2", "0.5", "1.5", "10", t * 1000 + H * 1000 - 1, "15", 7, "4", "6", "0"] : [t * 1000, "1", "2", "0.5", "1.5", "10"],
+  );
   return new Response(JSON.stringify(rows), { status: 200 });
 }) as typeof fetch;
 
@@ -81,4 +85,39 @@ test("history: retention is by age per timeframe; daily bars are kept forever", 
   const ts = (tf: string) => (getDb().prepare("SELECT t FROM candles WHERE coin = 'ETH' AND tf = ?").all(tf) as { t: number }[]).map((x) => x.t);
   assert.deepEqual(ts("1h"), [NOW - 700 * D], "1h keeps 2 years");
   assert.deepEqual(ts("1d"), [NOW - 3000 * D]);
+});
+
+test("history: bars stored before taker volume was kept are asked for it once", async () => {
+  const D = 24 * H;
+  const stored = Array.from({ length: 1500 }, (_, k) => bar(NOW - (1499 - k) * H));
+  store("SOL", "1h", "binance-futures", stored);
+  const opts = { nowSec: NOW, pauseMs: 0, coins: ["SOL"], tfs: ["1h" as const], budgetMs: 60_000 };
+  const r = await syncHistory(opts);
+  assert.ok(r.tbv > 0);
+  const missing = (getDb().prepare("SELECT COUNT(*) n FROM candles WHERE coin = 'SOL' AND tf = '1h' AND source = 'binance-futures' AND tbv IS NULL").get() as { n: number }).n;
+  assert.equal(missing, 0, "every stored bar now carries taker volume");
+  const one = getDb().prepare("SELECT tbv, v FROM candles WHERE coin = 'SOL' AND tf = '1h' AND t = ?").get(NOW - 10 * D) as { tbv: number; v: number };
+  assert.deepEqual(one, { tbv: 4, v: 10 });
+  assert.equal(historyCoverage(NOW, ["SOL"], ["1h"])[0].tbvPending, 0);
+  // a later bar fetched without it never erases it
+  store("SOL", "1h", "binance-futures", [bar(NOW - 10 * D)]);
+  assert.equal((getDb().prepare("SELECT tbv FROM candles WHERE coin = 'SOL' AND tf = '1h' AND t = ?").get(NOW - 10 * D) as { tbv: number }).tbv, 4);
+  const again = await syncHistory(opts);
+  assert.equal(again.tbv, 0, "nothing asked twice");
+  assert.equal(again.complete, true);
+});
+
+test("history: mark-price series are started and kept current here", async () => {
+  const opts = { nowSec: NOW, pauseMs: 0, coins: ["ETH"], tfs: ["1h" as const], source: "binance-mark" as const };
+  const r = await syncHistory(opts);
+  assert.equal(r.complete, true);
+  const n = (getDb().prepare("SELECT COUNT(*) n, MAX(t) last FROM candles WHERE coin = 'ETH' AND tf = '1h' AND source = 'binance-mark'").get() as { n: number; last: number });
+  assert.equal(n.n, 400 * 24 + 1 - 4, "seeded, then walked back to the listing");
+  assert.equal(n.last, NOW);
+  const noTbv = (getDb().prepare("SELECT COUNT(*) n FROM candles WHERE source = 'binance-mark' AND tbv IS NOT NULL").get() as { n: number }).n;
+  assert.equal(noTbv, 0, "mark prices carry no volume");
+  // a later run only asks for bars after the newest one
+  calls = 0;
+  await syncHistory({ ...opts, nowSec: NOW + 3 * H });
+  assert.equal(calls, 1);
 });

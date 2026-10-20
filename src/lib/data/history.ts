@@ -5,7 +5,7 @@ import { getDb } from "../server/db.ts";
 import { raiseAlert } from "../server/alert.ts";
 import { logger } from "../server/log.ts";
 import { getState, setState } from "../server/settings.ts";
-import { binancePage, KEEP_DAYS, PRIMARY_SOURCE, store } from "./klines.ts";
+import { binancePage, KEEP_DAYS, MARK_SOURCE, PRIMARY_SOURCE, store } from "./klines.ts";
 
 /**
  * Long local history. The live analysis only needs the newest ~2000 bars, but
@@ -13,7 +13,16 @@ import { binancePage, KEEP_DAYS, PRIMARY_SOURCE, store } from "./klines.ts";
  * stored series is walked back to its retention target (KEEP_DAYS) page by page,
  * and holes inside it are fetched again. Only the primary source's series is kept
  * long; fallback sources only hold about the analysis window.
+ *
+ * Two additions: bars stored before taker buy volume was kept are fetched once more
+ * to fill it in (the `tbv` cursor), and a few mark-price series used by research are
+ * kept the same way (`source: MARK_SOURCE`, seeded and extended forward here, since no
+ * page loads them).
  */
+
+type LongSource = typeof PRIMARY_SOURCE | typeof MARK_SOURCE;
+/** mark-price series kept for research: stop hits on the mark price, BTC and ETH */
+export const MARK_SERIES: { coins: string[]; tfs: Timeframe[] } = { coins: ["BTC", "ETH"], tfs: ["1h", "4h"] };
 
 /** most useful first: when the time budget runs out, 1h and 4h are already done */
 export const HISTORY_TFS: Timeframe[] = ["1h", "4h", "1d", "1w", "15m", "5m"];
@@ -23,20 +32,22 @@ const PAGE = 1000;
 interface SeriesState {
   start: number | null;
   holes: [number, number][];
+  /** taker volume was asked for every stored bar before this time (null: not started) */
+  tbvFrom: number | null;
 }
 
-const stateKey = (coin: string, tf: Timeframe) => `klineHistory.${PRIMARY_SOURCE}.${coin}.${tf}`;
+const stateKey = (coin: string, tf: Timeframe, source: LongSource) => `klineHistory.${source}.${coin}.${tf}`;
 
-function readState(coin: string, tf: Timeframe): SeriesState {
+function readState(coin: string, tf: Timeframe, source: LongSource = PRIMARY_SOURCE): SeriesState {
   try {
-    const v = JSON.parse(getState(stateKey(coin, tf)) || "{}");
-    return { start: v.start ?? null, holes: Array.isArray(v.holes) ? v.holes : [] };
+    const v = JSON.parse(getState(stateKey(coin, tf, source)) || "{}");
+    return { start: v.start ?? null, holes: Array.isArray(v.holes) ? v.holes : [], tbvFrom: v.tbvFrom ?? null };
   } catch {
-    return { start: null, holes: [] };
+    return { start: null, holes: [], tbvFrom: null };
   }
 }
 
-const writeState = (coin: string, tf: Timeframe, s: SeriesState) => setState(stateKey(coin, tf), JSON.stringify(s));
+const writeState = (coin: string, tf: Timeframe, s: SeriesState, source: LongSource = PRIMARY_SOURCE) => setState(stateKey(coin, tf, source), JSON.stringify(s));
 
 /** Oldest bar time this timeframe should reach (0 = all history). */
 export function targetStart(tf: Timeframe, nowSec = Date.now() / 1000): number {
@@ -45,19 +56,25 @@ export function targetStart(tf: Timeframe, nowSec = Date.now() / 1000): number {
 }
 
 /** Missing stretches inside a stored series: each pair is the stored bars on either side. */
-export function findGaps(coin: string, tf: Timeframe): [number, number][] {
+export function findGaps(coin: string, tf: Timeframe, source: LongSource = PRIMARY_SOURCE): [number, number][] {
   const rows = getDb()
     .prepare("SELECT prev, t FROM (SELECT t, LAG(t) OVER (ORDER BY t) prev FROM candles WHERE coin = ? AND tf = ? AND source = ?) WHERE t - prev > ?")
-    .all(coin, tf, PRIMARY_SOURCE, TF_SECONDS[tf]) as { prev: number; t: number }[];
+    .all(coin, tf, source, TF_SECONDS[tf]) as { prev: number; t: number }[];
   return rows.map((r) => [r.prev, r.t]);
 }
 
-function span(coin: string, tf: Timeframe) {
-  return getDb().prepare("SELECT MIN(t) first, MAX(t) last, COUNT(*) n FROM candles WHERE coin = ? AND tf = ? AND source = ?").get(coin, tf, PRIMARY_SOURCE) as {
+function span(coin: string, tf: Timeframe, source: LongSource = PRIMARY_SOURCE) {
+  return getDb().prepare("SELECT MIN(t) first, MAX(t) last, COUNT(*) n FROM candles WHERE coin = ? AND tf = ? AND source = ?").get(coin, tf, source) as {
     first: number | null;
     last: number | null;
     n: number;
   };
+}
+
+/** Oldest stored primary bar at or after `from` still without taker volume (null: none). */
+function firstWithoutTbv(coin: string, tf: Timeframe, from: number): number | null {
+  const r = getDb().prepare("SELECT MIN(t) t FROM candles WHERE coin = ? AND tf = ? AND source = ? AND tbv IS NULL AND t >= ?").get(coin, tf, PRIMARY_SOURCE, from) as { t: number | null };
+  return r.t;
 }
 
 /** Whether a series reaches its target: no bar wanted before its first one, or as far back as the exchange goes. */
@@ -71,6 +88,8 @@ export interface SyncResult {
   added: number;
   /** bars fetched into holes */
   filled: number;
+  /** bars fetched again for their taker volume */
+  tbv: number;
   /** every series reaches its target and has no unknown holes */
   complete: boolean;
   durationMs: number;
@@ -78,21 +97,24 @@ export interface SyncResult {
 }
 
 /**
- * Extend each series backwards, then patch holes inside it, until `budgetMs` is spent.
- * Series not stored yet are skipped: the live loader creates them first.
+ * Extend each series backwards, then patch holes inside it, then fill in taker volume,
+ * until `budgetMs` is spent. Primary series not stored yet are skipped: the live loader
+ * creates them first. Mark-price series are created and kept up to date here.
  * Stops at the first failed request and carries on next run.
  */
 export async function syncHistory(
-  opts: { budgetMs?: number; pauseMs?: number; nowSec?: number; coins?: string[]; tfs?: Timeframe[] } = {},
+  opts: { budgetMs?: number; pauseMs?: number; nowSec?: number; coins?: string[]; tfs?: Timeframe[]; source?: LongSource } = {},
 ): Promise<SyncResult> {
-  const { budgetMs = 60_000, pauseMs = 200, nowSec = Date.now() / 1000, coins = COIN_IDS, tfs = HISTORY_TFS } = opts;
+  const { budgetMs = 60_000, pauseMs = 200, nowSec = Date.now() / 1000, source = PRIMARY_SOURCE } = opts;
+  const mark = source === MARK_SOURCE;
+  const { coins = mark ? MARK_SERIES.coins : COIN_IDS, tfs = mark ? MARK_SERIES.tfs : HISTORY_TFS } = opts;
   const t0 = Date.now();
-  const r: SyncResult = { requests: 0, added: 0, filled: 0, complete: true, durationMs: 0 };
+  const r: SyncResult = { requests: 0, added: 0, filled: 0, tbv: 0, complete: true, durationMs: 0 };
   const left = () => Date.now() - t0 < budgetMs;
   // be gentle with the exchange and keep the event loop free for visitors
   const page = async (coin: string, tf: Timeframe, q: Parameters<typeof binancePage>[3]) => {
     if (r.requests++ && pauseMs) await new Promise((ok) => setTimeout(ok, pauseMs));
-    return binancePage(PRIMARY_SOURCE, coin, tf, q);
+    return binancePage(source, coin, tf, q);
   };
 
   try {
@@ -100,8 +122,27 @@ export async function syncHistory(
       const sec = TF_SECONDS[tf];
       const target = targetStart(tf, nowSec);
       for (const coin of coins) {
-        const st = readState(coin, tf);
-        const s0 = span(coin, tf);
+        const st = readState(coin, tf, source);
+        let s0 = span(coin, tf, source);
+        if (mark && left()) {
+          // no page loads mark prices: start the series here and keep its newest bars current
+          let next = s0.n ? s0.last! + sec : null;
+          if (next == null) {
+            const bars = await page(coin, tf, { limit: PAGE });
+            store(coin, tf, source, bars);
+            r.added += bars.length;
+          } else {
+            while (next <= nowSec - sec && left()) {
+              const bars = await page(coin, tf, { startTime: next, limit: PAGE });
+              if (!bars.length) break;
+              store(coin, tf, source, bars);
+              r.added += bars.length;
+              if (bars.length < PAGE) break;
+              next = bars[bars.length - 1].t + sec;
+            }
+          }
+          s0 = span(coin, tf, source);
+        }
         if (!s0.n) {
           r.complete = false;
           continue;
@@ -119,14 +160,14 @@ export async function syncHistory(
           if (bars.length < PAGE) st.start = bars.length ? bars[0].t : first;
           if (!bars.length) break;
           const kept = bars.filter((x) => x.t >= target);
-          store(coin, tf, PRIMARY_SOURCE, kept);
+          store(coin, tf, source, kept);
           r.added += kept.length;
           first = bars[0].t;
         }
 
         // 2. holes inside the stored range (an outage, or bars deleted by hand)
         const known = (a: number, b: number) => st.holes.some(([x, y]) => x <= a && b <= y);
-        const gaps = findGaps(coin, tf).filter(([a, b]) => !known(a, b));
+        const gaps = findGaps(coin, tf, source).filter(([a, b]) => !known(a, b));
         let newHoles = 0;
         let filled = 0;
         for (const [a, b] of gaps) {
@@ -139,7 +180,7 @@ export async function syncHistory(
           for (let from = a + sec; from < b; ) {
             const bars = (await page(coin, tf, { startTime: from, endTime: b - sec, limit: PAGE })).filter((x) => x.t > a && x.t < b);
             if (!bars.length) break;
-            store(coin, tf, PRIMARY_SOURCE, bars);
+            store(coin, tf, source, bars);
             got += bars.length;
             if (bars.length < PAGE) break;
             from = bars[bars.length - 1].t + sec;
@@ -163,10 +204,30 @@ export async function syncHistory(
           });
         }
 
+        // 3. taker volume for bars stored before it was kept: each bar is asked for once,
+        // oldest first; a bar the exchange returns without it stays without it
+        let tbvDone = mark;
+        if (!mark) {
+          let from = st.tbvFrom ?? 0;
+          for (;;) {
+            const missing = firstWithoutTbv(coin, tf, from);
+            if (missing == null) {
+              tbvDone = true;
+              break;
+            }
+            if (!left()) break;
+            const bars = (await page(coin, tf, { startTime: missing, limit: PAGE })).filter((x) => x.t >= missing);
+            store(coin, tf, source, bars);
+            r.tbv += bars.length;
+            from = bars.length ? bars[bars.length - 1].t + sec : missing + PAGE * sec;
+            st.tbvFrom = from;
+          }
+        }
+
         // holes that fell out of the retention window no longer matter
         st.holes = st.holes.filter(([, b]) => b >= target);
-        writeState(coin, tf, st);
-        if (!reached(first, tf, st, nowSec)) r.complete = false;
+        writeState(coin, tf, st, source);
+        if (!reached(first, tf, st, nowSec) || !tbvDone) r.complete = false;
       }
     }
   } catch (e) {
@@ -191,18 +252,24 @@ export interface SeriesCoverage {
   exchangeHoles: number;
   /** holes not looked into yet */
   gaps: number;
+  /** stored bars still to be asked for their taker volume (primary source) */
+  tbvPending: number;
   complete: boolean;
 }
 
 /** Coverage of every coin and timeframe, for the CLI and the health report. */
-export function historyCoverage(nowSec = Date.now() / 1000, coins = COIN_IDS, tfs = HISTORY_TFS): SeriesCoverage[] {
+export function historyCoverage(nowSec = Date.now() / 1000, coins = COIN_IDS, tfs = HISTORY_TFS, source: LongSource = PRIMARY_SOURCE): SeriesCoverage[] {
   const out: SeriesCoverage[] = [];
   for (const tf of tfs) {
     for (const coin of coins) {
-      const st = readState(coin, tf);
-      const s = span(coin, tf);
+      const st = readState(coin, tf, source);
+      const s = span(coin, tf, source);
       const known = (a: number, b: number) => st.holes.some(([x, y]) => x <= a && b <= y);
-      const gaps = s.n ? findGaps(coin, tf).filter(([a, b]) => !known(a, b)).length : 0;
+      const gaps = s.n ? findGaps(coin, tf, source).filter(([a, b]) => !known(a, b)).length : 0;
+      const tbvPending =
+        source === PRIMARY_SOURCE
+          ? (getDb().prepare("SELECT COUNT(*) n FROM candles WHERE coin = ? AND tf = ? AND source = ? AND tbv IS NULL AND t >= ?").get(coin, tf, source, st.tbvFrom ?? 0) as { n: number }).n
+          : 0;
       out.push({
         coin,
         tf,
@@ -213,7 +280,8 @@ export function historyCoverage(nowSec = Date.now() / 1000, coins = COIN_IDS, tf
         exchangeStart: st.start,
         exchangeHoles: st.holes.length,
         gaps,
-        complete: s.n > 0 && gaps === 0 && reached(s.first!, tf, st, nowSec),
+        tbvPending,
+        complete: s.n > 0 && gaps === 0 && tbvPending === 0 && reached(s.first!, tf, st, nowSec),
       });
     }
   }

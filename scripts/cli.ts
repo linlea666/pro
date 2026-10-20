@@ -95,11 +95,23 @@ async function main() {
               : "完整"
             : c.gaps
               ? `有 ${c.gaps} 处缺口待补`
-              : "补充中";
+              : c.tbvPending
+                ? `补主动买入量中（还剩 ${c.tbvPending} 根）`
+                : "补充中";
         const holes = c.exchangeHoles ? `，交易所缺 ${c.exchangeHoles} 段` : "";
         console.log(
           `${c.tf.padEnd(5)} ${c.coin.padEnd(6)} ${String(c.bars).padStart(6)}   ${day(c.first)}  ${day(c.last)}  ${c.target ? day(c.target) : "全部".padEnd(10)}  ${status}${holes}`,
         );
+      }
+      const { MARK_SERIES } = await import("../src/lib/data/history.ts");
+      console.log("\n标记价格（研究用，判断止损是否真的被触发）：");
+      for (const c of historyCoverage(undefined, MARK_SERIES.coins, MARK_SERIES.tfs, "binance-mark")) {
+        console.log(`  ${c.tf.padEnd(4)} ${c.coin.padEnd(5)} ${String(c.bars).padStart(6)} 根  ${day(c.first)} 至 ${day(c.last)}  ${c.complete ? "完整" : "补充中"}`);
+      }
+      const { openInterestCoverage } = await import("../src/lib/data/archive.ts");
+      console.log("\n持仓量（每小时；更早的部分来自 Binance 公开数据归档）：");
+      for (const c of openInterestCoverage(coins)) {
+        console.log(`  ${c.coin.padEnd(5)} ${String(c.n).padStart(6)} 小时  ${day(c.first)} 至 ${day(c.last)}  ${c.done ? "归档已补齐" : "归档补充中"}`);
       }
       break;
     }

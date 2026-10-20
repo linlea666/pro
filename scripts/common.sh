@@ -171,4 +171,7 @@ check_sources() {
     if curl -fsS --max-time 8 "$u" >/dev/null 2>&1; then echo "  ${c_green}✓${c_off} $u"; ok=$((ok + 1)); else echo "  ${c_red}✗${c_off} $u"; fi
   done
   [ "$ok" -gt 0 ] || warn "所有行情数据源都无法访问，网站将无法获取数据。请确认服务器不在中国大陆或美国。"
+  # research data only (older open interest); the site works without it
+  local archive="https://data.binance.vision/data/futures/um/daily/metrics/BTCUSDT/BTCUSDT-metrics-2026-01-01.zip"
+  if curl -fsS --max-time 8 -o /dev/null "$archive" 2>/dev/null; then echo "  ${c_green}✓${c_off} https://data.binance.vision（历史数据归档，研究用）"; else echo "  ${c_yellow}?${c_off} https://data.binance.vision（历史数据归档，研究用；访问不了只影响持仓量的早期历史）"; fi
 }

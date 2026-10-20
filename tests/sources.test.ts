@@ -74,6 +74,17 @@ test("migration: an old database keeps its candles, labelled as Binance spot", (
   assert.equal((d.prepare("SELECT COUNT(*) n FROM klines").get() as { n: number }).n, 0, "the old table is emptied but kept for a rollback");
 });
 
+test("migration 10: taker volume is an empty column; old rows and an older release's inserts keep working", () => {
+  const d = new Database(":memory:");
+  migrate(d, 9);
+  d.prepare("INSERT INTO candles (coin, tf, source, t, o, h, l, c, v) VALUES ('BTC', '1h', 'binance-futures', 3600, 1, 2, 0.5, 1.5, 9)").run();
+  migrate(d);
+  assert.deepEqual(d.prepare("SELECT t, v, tbv FROM candles").all(), [{ t: 3600, v: 9, tbv: null }]);
+  // what a rolled-back release (no tbv column in its statements) still does
+  d.prepare("INSERT OR REPLACE INTO candles (coin, tf, source, t, o, h, l, c, v) VALUES ('BTC', '1h', 'binance-futures', 7200, 1, 2, 0.5, 1.5, 9)").run();
+  assert.equal((d.prepare("SELECT COUNT(*) n FROM candles").get() as { n: number }).n, 2);
+});
+
 test("sources: perpetuals first; a fallback is stored as its own series and never mixed in", async () => {
   getDb();
   up.fapi = false;

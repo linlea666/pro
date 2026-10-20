@@ -177,6 +177,11 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX research_reports_kind ON research_reports(kind, id);
   `,
+  // 10: taker buy volume per bar (Binance reports it; OKX does not, so it stays empty there).
+  // A nullable column: an older release rolled back onto this database keeps working.
+  `
+  ALTER TABLE candles ADD COLUMN tbv REAL;
+  `,
 ];
 
 let db: Database.Database | null = null;

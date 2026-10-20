@@ -11,18 +11,26 @@ import { logger } from "../server/log.ts";
  * series, so one series never mixes two exchanges. Results are cached per symbol/timeframe.
  */
 
-export type SourceId = "binance-futures" | "okx-swap" | "binance-spot";
+export type SourceId = "binance-futures" | "okx-swap" | "binance-spot" | "binance-mark";
+/** sources the live data is loaded from, in order of preference */
 export const SOURCES: SourceId[] = ["binance-futures", "okx-swap", "binance-spot"];
 /** the only source whose history is kept long (history.ts); must be a Binance one */
 export const PRIMARY_SOURCE = "binance-futures" as const;
+/**
+ * Binance mark-price bars of the perpetuals: exchanges trigger stops on the mark price, so research
+ * checks stop hits against it. Kept long for a few series only (history.ts), never served to pages.
+ */
+export const MARK_SOURCE = "binance-mark" as const;
 export const SOURCE_LABEL: Record<SourceId, string> = {
   "binance-futures": "Binance 永续合约",
   "okx-swap": "OKX 永续合约",
   "binance-spot": "Binance 现货",
+  "binance-mark": "Binance 永续标记价格",
 };
-const BINANCE_KLINES: Record<"binance-futures" | "binance-spot", string> = {
+const BINANCE_KLINES: Record<"binance-futures" | "binance-spot" | "binance-mark", string> = {
   "binance-futures": "https://fapi.binance.com/fapi/v1/klines",
   "binance-spot": "https://data-api.binance.vision/api/v3/klines",
+  "binance-mark": "https://fapi.binance.com/fapi/v1/markPriceKlines",
 };
 
 
@@ -96,14 +104,12 @@ export async function binancePage(
   const url = `${BINANCE_KLINES[source]}?symbol=${coin}USDT&interval=${BINANCE_INTERVAL[tf]}&limit=${q.limit}${range}`;
   const rows = (await getJson(source, url)) as unknown[][];
   if (!Array.isArray(rows)) throw new Error(`${source}: unexpected response`);
-  return rows.map((r) => ({
-    t: Math.floor(Number(r[0]) / 1000),
-    o: Number(r[1]),
-    h: Number(r[2]),
-    l: Number(r[3]),
-    c: Number(r[4]),
-    v: Number(r[5]),
-  }));
+  return rows.map((r) => {
+    const bar: Candle = { t: Math.floor(Number(r[0]) / 1000), o: Number(r[1]), h: Number(r[2]), l: Number(r[3]), c: Number(r[4]), v: Number(r[5]) };
+    // field 9: taker buy base volume (mark-price bars carry no volume)
+    if (source !== "binance-mark" && r[9] != null && Number.isFinite(Number(r[9]))) bar.tbv = Number(r[9]);
+    return bar;
+  });
 }
 
 async function fromBinance(source: keyof typeof BINANCE_KLINES, coin: string, tf: Timeframe, limit: number): Promise<Candle[]> {
@@ -164,12 +170,21 @@ const INCREMENTAL_BARS = 100;
 /** a source that just failed is skipped for this long, unless every source is failing */
 const COOLDOWN_MS = 60_000;
 
+/** Stored rows carry tbv = NULL where it is unknown: leave the field out then, as a fetched bar would. */
+function fromRow(r: Candle & { tbv: number | null }): Candle {
+  if (r.tbv == null) {
+    const { tbv: _drop, ...rest } = r;
+    return rest;
+  }
+  return r;
+}
+
 export function readStored(coin: string, tf: Timeframe, source: SourceId, limit: number): Candle[] {
   try {
     const rows = getDb()
-      .prepare("SELECT t, o, h, l, c, v FROM candles WHERE coin = ? AND tf = ? AND source = ? ORDER BY t DESC LIMIT ?")
-      .all(coin, tf, source, limit) as Candle[];
-    return rows.reverse();
+      .prepare("SELECT t, o, h, l, c, v, tbv FROM candles WHERE coin = ? AND tf = ? AND source = ? ORDER BY t DESC LIMIT ?")
+      .all(coin, tf, source, limit) as (Candle & { tbv: number | null })[];
+    return rows.reverse().map(fromRow);
   } catch {
     return []; // no database available: behave as before
   }
@@ -183,12 +198,12 @@ export function readWindow(coin: string, tf: Timeframe, endSec: number, before: 
   try {
     const d = getDb();
     const head = d
-      .prepare("SELECT t, o, h, l, c, v FROM candles WHERE coin = ? AND tf = ? AND source = ? AND t < ? ORDER BY t DESC LIMIT ?")
-      .all(coin, tf, PRIMARY_SOURCE, endSec, before) as Candle[];
+      .prepare("SELECT t, o, h, l, c, v, tbv FROM candles WHERE coin = ? AND tf = ? AND source = ? AND t < ? ORDER BY t DESC LIMIT ?")
+      .all(coin, tf, PRIMARY_SOURCE, endSec, before) as (Candle & { tbv: number | null })[];
     const tail = d
-      .prepare("SELECT t, o, h, l, c, v FROM candles WHERE coin = ? AND tf = ? AND source = ? AND t >= ? ORDER BY t LIMIT ?")
-      .all(coin, tf, PRIMARY_SOURCE, endSec, after) as Candle[];
-    return head.reverse().concat(tail);
+      .prepare("SELECT t, o, h, l, c, v, tbv FROM candles WHERE coin = ? AND tf = ? AND source = ? AND t >= ? ORDER BY t LIMIT ?")
+      .all(coin, tf, PRIMARY_SOURCE, endSec, after) as (Candle & { tbv: number | null })[];
+    return head.reverse().concat(tail).map(fromRow);
   } catch {
     return [];
   }
@@ -197,9 +212,13 @@ export function readWindow(coin: string, tf: Timeframe, endSec: number, before: 
 export function store(coin: string, tf: Timeframe, source: SourceId, candles: Candle[]) {
   try {
     const d = getDb();
-    const ins = d.prepare("INSERT OR REPLACE INTO candles (coin, tf, source, t, o, h, l, c, v) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    // a bar fetched without taker volume never erases one stored with it
+    const ins = d.prepare(
+      "INSERT INTO candles (coin, tf, source, t, o, h, l, c, v, tbv) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+        "ON CONFLICT (coin, tf, source, t) DO UPDATE SET o = excluded.o, h = excluded.h, l = excluded.l, c = excluded.c, v = excluded.v, tbv = COALESCE(excluded.tbv, candles.tbv)",
+    );
     d.transaction(() => {
-      for (const x of candles) ins.run(coin, tf, source, x.t, x.o, x.h, x.l, x.c, x.v);
+      for (const x of candles) ins.run(coin, tf, source, x.t, x.o, x.h, x.l, x.c, x.v, x.tbv ?? null);
     })();
   } catch (e) {
     logger.warn("datasource", `保存 K 线到本地失败：${coin} ${tf} ${source}`, { error: (e as Error).message });
@@ -219,7 +238,7 @@ export function pruneStoredKlines(nowSec = Date.now() / 1000): number {
   let removed = 0;
   for (const x of series) {
     const days = KEEP_DAYS[x.tf];
-    if (x.source === PRIMARY_SOURCE) {
+    if (x.source === PRIMARY_SOURCE || x.source === MARK_SOURCE) {
       if (days != null) removed += del.run(x.coin, x.tf, x.source, Math.floor(nowSec - days * 86400)).changes;
     } else {
       removed += del.run(x.coin, x.tf, x.source, x.last - FALLBACK_KEEP_BARS * TF_SECONDS[x.tf]).changes;
