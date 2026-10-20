@@ -28,6 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/linlea666/pro/main/scripts/install.
 | `sudo signallight logs` | 实时日志 |
 | `sudo signallight backup` / `restore <文件>` | 备份 / 恢复数据库（每天也会自动备份） |
 | `sudo signallight admin` | 创建管理员或重置密码 |
+| `sudo signallight history` | 本地 K 线历史覆盖情况（`--sync` 立即补齐，平时后台每 10 分钟自动补一批） |
 | `sudo signallight config` | 编辑配置（端口、后台 IP 白名单等），改完执行 `restart` |
 
 目录：代码在 `/opt/signallight/releases/`（`current` 软链接指向运行中的版本，保留最近 3 个），数据在 `/var/lib/signallight/`，配置在 `/etc/signallight/signallight.env`。
@@ -44,7 +45,7 @@ npm test           # 算法单元测试
 node --experimental-strip-types scripts/cli.ts admin --user admin --password 'DevPassword123'   # 创建本地管理员
 ```
 
-需要 Node 22+。行情数据来自 Binance 公共行情镜像（data-api.binance.vision），失败时自动切换到 OKX，无需任何 API key。K 线会保存在本地数据库：首次下载完整历史后，每次只拉取最新约 100 根；所有交易所都无法访问时，继续使用本地数据提供服务。后台每分钟预先计算所有币种和周期，页面打开时直接读取结果。
+需要 Node 22+。行情数据来自 Binance 公共行情镜像（data-api.binance.vision），失败时自动切换到 OKX，无需任何 API key。K 线会保存在本地数据库：首次下载最近 2000 根后，每次只拉取最新约 100 根；所有交易所都无法访问时，继续使用本地数据提供服务。后台还会把历史慢慢补长，供统计、成绩单和研究使用：5 分钟存 30 天、15 分钟存 1 年、1 小时存 2 年、4 小时存 5 年，日线和周线保留全部；发现中间缺了一段会自动补拉（`sudo signallight history` 查看覆盖情况）。后台每分钟预先计算所有币种和周期，页面打开时直接读取结果。
 
 ## 功能
 
@@ -66,7 +67,8 @@ node --experimental-strip-types scripts/cli.ts admin --user admin --password 'De
 ## 结构
 
 ```
-src/lib/data/klines.ts     行情获取（分页、两级数据源回退、按周期缓存）
+src/lib/data/klines.ts     行情获取（分页、两级数据源回退、按周期缓存）、本地保留期限
+src/lib/data/history.ts    后台把本地 K 线补长到保留期限，并检查、补齐中间的缺口
 src/lib/ta/core.ts         指标数学（EMA/RSI/MACD/ADX/PSAR/一目均衡等）
 src/lib/ta/indicators.ts   28 个指标的多空投票 + 人话解释
 src/lib/ta/td.ts           TD 序列：Setup 9 / TDST / Countdown 13 / Risk Level

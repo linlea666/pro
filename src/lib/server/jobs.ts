@@ -96,6 +96,14 @@ async function tick() {
         setState("job.archivedWeek", label);
       }
     }
+    // long candle history: every tick until it reaches the retention targets, then a hole check every 6 hours
+    if (getState("job.historyComplete") !== "1" || due("history", 6 * HOUR)) {
+      const { syncHistory } = await import("../data/history.ts");
+      const r = await syncHistory();
+      setState("job.historyComplete", r.complete ? "1" : "0");
+      if (r.requests || r.error) logger[r.error ? "warn" : "info"]("datasource", r.complete ? "K 线历史已补齐" : "K 线历史补充中", { ...r });
+      done("history");
+    }
     const busy = globalThis as { __slJobBusy?: boolean };
     // stop-loss calibration: weekly, and right away on a fresh install
     const calibEmpty = !getDb().prepare("SELECT 1 FROM risk_calib LIMIT 1").get();

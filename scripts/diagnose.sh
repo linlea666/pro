@@ -96,8 +96,11 @@ q "PRAGMA user_version;"
 q "SELECT 'klines' t, COUNT(*) n FROM klines UNION ALL SELECT 'logs', COUNT(*) FROM logs UNION ALL SELECT 'scorecard_points', COUNT(*) FROM scorecard_points
    UNION ALL SELECT 'risk_calib', COUNT(*) FROM risk_calib UNION ALL SELECT 'ai_cache', COUNT(*) FROM ai_cache UNION ALL SELECT 'params_versions', COUNT(*) FROM params_versions
    UNION ALL SELECT 'admins', COUNT(*) FROM admins UNION ALL SELECT 'sessions', COUNT(*) FROM sessions;"
-echo "--- 本地 K 线覆盖（每个周期：币种数、总根数、最早、最新）"
-q "SELECT tf, COUNT(DISTINCT coin) coins, COUNT(*) bars, datetime(MIN(t),'unixepoch') first, datetime(MAX(t),'unixepoch') last FROM klines GROUP BY tf ORDER BY MIN(t);"
+echo "--- 本地 K 线覆盖（每个周期：币种数、总根数、最早、各币中最晚的起点、最新；目标 5m 30 天 / 15m 1 年 / 1h 2 年 / 4h 5 年 / 日线周线全部）"
+q "SELECT tf, COUNT(*) coins, SUM(n) bars, datetime(MIN(f),'unixepoch') first, datetime(MAX(f),'unixepoch') latest_first, datetime(MAX(l),'unixepoch') last
+   FROM (SELECT coin, tf, COUNT(*) n, MIN(t) f, MAX(t) l FROM klines GROUP BY coin, tf) GROUP BY tf ORDER BY MIN(f);"
+echo "--- K 线历史补充：交易所本身缺数据的序列（无输出表示没有）"
+q "SELECT substr(key, 20) series, value FROM settings WHERE key LIKE 'state.klineHistory.%' AND value NOT LIKE '%\"holes\":[]%';"
 echo "--- 成绩单样本"
 q "SELECT tf, light, COUNT(*) n, ROUND(AVG(close_pct),2) avg_move FROM scorecard_points GROUP BY tf, light;"
 echo "--- 止损校准"
@@ -107,7 +110,7 @@ q "SELECT id, datetime(created_at/1000,'unixepoch') at, author, note FROM params
 q "SELECT username, datetime(created_at/1000,'unixepoch') created, datetime(last_login_at/1000,'unixepoch') last_login FROM admins;"
 q "SELECT * FROM ai_usage ORDER BY day DESC LIMIT 7;"
 echo "--- 运行状态记录"
-q "SELECT key, value FROM settings WHERE key LIKE 'state.%' AND key NOT LIKE '%knownIps%';"
+q "SELECT key, value FROM settings WHERE key LIKE 'state.%' AND key NOT LIKE '%knownIps%' AND key NOT LIKE 'state.klineHistory.%';"
 q "SELECT key, value FROM settings WHERE key NOT LIKE 'state.%' AND key != 'ai.config';"
 sqlite3 "$DB" "SELECT value FROM settings WHERE key='ai.config'" 2>/dev/null | json '
 import json,sys

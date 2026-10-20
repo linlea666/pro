@@ -66,26 +66,33 @@ async function getJson(source: "binance" | "okx", url: string, timeoutMs = 10_00
   }
 }
 
+/** One page of Binance klines (at most 1000 bars). Times in Unix seconds, both ends inclusive. */
+export async function binancePage(coin: string, tf: Timeframe, q: { startTime?: number; endTime?: number; limit: number }): Promise<Candle[]> {
+  const range = `${q.startTime != null ? `&startTime=${q.startTime * 1000}` : ""}${q.endTime != null ? `&endTime=${q.endTime * 1000}` : ""}`;
+  const url = `https://data-api.binance.vision/api/v3/klines?symbol=${coin}USDT&interval=${BINANCE_INTERVAL[tf]}&limit=${q.limit}${range}`;
+  const rows = (await getJson("binance", url)) as unknown[][];
+  if (!Array.isArray(rows)) throw new Error("binance: unexpected response");
+  return rows.map((r) => ({
+    t: Math.floor(Number(r[0]) / 1000),
+    o: Number(r[1]),
+    h: Number(r[2]),
+    l: Number(r[3]),
+    c: Number(r[4]),
+    v: Number(r[5]),
+  }));
+}
+
 async function fromBinance(coin: string, tf: Timeframe, limit: number): Promise<Candle[]> {
   const out: Candle[] = [];
-  let endTime = "";
+  let endTime: number | undefined;
   // newest page first, walking back with endTime
   while (out.length < limit) {
     const size = Math.min(1000, limit - out.length);
-    const url = `https://data-api.binance.vision/api/v3/klines?symbol=${coin}USDT&interval=${BINANCE_INTERVAL[tf]}&limit=${size}${endTime ? `&endTime=${endTime}` : ""}`;
-    const rows = (await getJson("binance", url)) as unknown[][];
-    if (!Array.isArray(rows) || rows.length === 0) break;
-    const page = rows.map((r) => ({
-      t: Math.floor(Number(r[0]) / 1000),
-      o: Number(r[1]),
-      h: Number(r[2]),
-      l: Number(r[3]),
-      c: Number(r[4]),
-      v: Number(r[5]),
-    }));
+    const page = await binancePage(coin, tf, { endTime, limit: size });
+    if (page.length === 0) break;
     out.unshift(...page);
-    if (rows.length < size) break;
-    endTime = String(Number(rows[0][0]) - 1);
+    if (page.length < size) break;
+    endTime = page[0].t - 1;
   }
   if (out.length === 0) throw new Error("binance: empty");
   return out;
@@ -112,7 +119,19 @@ async function fromOkx(coin: string, tf: Timeframe, limit: number): Promise<Cand
 
 // ---------------------------------------------------------------- local history
 
-const KEEP_BARS = 5000;
+/**
+ * Days of history kept per timeframe (null = everything the exchange has). The live
+ * analysis reads only the newest ~2000 bars; the rest feeds statistics and research
+ * and is filled in the background (see history.ts).
+ */
+export const KEEP_DAYS: Record<Timeframe, number | null> = {
+  "5m": 30,
+  "15m": 365,
+  "1h": 730,
+  "4h": 1826,
+  "1d": null,
+  "1w": null,
+};
 /** how many recent bars to re-fetch once the local history is complete */
 const INCREMENTAL_BARS = 100;
 
@@ -125,7 +144,7 @@ function readStored(coin: string, tf: Timeframe, limit: number): Candle[] {
   }
 }
 
-function store(coin: string, tf: Timeframe, candles: Candle[]) {
+export function store(coin: string, tf: Timeframe, candles: Candle[]) {
   try {
     const d = getDb();
     const ins = d.prepare("INSERT OR REPLACE INTO klines (coin, tf, t, o, h, l, c, v) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
@@ -137,15 +156,15 @@ function store(coin: string, tf: Timeframe, candles: Candle[]) {
   }
 }
 
-/** Trim stored history to the newest KEEP_BARS per coin/timeframe (run daily). */
-export function pruneStoredKlines(): number {
+/** Drop stored bars older than each timeframe's retention (run daily). */
+export function pruneStoredKlines(nowSec = Date.now() / 1000): number {
   const d = getDb();
-  const pairs = d.prepare("SELECT coin, tf, COUNT(*) n FROM klines GROUP BY coin, tf").all() as { coin: string; tf: string; n: number }[];
+  const coins = (d.prepare("SELECT DISTINCT coin FROM klines").all() as { coin: string }[]).map((r) => r.coin);
+  const del = d.prepare("DELETE FROM klines WHERE coin = ? AND tf = ? AND t < ?");
   let removed = 0;
-  for (const p of pairs) {
-    if (p.n <= KEEP_BARS) continue;
-    const cut = d.prepare("SELECT t FROM klines WHERE coin = ? AND tf = ? ORDER BY t DESC LIMIT 1 OFFSET ?").get(p.coin, p.tf, KEEP_BARS - 1) as { t: number };
-    removed += d.prepare("DELETE FROM klines WHERE coin = ? AND tf = ? AND t < ?").run(p.coin, p.tf, cut.t).changes;
+  for (const [tf, days] of Object.entries(KEEP_DAYS)) {
+    if (days == null) continue;
+    for (const coin of coins) removed += del.run(coin, tf, Math.floor(nowSec - days * 86400)).changes;
   }
   return removed;
 }

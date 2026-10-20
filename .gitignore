@@ -3,7 +3,7 @@ node_modules
 *.tsbuildinfo
 next-env.d.ts
 .env*.local
-data/
+/data/
 
 # research data and outputs (re-downloadable: node research/fetch.mjs research/hist)
 research/hist/
