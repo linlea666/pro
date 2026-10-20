@@ -15,10 +15,10 @@ import { bhAdjust, cells, controlTrades, judge, makeSplit, trades, type Cells, t
  * traffic light itself, from the scorecard's replayed points.
  */
 
-export type ReportKind = "signals" | "light";
+export type ReportKind = "signals" | "light" | "levels";
 
 export interface ResearchRow {
-  family: "signal" | "indicator" | "light";
+  family: "signal" | "indicator" | "light" | "level";
   key: string;
   name: string;
   side: "bull" | "bear";
@@ -29,6 +29,8 @@ export interface ResearchRow {
   q: number | null;
   consistent: boolean;
   verdict: Verdict;
+  /** kind-specific numbers (levels: piercedPct, brokenPct) */
+  extra?: Record<string, number | null>;
 }
 
 export interface ResearchReport {
@@ -58,7 +60,7 @@ export function loadHistory(coin: string, tf: Timeframe, nowSec = Date.now() / 1
 
 const tick = () => new Promise((r) => setImmediate(r));
 
-function finish(rows: Omit<ResearchRow, "q" | "consistent" | "verdict">[], alpha: number, minSamples: number): ResearchRow[] {
+export function finish(rows: Omit<ResearchRow, "q" | "consistent" | "verdict">[], alpha: number, minSamples: number): ResearchRow[] {
   const q = bhAdjust(rows.map((r) => (r.cells.is.n >= minSamples ? r.cells.is.p : null)));
   return rows.map((r, k) => ({ ...r, q: q[k], ...judge(r.cells, q[k], alpha, minSamples) }));
 }

@@ -8,7 +8,7 @@
  *   info                          print database path, schema version, admin count
  *   history [--sync] [--coin BTC] [--tf 1h]
  *                                 local candle history per coin/timeframe; --sync fills it now
- *   research [--kind signals|light] [--all]
+ *   research [--kind signals|light|levels] [--all]
  *                                 generate the research reports, save them and print the findings (--all: every row)
  *   compare --set KEY=VALUE [--set ...] [--tf 1h] [--coin BTC] [--step 2]
  *                                 replay the traffic light with the current and the changed parameters on the
@@ -103,11 +103,13 @@ async function main() {
     case "research": {
       const { currentParams } = await import("../src/lib/server/params-store.ts");
       const { lightReport, saveReport, signalsReport } = await import("../src/lib/research/run.ts");
+      const { levelsReport } = await import("../src/lib/research/levels.ts");
       const { engine, version } = currentParams();
       const kind = opt("kind");
       const reports = [];
       if (!kind || kind === "light") reports.push(lightReport(engine, { paramsVersion: version }));
       if (!kind || kind === "signals") reports.push(await signalsReport(engine, { paramsVersion: version }));
+      if (!kind || kind === "levels") reports.push(await levelsReport(engine, { paramsVersion: version }));
       const f = (g: { edgeR: number | null; n: number }) => (g.edgeR == null ? "    —" : `${g.edgeR >= 0 ? "+" : ""}${g.edgeR.toFixed(2)}`.padStart(5));
       for (const r of reports) {
         const id = saveReport(r);
@@ -115,9 +117,10 @@ async function main() {
         for (const c of r.coverage) console.log(`  ${c.tf}：${c.coins} 个币，${c.bars}${r.kind === "light" ? " 个时点" : " 根/币"}，${new Date((c.from ?? 0) * 1000).toISOString().slice(0, 10)} 至 ${new Date((c.to ?? 0) * 1000).toISOString().slice(0, 10)}`);
         console.log("  周期 信号                      笔数  样本内 样本外   BTC   ETH  前半  后半  q值     结论");
         for (const x of r.rows) {
-          if (!rest.includes("--all") && x.verdict !== "有优势" && x.verdict !== "比随机差" && x.family !== "light") continue;
+          if (!rest.includes("--all") && x.verdict !== "有优势" && x.verdict !== "比随机差" && x.family !== "light" && x.family !== "level") continue;
           const c = x.cells;
-          console.log(`  ${x.tf.padEnd(4)} ${x.name.padEnd(22)} ${String(c.is.n).padStart(5)} ${f(c.is)}  ${f(c.oos)} ${f(c.btc)} ${f(c.eth)} ${f(c.firstHalf)} ${f(c.secondHalf)}  ${String(x.q ?? "—").padEnd(6)}  ${x.verdict}`);
+          const lv = x.extra ? `  刺穿 ${x.extra.piercedPct}% 失效 ${x.extra.brokenPct}%  均值 ${c.is.meanR}R` : "";
+          console.log(`  ${x.tf.padEnd(4)} ${x.name.padEnd(22)} ${String(c.is.n).padStart(5)} ${f(c.is)}  ${f(c.oos)} ${f(c.btc)} ${f(c.eth)} ${f(c.firstHalf)} ${f(c.secondHalf)}  ${String(x.q ?? "—").padEnd(6)}  ${x.verdict}${lv}`);
         }
       }
       console.log("\n优势单位 R（1R = 入场时 1 倍 ATR），已扣成本，对比同期随机对照。");

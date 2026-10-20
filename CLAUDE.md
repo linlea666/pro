@@ -13,7 +13,7 @@
   - 内部 import 用**相对路径并带 `.ts` 后缀**，比如 `../ta/risk.ts`；`@/` 别名只在 app / components 里用；
   - **不要使用 TS 的参数属性写法**（`constructor(private x)`），也不要用 enum。
 - 常用命令：
-  - `npm test`：单元测试，目前 34 个（全部不联网，CI 在 `.github/workflows/ci.yml` 里跑类型检查、测试和构建）；
+  - `npm test`：单元测试，目前 35 个（全部不联网，CI 在 `.github/workflows/ci.yml` 里跑类型检查、测试和构建）；
   - `npx tsc --noEmit`：类型检查；
   - `npx next build`：生产构建；
   - `npm run dev`：本地开发；
@@ -45,6 +45,7 @@
 - `src/lib/research/`：研究框架（在线版，跑在服务器的本地长历史上）：
   - `engine.ts`：不重叠交易、扣成本、R = 入场时 1 倍 ATR、随机对照（同币同期每根 K 线）、BH 校正、切分（最近 12 个月样本外，样本内再分前后两半）和判定 `judge`：优势 ≥ 0.1R、校正后显著、BTC / ETH / 前后两半 / 样本外方向一致才算“有优势”；
   - `run.ts`：`signalsReport`（注册表里的信号和每个指标的翻转）、`lightReport`（信号灯，读成绩单）、报告存取（`research_reports` 表）；
+  - `levels.ts`：`levelsReport`（E6 的在线版）：每种找位方法触位反向交易（位前 0.1 ATR 入场、位外 0.85 ATR 止损、2R 止盈）对随机价格线的优势，以及刺穿（0.1 ATR）/ 失效（0.8 ATR）比例，供 v1.3 防守位页使用；
   - 每周自动生成（`research/jobs.ts`），后台“研究报告”页查看、可手动生成；`sudo signallight research` 在服务器上生成并打印结论；参数试算同时给出样本内 / 样本外。
   - 引擎改动的“先证明再上线”就用它：`compare.ts` 在同一批历史时点上用新旧参数各回放一次信号灯，对比两份成绩单；服务器上运行 `sudo signallight compare --set 参数=值 [--tf 1h] [--step 3]`。
 - 指标家族：`indicators.ts` 的 `FAMILIES`（按投票相关性聚类得到，26 个会投票的指标约等于 6 个独立意见）和 `familyVotes`。参数 `verdict.familyVotes`（默认关）打开后，动量资金分项按家族计票；指标页始终显示家族合并后的多空数。

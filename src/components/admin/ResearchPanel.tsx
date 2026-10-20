@@ -6,7 +6,9 @@ import type { ResearchReport, ResearchRow } from "@/lib/research/run";
 import { TF_LABEL } from "@/lib/types";
 import { btnCls, fmtTime } from "./ui";
 
-type ListItem = { id: number; createdAt: number; kind: "signals" | "light"; paramsVersion: number };
+type Kind = "signals" | "light" | "levels";
+type ListItem = { id: number; createdAt: number; kind: Kind; paramsVersion: number };
+const KIND_LABEL: Record<Kind, string> = { light: "信号灯", signals: "信号与指标", levels: "关键位" };
 
 const VERDICT_COLOR: Record<string, string> = {
   有优势: "var(--up)",
@@ -29,7 +31,7 @@ function Edge({ g, strong = false }: { g: Group; strong?: boolean }) {
 
 /** Research reports: every signal against a random control, in-sample and on the held-out last 12 months. */
 export function ResearchPanel() {
-  const [kind, setKind] = useState<"signals" | "light">("light");
+  const [kind, setKind] = useState<Kind>("light");
   const [id, setId] = useState<number | null>(null);
   const [list, setList] = useState<ListItem[]>([]);
   const [r, setR] = useState<(ResearchReport & { id: number }) | null | undefined>(undefined);
@@ -62,7 +64,7 @@ export function ResearchPanel() {
 
   const rows = useMemo(() => {
     if (!r) return [];
-    return r.rows.filter((x) => (tf === "all" || x.tf === tf) && (r.kind === "light" || x.family === family) && (!onlyFindings || x.verdict === "有优势" || x.verdict === "比随机差"));
+    return r.rows.filter((x) => (tf === "all" || x.tf === tf) && (r.kind !== "signals" || x.family === family) && (!onlyFindings || x.verdict === "有优势" || x.verdict === "比随机差"));
   }, [r, tf, family, onlyFindings]);
 
   return (
@@ -79,7 +81,7 @@ export function ResearchPanel() {
       {msg && <p className={`rounded-lg px-3 py-2 text-[13px] ${msg.ok ? "bg-up-soft text-up" : "bg-down-soft text-down"}`}>{msg.text}</p>}
 
       <div className="flex flex-wrap gap-2 text-sm">
-        {(["light", "signals"] as const).map((k) => (
+        {(["light", "signals", "levels"] as const).map((k) => (
           <button
             key={k}
             className={`rounded-lg px-3 py-1.5 ${kind === k ? "bg-ink text-bg" : "border border-line text-ink-2"}`}
@@ -88,7 +90,7 @@ export function ResearchPanel() {
               setId(null);
             }}
           >
-            {k === "light" ? "信号灯" : "信号与指标"}
+            {KIND_LABEL[k]}
           </button>
         ))}
         <select className="rounded-lg border border-line bg-panel-2 px-2 py-1.5" value={id ?? ""} onChange={(e) => setId(Number(e.target.value) || null)}>
@@ -106,7 +108,7 @@ export function ResearchPanel() {
       {r === undefined ? (
         <div className="h-48 animate-pulse rounded-xl bg-panel-2" />
       ) : r === null ? (
-        <p className="card p-4 text-sm text-ink-3">还没有这类报告。本地 K 线历史补齐后每周自动生成，也可以点“立即生成”。信号灯报告依赖成绩单，成绩单在后台逐步回放补齐。</p>
+        <p className="card p-4 text-sm text-ink-3">还没有这类报告。本地 K 线历史补齐后每周自动生成，也可以点“立即生成”（关键位报告较慢，约需几分钟）。信号灯报告依赖成绩单，成绩单在后台逐步回放补齐。</p>
       ) : (
         <>
           <section className="card p-4 text-[13px]">
@@ -170,6 +172,8 @@ export function ResearchPanel() {
                   <th className="py-1.5 pr-3 font-normal">ETH</th>
                   <th className="py-1.5 pr-3 font-normal">前半</th>
                   <th className="py-1.5 pr-3 font-normal">后半</th>
+                  {r.kind === "levels" && <th className="py-1.5 pr-3 font-normal">平均 R</th>}
+                  {r.kind === "levels" && <th className="py-1.5 pr-3 font-normal">刺穿 / 失效</th>}
                   <th className="py-1.5 pr-3 font-normal">q 值</th>
                   <th className="py-1.5 font-normal">结论</th>
                 </tr>
@@ -178,7 +182,8 @@ export function ResearchPanel() {
                 {rows.map((x: ResearchRow) => (
                   <tr key={`${x.tf}:${x.key}`} className="border-t border-line">
                     <td className="py-1.5 pr-3">
-                      <span style={{ color: x.side === "bull" ? "var(--up)" : "var(--down)" }}>{x.side === "bull" ? "↑" : "↓"}</span> {x.name}
+                      {x.family !== "level" && <span style={{ color: x.side === "bull" ? "var(--up)" : "var(--down)" }}>{x.side === "bull" ? "↑" : "↓"} </span>}
+                      {x.name}
                     </td>
                     <td className="py-1.5 pr-3">{TF_LABEL[x.tf]}</td>
                     <td className="py-1.5 pr-3">{x.cells.is.n}</td>
@@ -191,6 +196,12 @@ export function ResearchPanel() {
                     <td className="py-1.5 pr-3"><Edge g={x.cells.eth} /></td>
                     <td className="py-1.5 pr-3"><Edge g={x.cells.firstHalf} /></td>
                     <td className="py-1.5 pr-3"><Edge g={x.cells.secondHalf} /></td>
+                    {r.kind === "levels" && <td className="py-1.5 pr-3">{x.cells.is.meanR ?? "—"}</td>}
+                    {r.kind === "levels" && (
+                      <td className="py-1.5 pr-3">
+                        {x.extra?.piercedPct ?? "—"}% / {x.extra?.brokenPct ?? "—"}%
+                      </td>
+                    )}
                     <td className="py-1.5 pr-3">{x.q ?? "—"}</td>
                     <td className="py-1.5" style={{ color: VERDICT_COLOR[x.verdict] }}>{x.verdict}</td>
                   </tr>
