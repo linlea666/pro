@@ -6,7 +6,7 @@ import { TF_SECONDS } from "./types.ts";
 import type { Candle, Timeframe } from "./types.ts";
 import { BEGINNER_TIMEFRAMES, TIMEFRAMES } from "./types.ts";
 import * as ta from "./ta/core.ts";
-import { computeIndicators, type IndicatorReading } from "./ta/indicators.ts";
+import { computeIndicators, familyVotes, type FamilyVote, type IndicatorReading } from "./ta/indicators.ts";
 import { computeTd, type TdEvent, type TdState } from "./ta/td.ts";
 import { computeTrend } from "./ta/trend.ts";
 import { clusterLevels, levelCandidates, periodCandidates, type Level } from "./ta/levels.ts";
@@ -136,6 +136,8 @@ export interface Analysis {
   indicators: {
     readings: IndicatorReading[];
     summary: ReturnType<typeof computeIndicators>["summary"];
+    /** the same votes merged into families of correlated indicators (one vote each) */
+    families: FamilyVote[];
     total: number;
     resonance: { t: number; net: number; bull: number; bear: number }[];
     overlays: { ema20: (number | null)[]; ema50: (number | null)[]; sma200: (number | null)[]; bbUpper: (number | null)[]; bbLower: (number | null)[] };
@@ -375,6 +377,7 @@ async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFA
     indicators: {
       readings: panel.readings,
       summary: panel.summary,
+      families: familyVotes(panel, L),
       total: panel.readings.length,
       resonance: slice(c.map((x, i) => ({ t: x.t, net: panel.net[i], bull: panel.bullCount[i], bear: panel.bearCount[i] }))),
       overlays: {

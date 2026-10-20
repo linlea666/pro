@@ -590,3 +590,46 @@ export function computeIndicators(candles: Candle[], at = candles.length - 1, ip
 }
 
 export const INDICATOR_COUNT = DEFS.length;
+
+// ---------------------------------------------------------------- families
+
+/**
+ * Indicators that say nearly the same thing, grouped. Derived from the correlation
+ * of their votes on BTC/ETH 1h, 4h and daily history (average linkage, r ≥ 0.5):
+ * the 26 voting indicators behave like about 6 independent opinions. `flow` marks
+ * the families the "momentum & flow" part of the verdict is built from.
+ */
+export const FAMILIES: { id: string; name: string; flow: boolean; members: string[] }[] = [
+  { id: "trend_mid", name: "中期趋势", flow: false, members: ["ema_cross", "ichimoku", "adx", "aroon", "slope"] },
+  { id: "trend_long", name: "长期趋势", flow: false, members: ["golden_cross", "ma_stack", "price_sma200"] },
+  { id: "impulse", name: "短期动能", flow: true, members: ["macd", "psar", "roc", "force", "vwap", "obv"] },
+  { id: "strength", name: "相对强弱", flow: true, members: ["rsi", "mfi"] },
+  { id: "divergence", name: "背离", flow: true, members: ["rsi_div"] },
+  { id: "stoch", name: "随机指标", flow: true, members: ["stoch"] },
+  { id: "band", name: "超买超卖", flow: true, members: ["cci", "bollinger", "willr"] },
+  { id: "breakout", name: "通道突破", flow: false, members: ["keltner"] },
+  { id: "money", name: "资金流", flow: true, members: ["cmf", "adl"] },
+  { id: "volume", name: "量能", flow: true, members: ["vol_ratio"] },
+  { id: "candles", name: "K 线形态", flow: true, members: ["candles"] },
+  { id: "volatility", name: "波动", flow: false, members: ["squeeze", "atr"] },
+];
+
+export interface FamilyVote {
+  id: string;
+  name: string;
+  flow: boolean;
+  /** mean vote of the family's enabled members, −1…1 */
+  score: number;
+  members: number;
+}
+
+/** Each family's vote at bar `i`: members are averaged, so a family counts once however many indicators it has. */
+export function familyVotes(panel: IndicatorPanel, i: number, families = FAMILIES): FamilyVote[] {
+  const out: FamilyVote[] = [];
+  for (const f of families) {
+    const votes = f.members.map((id) => panel.byId.get(id)?.[i]).filter((v): v is BiasCode => v !== undefined);
+    if (!votes.length) continue;
+    out.push({ id: f.id, name: f.name, flow: f.flow, score: votes.reduce((s: number, v) => s + v, 0) / votes.length, members: votes.length });
+  }
+  return out;
+}

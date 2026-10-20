@@ -95,6 +95,12 @@ export function IndicatorsTab({ a, mtf, mode, onTf }: TabProps) {
                 ? "多数指标看空，形成了“共振”。下跌共振时不宜抄底，等看空的指标减少再说。"
                 : "多空指标数量接近，没有形成共振，市场处在犹豫阶段。"}
           </p>
+          {a.indicators.families.length > 0 && (
+            <p className="mt-2 text-xs leading-relaxed text-ink-3">
+              这些指标很多是在说同一件事（比如几条均线），按走势相关性合并成 {a.indicators.families.length} 个家族后：
+              {a.indicators.families.filter((f) => f.score > 0).length} 个偏多、{a.indicators.families.filter((f) => f.score < 0).length} 个偏空。历史上整组指标大约只相当于 6 个独立意见，所以“{bull} 个看多”并不代表有 {bull} 个独立的理由。
+            </p>
+          )}
         </section>
 
         <section className="card p-3">

@@ -1,6 +1,6 @@
 import type { Timeframe } from "../types.ts";
 import { TF_HORIZON, TF_LABEL } from "../types.ts";
-import type { IndicatorPanel } from "./indicators.ts";
+import { familyVotes, type IndicatorPanel } from "./indicators.ts";
 import { DEFAULT_ENGINE_PARAMS, type EngineParams } from "../params.ts";
 import type { Level } from "./levels.ts";
 import type { TdState } from "./td.ts";
@@ -102,18 +102,31 @@ export function buildVerdict(args: {
   const W = args.vp ?? DEFAULT_ENGINE_PARAMS.verdict;
   const { tf, price, atr, trend, panel, td, supports, resistances, lastIdx } = args;
 
-  // ---- momentum & flow: momentum, volume, pattern categories
-  const s = panel.summary;
-  const bull = s.momentum.bull + s.volume.bull + s.pattern.bull;
-  const bear = s.momentum.bear + s.volume.bear + s.pattern.bear;
-  const cnt = [s.momentum, s.volume, s.pattern].reduce((a, x) => a + x.bull + x.bear + x.neutral, 0);
-  const momentum = clamp(((bull - bear) / Math.max(1, cnt)) * 150);
-  const momText =
-    bull > bear
-      ? `动量和资金类指标 ${bull} 个看多、${bear} 个看空，买盘${bull - bear >= 4 ? "明显" : "略"}占上风`
-      : bear > bull
-        ? `动量和资金类指标 ${bear} 个看空、${bull} 个看多，卖盘${bear - bull >= 4 ? "明显" : "略"}占上风`
-        : `动量和资金类指标多空各半`;
+  // ---- momentum & flow: momentum, volume, pattern categories (or, optionally, their families: one vote each)
+  let momentum: number, momText: string;
+  if (W.familyVotes) {
+    const fam = familyVotes(panel, lastIdx).filter((f) => f.flow);
+    const fb = fam.filter((f) => f.score > 0).length, fs = fam.filter((f) => f.score < 0).length;
+    momentum = clamp((fam.reduce((a, f) => a + f.score, 0) / Math.max(1, fam.length)) * 150);
+    momText =
+      fb > fs
+        ? `动量和资金类 ${fam.length} 个指标家族：${fb} 个偏多、${fs} 个偏空，买盘${fb - fs >= 3 ? "明显" : "略"}占上风`
+        : fs > fb
+          ? `动量和资金类 ${fam.length} 个指标家族：${fs} 个偏空、${fb} 个偏多，卖盘${fs - fb >= 3 ? "明显" : "略"}占上风`
+          : `动量和资金类 ${fam.length} 个指标家族多空各半`;
+  } else {
+    const s = panel.summary;
+    const bull = s.momentum.bull + s.volume.bull + s.pattern.bull;
+    const bear = s.momentum.bear + s.volume.bear + s.pattern.bear;
+    const cnt = [s.momentum, s.volume, s.pattern].reduce((a, x) => a + x.bull + x.bear + x.neutral, 0);
+    momentum = clamp(((bull - bear) / Math.max(1, cnt)) * 150);
+    momText =
+      bull > bear
+        ? `动量和资金类指标 ${bull} 个看多、${bear} 个看空，买盘${bull - bear >= 4 ? "明显" : "略"}占上风`
+        : bear > bull
+          ? `动量和资金类指标 ${bear} 个看空、${bull} 个看多，卖盘${bear - bull >= 4 ? "明显" : "略"}占上风`
+          : `动量和资金类指标多空各半`;
+  }
 
   // ---- position: room to resistance vs distance to support
   const s1 = supports[0], r1 = resistances[0];

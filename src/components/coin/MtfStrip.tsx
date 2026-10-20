@@ -1,7 +1,7 @@
 "use client";
 
 import type { LightSummary } from "@/lib/analysis";
-import { TF_LABEL, type Timeframe } from "@/lib/types";
+import { TF_HORIZON, TF_LABEL, type Timeframe } from "@/lib/types";
 import { fmtPct } from "./format";
 import { useReplay } from "./replay";
 
@@ -81,13 +81,7 @@ const SUBJECT: Record<MtfKind, string> = {
   chan: "缠论结构",
 };
 
-function majority(tones: Tone[]): Tone {
-  const up = tones.filter((t) => t === "up").length;
-  const down = tones.filter((t) => t === "down").length;
-  return up > down ? "up" : down > up ? "down" : "neutral";
-}
-
-function summarize(kind: MtfKind, mtf: LightSummary[]): string {
+function summarize(kind: MtfKind, mtf: LightSummary[], current: Timeframe): string {
   if (kind === "td") {
     const near = mtf.filter((m) => {
       const d = m.tdDetail;
@@ -101,18 +95,28 @@ function summarize(kind: MtfKind, mtf: LightSummary[]): string {
     const zone = mtf.filter((m) => m.fib && m.fib.ratio >= 0.382 && m.fib.ratio <= 0.618);
     if (zone.length) return `${zone.map((m) => TF_LABEL[m.tf]).join("、")} 正处于 38.2%–61.8% 的常见回调区，是很多人关注的观察位置。`;
   }
-  const by = (tfs: Timeframe[]) => majority(mtf.filter((m) => tfs.includes(m.tf)).map((m) => cellFor(kind, m).tone));
-  const big = by(["1d", "1w"]);
-  const small = by(["5m", "15m", "1h"]);
+  // the timeframe being viewed is the one that matches the holding time; the next one up only filters the direction
+  const main = mtf.find((m) => m.tf === current);
+  const filter = mtf.find((m) => m.tf === HIGHER[current]);
   const s = SUBJECT[kind];
-  if (big === "up" && small === "up") return `${s}在大小周期上都偏多，方向一致，信号更可信。`;
-  if (big === "down" && small === "down") return `${s}在大小周期上都偏空，方向一致，不宜逆势抄底。`;
-  if (big === "up" && small === "down") return `大周期偏多、小周期偏空：大方向向上，短线在回调，可以等小周期重新转强再顺势考虑。`;
-  if (big === "down" && small === "up") return `大周期偏空、小周期偏多：短线反弹，但大方向仍向下，谨慎追涨。`;
-  if (big === "neutral" && small !== "neutral") return `大周期方向不明，小周期${small === "up" ? "偏多" : "偏空"}，只适合短线，持有时间不宜太长。`;
-  if (big !== "neutral" && small === "neutral") return `大周期${big === "up" ? "偏多" : "偏空"}，小周期在整理，等小周期选择方向后再行动。`;
-  return "各周期看法不一，整体方向不明朗。";
+  if (!main) return "";
+  const word = (t: string) => (t === "up" ? "偏多" : t === "down" ? "偏空" : "方向不明");
+  const m = cellFor(kind, main).tone;
+  const M = TF_LABEL[main.tf];
+  if (!filter) return m === "neutral" ? `${s}在${M}上方向不明，先观望。` : `${s}在${M}上${word(m)}；${M}已经是最大的周期，没有更上一级可以对照。`;
+  const f = cellFor(kind, filter).tone;
+  const F = TF_LABEL[filter.tf];
+  const why = `听${M}的，因为它对应你选的持有时间（${TF_HORIZON[main.tf]}）；${F}只用来看是不是顺着大方向。`;
+  if (m === "neutral") return `${s}在${M}上方向不明，先观望；上一级${F}${word(f)}，可以作为之后的参考方向。`;
+  if (f === m) return `${s}在${M}上${word(m)}，上一级${F}也${word(f)}，方向一致。${why}`;
+  if (f === "neutral") return `${s}在${M}上${word(m)}，上一级${F}方向不明，没有大方向撑腰，持有时间别拖长。${why}`;
+  return m === "up"
+    ? `${s}在${M}上偏多，但上一级${F}偏空：这是逆着大方向的反弹，只适合短线、仓位要小，等${F}转强更稳。${why}`
+    : `${s}在${M}上偏空，但上一级${F}偏多：这更可能只是大方向里的回调，不宜追空，等${F}也转弱再说。${why}`;
 }
+
+/** The next timeframe up, used as the direction filter for the one being viewed. */
+const HIGHER: Partial<Record<Timeframe, Timeframe>> = { "5m": "15m", "15m": "1h", "1h": "4h", "4h": "1d", "1d": "1w" };
 
 export function MtfStrip({ kind, mtf, current, onTf, title = "多周期一览" }: { kind: MtfKind; mtf: LightSummary[] | null; current: Timeframe; onTf?: (t: Timeframe) => void; title?: string }) {
   const replay = useReplay();
@@ -155,7 +159,7 @@ export function MtfStrip({ kind, mtf, current, onTf, title = "多周期一览" }
               );
             })}
           </div>
-          <p className="mt-2 text-xs leading-relaxed text-ink-2">{summarize(kind, mtf)}</p>
+          <p className="mt-2 text-xs leading-relaxed text-ink-2">{summarize(kind, mtf, current)}</p>
         </>
       )}
     </section>

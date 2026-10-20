@@ -10,6 +10,9 @@
  *                                 local candle history per coin/timeframe; --sync fills it now
  *   research [--kind signals|light] [--all]
  *                                 generate the research reports, save them and print the findings (--all: every row)
+ *   compare --set KEY=VALUE [--set ...] [--tf 1h] [--coin BTC] [--step 2]
+ *                                 replay the traffic light with the current and the changed parameters on the
+ *                                 same past moments and print both records against the random control
  */
 import fs from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -118,6 +121,41 @@ async function main() {
         }
       }
       console.log("\n优势单位 R（1R = 入场时 1 倍 ATR），已扣成本，对比同期随机对照。");
+      break;
+    }
+    case "compare": {
+      const { currentParams } = await import("../src/lib/server/params-store.ts");
+      const { engineParams, validateParams, DEFAULT_PARAMS } = await import("../src/lib/params.ts");
+      const { compareEngines } = await import("../src/lib/research/compare.ts");
+      const changes: Record<string, number | boolean> = {};
+      rest.forEach((x, i) => {
+        if (rest[i - 1] !== "--set") return;
+        const [k, v] = x.split("=");
+        changes[k] = v === "true" ? true : v === "false" ? false : Number(v);
+      });
+      if (!Object.keys(changes).length) throw new Error("请用 --set 参数=值 指定要对比的改动，例如 --set verdict.familyVotes=true");
+      const cur = currentParams();
+      const next = { ...DEFAULT_PARAMS, ...cur.values, ...changes };
+      const err = validateParams(next);
+      if (err) throw new Error(err);
+      const r = await compareEngines(cur.engine, engineParams(next), {
+        tfs: opt("tf") ? [opt("tf") as "1h"] : undefined,
+        coins: opt("coin") ? [opt("coin")!.toUpperCase()] : undefined,
+        step: Number(opt("step") || 1),
+        onProgress: (n, total) => process.stderr.write(`\r回放 ${n}/${total}`),
+      });
+      process.stderr.write("\n");
+      console.log(`对比 ${JSON.stringify(changes)}：${r.points} 个时点，${r.changedPct}% 的时点灯色变了，用时 ${Math.round(r.durationMs / 1000)} 秒`);
+      const f = (g: { edgeR: number | null }) => (g.edgeR == null ? "    —" : `${g.edgeR >= 0 ? "+" : ""}${g.edgeR.toFixed(2)}`.padStart(5));
+      console.log("  周期 灯色                     笔数  样本内 样本外   BTC   ETH  前半  后半  结论");
+      for (const [label, rows] of [["改前", r.before], ["改后", r.after]] as const) {
+        console.log(`${label}：`);
+        for (const x of rows) {
+          const c = x.cells;
+          console.log(`  ${x.tf.padEnd(4)} ${x.name.padEnd(22)} ${String(c.is.n).padStart(5)} ${f(c.is)}  ${f(c.oos)} ${f(c.btc)} ${f(c.eth)} ${f(c.firstHalf)} ${f(c.secondHalf)}  ${x.verdict}`);
+        }
+      }
+      console.log("\n优势单位 R（1R = 入场时 1 倍 ATR），已扣成本，对比同期全部时点。按工作约定，改后至少好 0.1R、BTC/ETH 和前后两半方向一致才可以上线。");
       break;
     }
     default:

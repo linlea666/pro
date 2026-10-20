@@ -186,6 +186,17 @@ export const PARAM_MODULES: ParamModule[] = [
         params: [n("verdict.threshold", "红绿灯阈值", 18, 5, 50, 1, "综合分 ≥ 阈值亮绿灯，≤ −阈值亮红灯，中间是黄灯。")],
       },
       {
+        title: "动量资金的计票方式",
+        params: [
+          b(
+            "verdict.familyVotes",
+            "按指标家族计票",
+            false,
+            "打开后，动量资金分项先在高度相关的指标家族内取平均，每个家族只算一票（26 个指标约等于 6 个独立意见）。上线前请先用研究框架对比成绩单。",
+          ),
+        ],
+      },
+      {
         title: "止损参考",
         params: [
           n("verdict.stopQuantile", "扫损缓冲分位数", 80, 50, 95, 5, "止损放在结构高低点之外多远：取历史上“守住的位被刺穿多深”的这个分位数。80 表示八成守住的位刺穿得没这么深。", "%"),
@@ -271,7 +282,7 @@ export interface EngineParams {
   td: { setupLength: number; setupLookback: number; countdownLength: number; countdownLookback: number };
   indicators: { enabled: Set<string>; rsiLow: number; rsiHigh: number; strongPct: number };
   trend: { adxFloor: number; adxSpan: number; diFull: number; mild: number; strong: number; weights: Record<string, number> };
-  verdict: { trend: number; momentum: number; position: number; timing: number; threshold: number; stopQuantile: number };
+  verdict: { trend: number; momentum: number; position: number; timing: number; threshold: number; stopQuantile: number; familyVotes: boolean };
   horizon: Record<Timeframe, number>;
   stats: { minSamples: number; costPct: number; alpha: number };
 }
@@ -311,7 +322,7 @@ export function engineParams(values: ParamValues = DEFAULT_PARAMS): EngineParams
       strong: num(p, "trend.strong"),
       weights: Object.fromEntries(TREND_VOTERS.map((id) => [id, num(p, `trend.w.${id}`)])),
     },
-    verdict: { trend: w.trend / sum, momentum: w.momentum / sum, position: w.position / sum, timing: w.timing / sum, threshold: num(p, "verdict.threshold"), stopQuantile: num(p, "verdict.stopQuantile") },
+    verdict: { trend: w.trend / sum, momentum: w.momentum / sum, position: w.position / sum, timing: w.timing / sum, threshold: num(p, "verdict.threshold"), stopQuantile: num(p, "verdict.stopQuantile"), familyVotes: p["verdict.familyVotes"] === true },
     horizon: Object.fromEntries(TFS.map((tf) => [tf, num(p, `stats.h.${tf}`)])) as Record<Timeframe, number>,
     stats: { minSamples: num(p, "stats.minSamples"), costPct: num(p, "stats.costPct"), alpha: num(p, "stats.alpha") },
   };

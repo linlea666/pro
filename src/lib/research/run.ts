@@ -131,28 +131,29 @@ export async function signalsReport(
   };
 }
 
-/** The traffic light's record from the scorecard: green as a long, red as a short, against every recorded point. */
-export function lightReport(ep: EngineParams, opts: { paramsVersion: number; nowSec?: number } = { paramsVersion: 0 }): ResearchReport {
-  const t0 = Date.now();
-  const nowSec = opts.nowSec ?? Date.now() / 1000;
+export interface LightPoint {
+  coin: string;
+  tf: Timeframe;
+  t: number;
+  light: string;
+  /** close `horizon` bars later vs. the close at t, % */
+  closePct: number;
+  /** ATR(14) at t, % of price */
+  atrPct: number;
+}
+
+/** Green as a long, red as a short, against every point of the same timeframe. */
+export function lightRows(points: LightPoint[], ep: EngineParams, nowSec: number) {
   const cost = ep.stats.costPct;
   const rows: Omit<ResearchRow, "q" | "consistent" | "verdict">[] = [];
   const coverage: ResearchReport["coverage"] = [];
   let holdoutFrom = 0;
-  const coins = new Set<string>();
   for (const tf of ["1h", "4h", "1d"] as Timeframe[]) {
-    const pts = getDb().prepare("SELECT coin, t, light, close_pct, atr_pct FROM scorecard_points WHERE tf = ? ORDER BY t").all(tf) as {
-      coin: string;
-      t: number;
-      light: string;
-      close_pct: number;
-      atr_pct: number;
-    }[];
+    const pts = points.filter((p) => p.tf === tf).sort((x, y) => x.t - y.t);
     if (!pts.length) continue;
-    pts.forEach((p) => coins.add(p.coin));
-    const trade = (p: (typeof pts)[number], dir: 1 | -1): Trade => {
-      const pct = p.close_pct * dir - cost;
-      return { t: p.t, coin: p.coin, pct, r: p.atr_pct > 0 ? pct / p.atr_pct : 0 };
+    const trade = (p: LightPoint, dir: 1 | -1): Trade => {
+      const pct = p.closePct * dir - cost;
+      return { t: p.t, coin: p.coin, pct, r: p.atrPct > 0 ? pct / p.atrPct : 0 };
     };
     const split = makeSplit(pts[0].t, nowSec);
     holdoutFrom = split.holdoutFrom;
@@ -174,18 +175,36 @@ export function lightReport(ep: EngineParams, opts: { paramsVersion: number; now
       });
     }
   }
+  return { rows: finish(rows, ep.stats.alpha, ep.stats.minSamples), coverage, holdoutFrom };
+}
+
+/** The traffic light's record from the scorecard: green as a long, red as a short, against every recorded point. */
+export function lightReport(ep: EngineParams, opts: { paramsVersion: number; nowSec?: number } = { paramsVersion: 0 }): ResearchReport {
+  const t0 = Date.now();
+  const nowSec = opts.nowSec ?? Date.now() / 1000;
+  const points = (
+    getDb().prepare("SELECT coin, tf, t, light, close_pct, atr_pct FROM scorecard_points").all() as {
+      coin: string;
+      tf: Timeframe;
+      t: number;
+      light: string;
+      close_pct: number;
+      atr_pct: number;
+    }[]
+  ).map((p): LightPoint => ({ coin: p.coin, tf: p.tf, t: p.t, light: p.light, closePct: p.close_pct, atrPct: p.atr_pct }));
+  const { rows, coverage, holdoutFrom } = lightRows(points, ep, nowSec);
   return {
     kind: "light",
     title: "信号灯成绩单：绿灯 / 红灯对随机",
     createdAt: Date.now(),
     source: PRIMARY_SOURCE,
     paramsVersion: opts.paramsVersion,
-    costPct: cost,
+    costPct: ep.stats.costPct,
     alpha: ep.stats.alpha,
     holdoutFrom,
-    coins: [...coins],
+    coins: [...new Set(points.map((p) => p.coin))],
     coverage,
-    rows: finish(rows, ep.stats.alpha, ep.stats.minSamples),
+    rows,
     notes: [
       "数据来自成绩单：在本地全部历史上，每隔一个持有期回放一次信号灯，记录持有期后的涨跌。",
       "随机对照是同一周期全部时点按同方向交易的结果；1R = 当时的 1 倍 ATR(14)。",

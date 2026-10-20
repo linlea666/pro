@@ -72,3 +72,21 @@ test("research: random signals on random walks are almost never labelled (≤ 5%
   // and the control is what an "every bar" strategy gets: its edge against itself is zero
   assert.equal(group(ctl, ctl, horizon).edgeR, 0);
 });
+
+test("families: a copy of an indicator added to its family changes nothing; raw counting would double it", async () => {
+  const { familyVotes, FAMILIES } = await import("../src/lib/ta/indicators.ts");
+  const byId = new Map<string, (1 | -1 | 0)[]>([
+    ["macd", [1]],
+    ["roc", [1]],
+    ["rsi", [-1]],
+    ["mfi", [-1]],
+  ]);
+  const panel = { readings: [], summary: {} as never, net: [0], bullCount: [2], bearCount: [2], byId };
+  const total = (fs: typeof FAMILIES) => familyVotes(panel, 0, fs).reduce((s, f) => s + f.score, 0);
+  const base = total(FAMILIES);
+  byId.set("macd_copy", [1]);
+  const withCopy = FAMILIES.map((f) => (f.id === "impulse" ? { ...f, members: [...f.members, "macd_copy"] } : f));
+  assert.equal(total(withCopy), base);
+  assert.equal(base, 0, "one family for, one against: even");
+  assert.equal(familyVotes(panel, 0).length, 2, "families without any enabled member are left out");
+});
