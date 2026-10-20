@@ -13,7 +13,7 @@
   - 内部 import 用**相对路径并带 `.ts` 后缀**，比如 `../ta/risk.ts`；`@/` 别名只在 app / components 里用；
   - **不要使用 TS 的参数属性写法**（`constructor(private x)`），也不要用 enum。
 - 常用命令：
-  - `npm test`：单元测试，目前 27 个；
+  - `npm test`：单元测试，目前 28 个（全部不联网，CI 在 `.github/workflows/ci.yml` 里跑类型检查、测试和构建）；
   - `npx tsc --noEmit`：类型检查；
   - `npx next build`：生产构建；
   - `npm run dev`：本地开发；
@@ -38,7 +38,8 @@
   - `riskcalib.ts`、`scorecard.ts`；
   - AI：`ai.ts`，只在用户点击“AI 分析”按钮时生成，只支持 1 小时及以上周期，有每日上限和每 IP 每小时上限；
   - 参数版本：`params-store.ts`；
-  - 邮件：`mail.ts`（nodemailer，版本锁定；SMTP 配置存 settings 的 `mail.config`，授权码加密，留空保留）；告警：`alert.ts` 的 `raiseAlert(kind, title, detail)`，类别 datasource / gap / job / ai / db，同类 30 分钟一封，`sendDigest` 每日摘要。新加的故障点直接调用 `raiseAlert`，它不会抛错也不等待发信。
+  - 邮件：`mail.ts`（nodemailer，版本锁定；SMTP 配置存 settings 的 `mail.config`，授权码加密，留空保留）；告警：`alert.ts` 的 `raiseAlert(kind, title, detail)`，类别 datasource / gap / job / ai / db，同类 30 分钟一封，`sendDigest` 每日摘要。新加的故障点直接调用 `raiseAlert`，它不会抛错也不等待发信；
+  - 埋点：`events.ts` + `POST /api/event`，事件名白名单在 `src/lib/event-names.ts`；前端用 `src/components/track.ts` 的 `track(name, onceKey?)`；后台“产品指标”页按 PRD 领域 G 口径计算。
 - `src/lib/params.ts`：91 项可调参数，引擎和后台共用。
 - `scripts/`：`install.sh`、`update.sh`、`rollback.sh`、`common.sh`、`signallight` 管理命令、`diagnose.sh`（体检报告）、`cli.ts`。
 - `research/`：离线实验 E1–E9，不参与构建，说明见 `research/README.md`。

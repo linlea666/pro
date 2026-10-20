@@ -154,6 +154,18 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (coin, source, t)
   ) WITHOUT ROWID;
   `,
+  // 8: anonymous product events: a random visitor ID kept in the browser, the event name, the page, the time; no IP
+  `
+  CREATE TABLE events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    vid TEXT NOT NULL,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL
+  );
+  CREATE INDEX events_name_ts ON events(name, ts);
+  CREATE INDEX events_vid_ts ON events(vid, ts);
+  `,
 ];
 
 let db: Database.Database | null = null;

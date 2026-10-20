@@ -51,7 +51,7 @@ async function fromOkx(coin: string) {
   const id = `${coin}-USDT-SWAP`;
   type Body<T> = { code: string; data: T[] };
   const [f, oi, mk] = await Promise.all([
-    getJson("okx-swap", `${OKX}/funding-rate?instId=${id}`) as Promise<Body<{ fundingRate: string; fundingTime: string }>>,
+    getJson("okx-swap", `${OKX}/funding-rate?instId=${id}`) as Promise<Body<{ fundingRate: string; fundingTime: string; nextFundingTime?: string }>>,
     getJson("okx-swap", `${OKX}/open-interest?instType=SWAP&instId=${id}`).catch(() => null) as Promise<Body<{ oiCcy: string }> | null>,
     getJson("okx-swap", `${OKX}/mark-price?instType=SWAP&instId=${id}`).catch(() => null) as Promise<Body<{ markPx: string }> | null>,
   ]);
@@ -63,6 +63,8 @@ async function fromOkx(coin: string) {
     fundingRate: rate,
     nextFundingTime: Math.floor(Number(f.data[0].fundingTime) / 1000),
     openInterest: num(oi?.data?.[0]?.oiCcy),
+    // OKX also gives the settlement after this one
+    intervalHours: f.data[0].nextFundingTime ? Math.round((Number(f.data[0].nextFundingTime) - Number(f.data[0].fundingTime)) / 3600_000) || null : null,
   } as const;
 }
 
@@ -108,7 +110,7 @@ export async function getPerpSnapshot(coin: string): Promise<PerpSnapshot> {
   } catch {
     // no database: the live numbers alone
   }
-  const value: PerpSnapshot = { ...live, ...stats, fetchedAt: Date.now() };
+  const value: PerpSnapshot = { ...live, ...stats, intervalHours: stats.intervalHours ?? ("intervalHours" in live ? live.intervalHours : null), fetchedAt: Date.now() };
   cache.set(coin, { at: Date.now(), value });
   return value;
 }

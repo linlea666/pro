@@ -4,6 +4,7 @@ import "./globals.css";
 import { Logo } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { ErrorReporter } from "@/components/ErrorReporter";
+import { Tracker } from "@/components/Tracker";
 
 export const metadata: Metadata = {
   title: "信号灯 SignalLight — 看得懂的加密行情分析",
@@ -30,6 +31,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body className="min-h-screen">
         <ErrorReporter />
+        <Tracker />
         <header className="sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur">
           <div className="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4 sm:gap-6">
             <Link href="/" className="flex shrink-0 items-center gap-2">

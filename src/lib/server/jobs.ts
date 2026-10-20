@@ -86,7 +86,9 @@ async function tick() {
       const r = cleanupLogs();
       const { pruneStoredKlines } = await import("../data/klines.ts");
       const klines = pruneStoredKlines();
-      logger.info("system", "日志清理完成", { ...r, prunedKlines: klines, retentionDays: getSetting("log.retentionDays"), durationMs: Date.now() - t });
+      const { pruneEvents } = await import("./events.ts");
+      const events = pruneEvents();
+      logger.info("system", "日志清理完成", { ...r, prunedKlines: klines, prunedEvents: events, retentionDays: getSetting("log.retentionDays"), durationMs: Date.now() - t });
       done("cleanup");
     }
     if (getSetting("log.weeklyArchive")) {

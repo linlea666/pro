@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { createPortal } from "react-dom";
 import type { IndicatorStat } from "@/lib/analysis";
 import { getKnowledge } from "@/lib/knowledge";
+import { track } from "./track";
 
 /**
  * Tap-to-explain card. Desktop: anchored popover next to the trigger.
@@ -136,6 +137,7 @@ export function Explain({ k, children, variant = "term", now, stats, className =
         className={`${triggerCls} ${className}`}
         onClick={(e) => {
           e.stopPropagation();
+          if (!open) track("open_explain");
           setOpen((v) => !v);
         }}
         aria-expanded={open}

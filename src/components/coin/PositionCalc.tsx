@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Term } from "../Term";
 import { Section } from "./shared";
 import { fmtPrice } from "./format";
+import { track } from "../track";
 
 type Side = "long" | "short";
 
@@ -51,13 +52,16 @@ export function PositionCalc({ price, stopRef, coin, light }: { price: number; s
           <button
             key={sd}
             className={`flex-1 rounded-md py-1 ${side === sd ? "bg-panel font-medium text-ink shadow-sm" : "text-ink-3"}`}
-            onClick={() => flip(sd)}
+            onClick={() => {
+              flip(sd);
+              track("use_calc", "calc");
+            }}
           >
             {sd === "long" ? "做多" : "做空"}
           </button>
         ))}
       </div>
-      <div className="grid grid-cols-2 gap-2.5 text-xs text-ink-3">
+      <div className="grid grid-cols-2 gap-2.5 text-xs text-ink-3" onInput={() => track("use_calc", "calc")}>
         <label className="space-y-1">
           <span>总资金 (USDT)</span>
           <input type="number" className={field} value={capital} min={0} onChange={(e) => setCapital(+e.target.value)} />

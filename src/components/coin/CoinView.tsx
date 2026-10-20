@@ -15,6 +15,7 @@ import { FibTab } from "./FibTab";
 import { ChanTab } from "./ChanTab";
 import { ReplayContext, type ReplayState } from "./replay";
 import { ReplayBar } from "./ReplayBar";
+import { track } from "../track";
 
 const TABS = [
   { id: "overview", label: "总览", hint: "一句话结论" },
@@ -78,6 +79,7 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
         if (a.error) throw new Error(a.error);
         setData(a);
         if (!asOf) live.current = a;
+        else track("use_replay", `replay:${coinId}:${tf}:${asOf}`);
         if (Array.isArray(m)) setMtf(m);
         setError(null);
       } catch (e) {
@@ -95,6 +97,10 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
     const id = setInterval(() => load(true), 60_000);
     return () => clearInterval(id);
   }, [load, asOf]);
+
+  useEffect(() => {
+    if (data && !data.replay && tab === "overview") track("view_verdict", `verdict:${data.coin}:${data.tf}`);
+  }, [data, tab]);
 
   // replay points belong to one timeframe's bars
   const changeTf = useCallback((t: Timeframe) => {

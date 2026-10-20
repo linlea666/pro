@@ -53,7 +53,7 @@ globalThis.fetch = (async (input: string) => {
       if (u.pathname.endsWith("history-candles")) return json({ code: "0", data: [] });
       return json({ code: "0", data: Array.from({ length: 300 }, (_, k) => [String((NOW - k * H) * 1000), "150", "151", "149", "150", "999", "7", "0", "1"]) });
     }
-    if (u.pathname === "/api/v5/public/funding-rate") return json({ code: "0", data: [{ fundingRate: "-0.00005", fundingTime: String((NOW + 2 * H) * 1000) }] });
+    if (u.pathname === "/api/v5/public/funding-rate") return json({ code: "0", data: [{ fundingRate: "-0.00005", fundingTime: String((NOW + 2 * H) * 1000), nextFundingTime: String((NOW + 10 * H) * 1000) }] });
     if (u.pathname === "/api/v5/public/open-interest") return json({ code: "0", data: [{ oiCcy: "777" }] });
     if (u.pathname === "/api/v5/public/mark-price") return json({ code: "0", data: [{ markPx: "150.2" }] });
   }
@@ -132,5 +132,6 @@ test("perp: funding and open-interest history, and the live snapshot with an OKX
   assert.equal(okx.source, "okx-swap");
   assert.equal(okx.fundingRate, -0.00005);
   assert.equal(okx.openInterest, 777);
+  assert.equal(okx.intervalHours, 8, "from OKX's next settlement when there is no stored history");
   up.fapi = true;
 });

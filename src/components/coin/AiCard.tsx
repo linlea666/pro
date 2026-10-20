@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Timeframe } from "@/lib/types";
 import { TF_LABEL } from "@/lib/types";
+import { track } from "../track";
 
 interface AiContent {
   headline: string;
@@ -50,6 +51,7 @@ export function AiCard({ coin, tf }: { coin: string; tf: Timeframe }) {
 
   const generate = async () => {
     const key = `${coin}|${tf}`;
+    track("click_ai");
     setBusy(true);
     let next: Res;
     try {
