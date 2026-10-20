@@ -27,6 +27,13 @@ const TABS = [
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
 
+const SOURCE_NOTE: Record<string, string> = {
+  "binance-futures": "Binance 永续合约（USDT 本位）公开行情",
+  "okx-swap": "OKX 永续合约公开行情（Binance 暂时无法访问，已切换）",
+  "binance-spot": "Binance 现货公开行情（合约行情暂时无法访问，已切换；现货价与合约价略有差别）",
+  local: "本地存储（交易所暂时无法访问）",
+};
+
 export type Mode = "beginner" | "pro";
 
 /** Props every module tab receives. */
@@ -228,8 +235,14 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
           {tab === "fib" && <FibTab a={data} mtf={mtf} mode={mode} onTf={changeTf} />}
           {tab === "chan" && <ChanTab a={data} mtf={mtf} mode={mode} onTf={changeTf} />}
           <p className="mt-4 text-right text-[11px] text-ink-3">
-            数据来源 {data.source === "binance" ? "Binance" : data.source === "okx" ? "OKX" : "本地存储（交易所暂时无法访问）"} 公开行情 · 更新于 {ago(data.updatedAt)}
+            数据来源 {SOURCE_NOTE[data.source] ?? SOURCE_NOTE.local} · 更新于 {ago(data.updatedAt)}
             {!asOf && " · 每分钟自动刷新"}
+            {data.source !== "binance-spot" && (
+              <>
+                <br />
+                价格为永续合约最新成交价；交易所的止损可能按标记价触发，剧烈行情中两者会有差距。
+              </>
+            )}
           </p>
         </div>
         </ReplayContext.Provider>

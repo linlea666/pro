@@ -117,19 +117,57 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (coin, tf, t)
   ) WITHOUT ROWID;
   `,
+  // 6: candles stored per data source, so one series never mixes exchanges. The old
+  // klines table stays (emptied) so a release rolled back without its database still runs.
+  `
+  CREATE TABLE candles (
+    coin TEXT NOT NULL,
+    tf TEXT NOT NULL,
+    source TEXT NOT NULL,
+    t INTEGER NOT NULL,
+    o REAL NOT NULL,
+    h REAL NOT NULL,
+    l REAL NOT NULL,
+    c REAL NOT NULL,
+    v REAL NOT NULL,
+    PRIMARY KEY (coin, tf, source, t)
+  ) WITHOUT ROWID;
+  INSERT INTO candles SELECT coin, tf, 'binance-spot', t, o, h, l, c, v FROM klines;
+  DELETE FROM klines;
+  `,
+  // 7: perpetual-contract data: funding rate history and hourly open interest
+  `
+  CREATE TABLE funding_rates (
+    coin TEXT NOT NULL,
+    source TEXT NOT NULL,
+    t INTEGER NOT NULL,
+    rate REAL NOT NULL,
+    mark_price REAL,
+    PRIMARY KEY (coin, source, t)
+  ) WITHOUT ROWID;
+  CREATE TABLE open_interest (
+    coin TEXT NOT NULL,
+    source TEXT NOT NULL,
+    t INTEGER NOT NULL,
+    oi REAL NOT NULL,
+    oi_value REAL,
+    PRIMARY KEY (coin, source, t)
+  ) WITHOUT ROWID;
+  `,
 ];
 
 let db: Database.Database | null = null;
 
-export function migrate(d: Database.Database) {
+/** Apply pending migrations (up to `target`, for tests of an upgrade from an older schema). */
+export function migrate(d: Database.Database, target = MIGRATIONS.length) {
   const current = d.pragma("user_version", { simple: true }) as number;
-  for (let v = current; v < MIGRATIONS.length; v++) {
+  for (let v = current; v < target; v++) {
     d.transaction(() => {
       d.exec(MIGRATIONS[v]);
       d.pragma(`user_version = ${v + 1}`);
     })();
   }
-  return { from: current, to: MIGRATIONS.length };
+  return { from: current, to: Math.max(current, target) };
 }
 
 export function dbPath() {

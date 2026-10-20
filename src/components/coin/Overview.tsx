@@ -13,6 +13,7 @@ import { Explain } from "../Explain";
 import { PositionCalc } from "./PositionCalc";
 import { AiCard } from "./AiCard";
 import { ScorecardCard } from "./ScorecardCard";
+import { PerpCard } from "./PerpCard";
 import type { Mode } from "./CoinView";
 
 export function Overview({ a, mtf, mode, onTf, onTab }: { a: Analysis; mtf: LightSummary[] | null; mode: Mode; onTf: (t: Timeframe) => void; onTab: (t: string) => void }) {
@@ -133,6 +134,7 @@ export function Overview({ a, mtf, mode, onTf, onTab }: { a: Analysis; mtf: Ligh
         </Section>
 
         <PositionCalc price={a.price} stopRef={v.stopRef} coin={a.coin} light={v.light} />
+        {!a.replay && <PerpCard coin={a.coin} beginner={mode === "beginner"} />}
         {!a.replay && <ScorecardCard coin={a.coin} tf={a.tf} horizonText={a.horizonText} />}
       </div>
     </div>

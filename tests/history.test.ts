@@ -33,17 +33,17 @@ globalThis.fetch = (async (url: string) => {
   return new Response(JSON.stringify(rows), { status: 200 });
 }) as typeof fetch;
 
-const count = () => (getDb().prepare("SELECT COUNT(*) n FROM klines WHERE coin = 'BTC' AND tf = '1h'").get() as { n: number }).n;
+const count = () => (getDb().prepare("SELECT COUNT(*) n FROM candles WHERE coin = 'BTC' AND tf = '1h' AND source = 'binance-futures'").get() as { n: number }).n;
 
 test("history: walks back to the exchange's first bar, then repairs a deleted stretch", async () => {
   // the live loader stored the newest 2000 bars
-  store("BTC", "1h", Array.from({ length: 2000 }, (_, k) => bar(NOW - (1999 - k) * H)));
+  store("BTC", "1h", "binance-futures", Array.from({ length: 2000 }, (_, k) => bar(NOW - (1999 - k) * H)));
   const opts = { nowSec: NOW, pauseMs: 0, coins: ["BTC"], tfs: ["1h" as const] };
 
   const r = await syncHistory(opts);
   assert.equal(r.error, undefined);
   assert.equal(r.complete, true);
-  const first = getDb().prepare("SELECT MIN(t) t FROM klines WHERE coin = 'BTC' AND tf = '1h'").get() as { t: number };
+  const first = getDb().prepare("SELECT MIN(t) t FROM candles WHERE coin = 'BTC' AND tf = '1h' AND source = 'binance-futures'").get() as { t: number };
   assert.equal(first.t, LISTED, "reaches the listing (400 days is inside the 2-year target)");
   assert.equal(count(), 400 * 24 + 1 - 4, "every bar the exchange has, nothing twice");
   const [c] = historyCoverage(NOW, ["BTC"], ["1h"]);
@@ -56,7 +56,7 @@ test("history: walks back to the exchange's first bar, then repairs a deleted st
   assert.equal(c.gaps, 0);
 
   // delete a stretch by hand: the next run finds it and fetches it again, nothing else
-  getDb().prepare("DELETE FROM klines WHERE coin = 'BTC' AND tf = '1h' AND t > ? AND t < ?").run(NOW - 50 * 24 * H, NOW - 40 * 24 * H);
+  getDb().prepare("DELETE FROM candles WHERE coin = 'BTC' AND tf = '1h' AND source = 'binance-futures' AND t > ? AND t < ?").run(NOW - 50 * 24 * H, NOW - 40 * 24 * H);
   assert.equal(historyCoverage(NOW, ["BTC"], ["1h"])[0].gaps, 1);
   calls = 0;
   const again = await syncHistory(opts);
@@ -74,11 +74,11 @@ test("history: walks back to the exchange's first bar, then repairs a deleted st
 
 test("history: retention is by age per timeframe; daily bars are kept forever", () => {
   const D = 24 * H;
-  store("ETH", "1h", [bar(NOW - 800 * D), bar(NOW - 700 * D)]);
-  store("ETH", "1d", [bar(NOW - 3000 * D)]);
+  store("ETH", "1h", "binance-futures", [bar(NOW - 800 * D), bar(NOW - 700 * D)]);
+  store("ETH", "1d", "binance-futures", [bar(NOW - 3000 * D)]);
   const removed = pruneStoredKlines(NOW);
   assert.ok(removed >= 1);
-  const ts = (tf: string) => (getDb().prepare("SELECT t FROM klines WHERE coin = 'ETH' AND tf = ?").all(tf) as { t: number }[]).map((x) => x.t);
+  const ts = (tf: string) => (getDb().prepare("SELECT t FROM candles WHERE coin = 'ETH' AND tf = ?").all(tf) as { t: number }[]).map((x) => x.t);
   assert.deepEqual(ts("1h"), [NOW - 700 * D], "1h keeps 2 years");
   assert.deepEqual(ts("1d"), [NOW - 3000 * D]);
 });

@@ -2,7 +2,7 @@ import { analyzeWith } from "../analysis.ts";
 import { COIN_IDS } from "../symbols.ts";
 import { wilson } from "../ta/stats.ts";
 import { TF_SECONDS, type Timeframe } from "../types.ts";
-import { closedThrough, getKlines } from "../data/klines.ts";
+import { closedThrough, getKlines, PRIMARY_SOURCE } from "../data/klines.ts";
 import { getDb } from "./db.ts";
 import { logger } from "./log.ts";
 import { currentParams } from "./params-store.ts";
@@ -13,7 +13,7 @@ import { getState, setState } from "./settings.ts";
  * spaced one stats horizon apart (so samples never overlap), we replay what the
  * light said at that close and record where price was `horizon` bars later.
  * Filled newest-first in small time-boxed batches; cleared whenever the engine
- * parameters change, because the old record would describe a different engine.
+ * parameters or the primary data source change, because the old record would describe something else.
  */
 
 export const SCORECARD_TFS: Timeframe[] = ["1h", "4h", "1d"];
@@ -47,11 +47,11 @@ export interface Scorecard {
 }
 
 function ensureVersion() {
-  const v = String(currentParams().version);
+  const v = `${currentParams().version}:${PRIMARY_SOURCE}`;
   if (getState("scorecard.version") !== v) {
     getDb().prepare("DELETE FROM scorecard_points").run();
     setState("scorecard.version", v);
-    logger.info("engine", "引擎参数已变化，信号灯成绩单重新累计", { version: v });
+    logger.info("engine", "引擎参数或数据源已变化，信号灯成绩单重新累计", { version: v });
   }
 }
 

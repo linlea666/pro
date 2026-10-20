@@ -167,7 +167,7 @@ public_ip() {
 
 check_sources() {
   local ok=0
-  for u in "https://data-api.binance.vision/api/v3/ping" "https://www.okx.com/api/v5/public/time"; do
+  for u in "https://fapi.binance.com/fapi/v1/ping" "https://www.okx.com/api/v5/public/time" "https://data-api.binance.vision/api/v3/ping"; do
     if curl -fsS --max-time 8 "$u" >/dev/null 2>&1; then echo "  ${c_green}✓${c_off} $u"; ok=$((ok + 1)); else echo "  ${c_red}✗${c_off} $u"; fi
   done
   [ "$ok" -gt 0 ] || warn "所有行情数据源都无法访问，网站将无法获取数据。请确认服务器不在中国大陆或美国。"

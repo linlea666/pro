@@ -32,7 +32,7 @@ export const GET = withRoute("admin.overview", async () => {
     secureCookies: env.secureCookies,
     sources: sourceSummary(24),
     precompute: precomputeStats(),
-    storedKlines: (d.prepare("SELECT COUNT(*) n FROM klines").get() as { n: number }).n,
+    storedKlines: (d.prepare("SELECT COUNT(*) n FROM candles").get() as { n: number }).n,
     logs: { byLevel, byCategory, recentErrors, hourly },
     requests: { count: requests.n, avgMs: requests.avg == null ? null : Math.round(requests.avg) },
   });

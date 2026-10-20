@@ -5,9 +5,25 @@ import { recordSource } from "../server/health.ts";
 import { logger } from "../server/log.ts";
 
 /**
- * Public market data with source fallback. Binance's public data mirror first
- * (1000 bars per call), OKX second. Results are cached per symbol/timeframe.
+ * Public market data with source fallback: Binance USDⓈ-M perpetuals first (users trade
+ * contracts), OKX perpetuals second, Binance spot third. Every source is stored as its own
+ * series, so one series never mixes two exchanges. Results are cached per symbol/timeframe.
  */
+
+export type SourceId = "binance-futures" | "okx-swap" | "binance-spot";
+export const SOURCES: SourceId[] = ["binance-futures", "okx-swap", "binance-spot"];
+/** the only source whose history is kept long (history.ts); must be a Binance one */
+export const PRIMARY_SOURCE = "binance-futures" as const;
+export const SOURCE_LABEL: Record<SourceId, string> = {
+  "binance-futures": "Binance 永续合约",
+  "okx-swap": "OKX 永续合约",
+  "binance-spot": "Binance 现货",
+};
+const BINANCE_KLINES: Record<"binance-futures" | "binance-spot", string> = {
+  "binance-futures": "https://fapi.binance.com/fapi/v1/klines",
+  "binance-spot": "https://data-api.binance.vision/api/v3/klines",
+};
+
 
 const TTL_MS: Record<Timeframe, number> = {
   "5m": 20_000,
@@ -26,7 +42,9 @@ export const ttlFor = (tf: Timeframe) => TTL_MS[tf];
 export interface KlineResult {
   candles: Candle[];
   /** "local" = served from the stored history because every exchange failed */
-  source: "binance" | "okx" | "local";
+  source: SourceId | "local";
+  /** with "local": which stored series */
+  stored?: SourceId;
   fetchedAt: number;
 }
 
@@ -43,7 +61,7 @@ export function closedThrough(k: KlineResult, nowMs = Date.now()): number {
 type Entry = { at: number; value?: KlineResult; pending?: Promise<KlineResult> };
 const cache = new Map<string, Entry>();
 
-async function getJson(source: "binance" | "okx", url: string, timeoutMs = 10_000): Promise<unknown> {
+export async function getJson(source: string, url: string, timeoutMs = 10_000): Promise<unknown> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   const start = Date.now();
@@ -67,11 +85,16 @@ async function getJson(source: "binance" | "okx", url: string, timeoutMs = 10_00
 }
 
 /** One page of Binance klines (at most 1000 bars). Times in Unix seconds, both ends inclusive. */
-export async function binancePage(coin: string, tf: Timeframe, q: { startTime?: number; endTime?: number; limit: number }): Promise<Candle[]> {
+export async function binancePage(
+  source: keyof typeof BINANCE_KLINES,
+  coin: string,
+  tf: Timeframe,
+  q: { startTime?: number; endTime?: number; limit: number },
+): Promise<Candle[]> {
   const range = `${q.startTime != null ? `&startTime=${q.startTime * 1000}` : ""}${q.endTime != null ? `&endTime=${q.endTime * 1000}` : ""}`;
-  const url = `https://data-api.binance.vision/api/v3/klines?symbol=${coin}USDT&interval=${BINANCE_INTERVAL[tf]}&limit=${q.limit}${range}`;
-  const rows = (await getJson("binance", url)) as unknown[][];
-  if (!Array.isArray(rows)) throw new Error("binance: unexpected response");
+  const url = `${BINANCE_KLINES[source]}?symbol=${coin}USDT&interval=${BINANCE_INTERVAL[tf]}&limit=${q.limit}${range}`;
+  const rows = (await getJson(source, url)) as unknown[][];
+  if (!Array.isArray(rows)) throw new Error(`${source}: unexpected response`);
   return rows.map((r) => ({
     t: Math.floor(Number(r[0]) / 1000),
     o: Number(r[1]),
@@ -82,37 +105,38 @@ export async function binancePage(coin: string, tf: Timeframe, q: { startTime?: 
   }));
 }
 
-async function fromBinance(coin: string, tf: Timeframe, limit: number): Promise<Candle[]> {
+async function fromBinance(source: keyof typeof BINANCE_KLINES, coin: string, tf: Timeframe, limit: number): Promise<Candle[]> {
   const out: Candle[] = [];
   let endTime: number | undefined;
   // newest page first, walking back with endTime
   while (out.length < limit) {
     const size = Math.min(1000, limit - out.length);
-    const page = await binancePage(coin, tf, { endTime, limit: size });
+    const page = await binancePage(source, coin, tf, { endTime, limit: size });
     if (page.length === 0) break;
     out.unshift(...page);
     if (page.length < size) break;
     endTime = page[0].t - 1;
   }
-  if (out.length === 0) throw new Error("binance: empty");
+  if (out.length === 0) throw new Error(`${source}: empty`);
   return out;
 }
 
-async function fromOkx(coin: string, tf: Timeframe, limit: number): Promise<Candle[]> {
+/** OKX perpetual swaps (volume in the base coin, like Binance). */
+async function fromOkxSwap(coin: string, tf: Timeframe, limit: number): Promise<Candle[]> {
   const out: Candle[] = [];
   let after = "";
   // OKX returns newest first, at most 300 (recent) / 100 (history) per call.
   for (let page = 0; page < 20 && out.length < limit; page++) {
     const endpoint = page === 0 ? "candles" : "history-candles";
-    const url = `https://www.okx.com/api/v5/market/${endpoint}?instId=${coin}-USDT&bar=${OKX_BAR[tf]}&limit=${page === 0 ? 300 : 100}${after ? `&after=${after}` : ""}`;
-    const body = (await getJson("okx", url)) as { code: string; data: string[][] };
+    const url = `https://www.okx.com/api/v5/market/${endpoint}?instId=${coin}-USDT-SWAP&bar=${OKX_BAR[tf]}&limit=${page === 0 ? 300 : 100}${after ? `&after=${after}` : ""}`;
+    const body = (await getJson("okx-swap", url)) as { code: string; data: string[][] };
     if (body.code !== "0" || !Array.isArray(body.data) || body.data.length === 0) break;
     for (const r of body.data) {
-      out.push({ t: Math.floor(Number(r[0]) / 1000), o: +r[1], h: +r[2], l: +r[3], c: +r[4], v: +r[5] });
+      out.push({ t: Math.floor(Number(r[0]) / 1000), o: +r[1], h: +r[2], l: +r[3], c: +r[4], v: +r[6] });
     }
     after = body.data[body.data.length - 1][0];
   }
-  if (out.length === 0) throw new Error("okx: empty");
+  if (out.length === 0) throw new Error("okx-swap: empty");
   out.sort((a, b) => a.t - b.t);
   return out.slice(-limit);
 }
@@ -132,81 +156,138 @@ export const KEEP_DAYS: Record<Timeframe, number | null> = {
   "1d": null,
   "1w": null,
 };
+/** fallback sources only keep about the analysis window */
+const FALLBACK_KEEP_BARS = 2500;
 /** how many recent bars to re-fetch once the local history is complete */
 const INCREMENTAL_BARS = 100;
+/** a source that just failed is skipped for this long, unless every source is failing */
+const COOLDOWN_MS = 60_000;
 
-function readStored(coin: string, tf: Timeframe, limit: number): Candle[] {
+export function readStored(coin: string, tf: Timeframe, source: SourceId, limit: number): Candle[] {
   try {
-    const rows = getDb().prepare("SELECT t, o, h, l, c, v FROM klines WHERE coin = ? AND tf = ? ORDER BY t DESC LIMIT ?").all(coin, tf, limit) as Candle[];
+    const rows = getDb()
+      .prepare("SELECT t, o, h, l, c, v FROM candles WHERE coin = ? AND tf = ? AND source = ? ORDER BY t DESC LIMIT ?")
+      .all(coin, tf, source, limit) as Candle[];
     return rows.reverse();
   } catch {
     return []; // no database available: behave as before
   }
 }
 
-export function store(coin: string, tf: Timeframe, candles: Candle[]) {
+export function store(coin: string, tf: Timeframe, source: SourceId, candles: Candle[]) {
   try {
     const d = getDb();
-    const ins = d.prepare("INSERT OR REPLACE INTO klines (coin, tf, t, o, h, l, c, v) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    const ins = d.prepare("INSERT OR REPLACE INTO candles (coin, tf, source, t, o, h, l, c, v) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
     d.transaction(() => {
-      for (const x of candles) ins.run(coin, tf, x.t, x.o, x.h, x.l, x.c, x.v);
+      for (const x of candles) ins.run(coin, tf, source, x.t, x.o, x.h, x.l, x.c, x.v);
     })();
   } catch (e) {
-    logger.warn("datasource", `保存 K 线到本地失败：${coin} ${tf}`, { error: (e as Error).message });
+    logger.warn("datasource", `保存 K 线到本地失败：${coin} ${tf} ${source}`, { error: (e as Error).message });
   }
 }
 
-/** Drop stored bars older than each timeframe's retention (run daily). */
+/** Drop stored bars older than the retention: KEEP_DAYS for the primary source, the newest bars for the others (run daily). */
 export function pruneStoredKlines(nowSec = Date.now() / 1000): number {
   const d = getDb();
-  const coins = (d.prepare("SELECT DISTINCT coin FROM klines").all() as { coin: string }[]).map((r) => r.coin);
-  const del = d.prepare("DELETE FROM klines WHERE coin = ? AND tf = ? AND t < ?");
+  const series = d.prepare("SELECT coin, tf, source, MAX(t) last FROM candles GROUP BY coin, tf, source").all() as {
+    coin: string;
+    tf: Timeframe;
+    source: string;
+    last: number;
+  }[];
+  const del = d.prepare("DELETE FROM candles WHERE coin = ? AND tf = ? AND source = ? AND t < ?");
   let removed = 0;
-  for (const [tf, days] of Object.entries(KEEP_DAYS)) {
-    if (days == null) continue;
-    for (const coin of coins) removed += del.run(coin, tf, Math.floor(nowSec - days * 86400)).changes;
+  for (const x of series) {
+    const days = KEEP_DAYS[x.tf];
+    if (x.source === PRIMARY_SOURCE) {
+      if (days != null) removed += del.run(x.coin, x.tf, x.source, Math.floor(nowSec - days * 86400)).changes;
+    } else {
+      removed += del.run(x.coin, x.tf, x.source, x.last - FALLBACK_KEEP_BARS * TF_SECONDS[x.tf]).changes;
+    }
   }
+  // rows a rolled-back older release wrote to the old table
+  removed += d.prepare("DELETE FROM klines").run().changes;
   return removed;
 }
 
-async function fetchRemote(coin: string, tf: Timeframe, limit: number): Promise<{ candles: Candle[]; source: "binance" | "okx" }> {
-  try {
-    return { candles: await fromBinance(coin, tf, limit), source: "binance" };
-  } catch (e) {
-    logger.warn("datasource", `Binance 获取失败，切换到 OKX：${coin} ${tf}`, { error: (e as Error).message });
-    return { candles: await fromOkx(coin, tf, limit), source: "okx" };
-  }
+function fetchFrom(source: SourceId, coin: string, tf: Timeframe, limit: number): Promise<Candle[]> {
+  return source === "okx-swap" ? fromOkxSwap(coin, tf, limit) : fromBinance(source, coin, tf, limit);
 }
 
 /**
- * Once the local history is complete and recent, only the newest bars are
- * fetched and merged; otherwise the full window is downloaded. If every
- * exchange fails, the stored history is served instead.
+ * Once the stored series is complete and recent, only the newest bars are
+ * fetched and merged; otherwise the full window is downloaded.
  */
-async function load(coin: string, tf: Timeframe, limit: number): Promise<KlineResult> {
-  const stored = readStored(coin, tf, limit);
+async function loadFrom(source: SourceId, coin: string, tf: Timeframe, limit: number): Promise<KlineResult> {
+  const stored = readStored(coin, tf, source, limit);
   const sec = TF_SECONDS[tf];
   const recent = stored.length >= limit * 0.98 && stored[stored.length - 1].t >= Date.now() / 1000 - INCREMENTAL_BARS * 0.5 * sec;
-  try {
-    if (recent) {
-      const fresh = await fetchRemote(coin, tf, INCREMENTAL_BARS);
-      // the fresh window must overlap or touch the stored history, otherwise fall back to a full download
-      if (fresh.candles.length && fresh.candles[0].t <= stored[stored.length - 1].t + sec) {
-        store(coin, tf, fresh.candles);
-        const merged = stored.filter((x) => x.t < fresh.candles[0].t).concat(fresh.candles).slice(-limit);
-        return { candles: merged, source: fresh.source, fetchedAt: Date.now() };
-      }
+  if (recent) {
+    const fresh = await fetchFrom(source, coin, tf, INCREMENTAL_BARS);
+    // the fresh window must overlap or touch the stored history, otherwise fall back to a full download
+    if (fresh.length && fresh[0].t <= stored[stored.length - 1].t + sec) {
+      store(coin, tf, source, fresh);
+      const merged = stored.filter((x) => x.t < fresh[0].t).concat(fresh).slice(-limit);
+      return { candles: merged, source, fetchedAt: Date.now() };
     }
-    const full = await fetchRemote(coin, tf, limit);
-    store(coin, tf, full.candles);
-    return { candles: full.candles, source: full.source, fetchedAt: Date.now() };
-  } catch (e) {
-    if (stored.length >= 300) {
-      logger.error("datasource", `所有数据源都失败，使用本地存储的 K 线：${coin} ${tf}`, { error: (e as Error).message, lastBar: new Date(stored[stored.length - 1].t * 1000).toISOString() });
-      return { candles: stored, source: "local", fetchedAt: Date.now() };
-    }
-    throw e;
   }
+  const full = await fetchFrom(source, coin, tf, limit);
+  store(coin, tf, source, full);
+  return { candles: full, source, fetchedAt: Date.now() };
+}
+
+const downUntil = new Map<SourceId, number>();
+/** source last served per coin/timeframe, so a switch is logged once rather than on every load */
+const lastServed = new Map<string, SourceId | "local">();
+
+function served(coin: string, tf: Timeframe, r: KlineResult, errors: string[]): KlineResult {
+  const key = `${coin}:${tf}`;
+  const prev = lastServed.get(key);
+  lastServed.set(key, r.source);
+  if (prev !== r.source && (prev !== undefined || r.source !== PRIMARY_SOURCE)) {
+    const name = r.source === "local" ? "本地存储" : SOURCE_LABEL[r.source];
+    if (r.source === PRIMARY_SOURCE) logger.info("datasource", `已恢复主数据源${name}：${coin} ${tf}`);
+    else if (r.source !== "local") logger.warn("datasource", `主数据源暂不可用，改用${name}：${coin} ${tf}`, { errors });
+  }
+  return r;
+}
+
+/**
+ * Sources in order of preference, skipping any that failed in the last minute. If every
+ * exchange fails, the freshest stored series is served instead (the primary one on a tie).
+ */
+async function load(coin: string, tf: Timeframe, limit: number): Promise<KlineResult> {
+  const now = Date.now();
+  const up = SOURCES.filter((s) => (downUntil.get(s) ?? 0) <= now);
+  const errors: string[] = [];
+  for (const source of up.length ? up : SOURCES) {
+    try {
+      return served(coin, tf, await loadFrom(source, coin, tf, limit), errors);
+    } catch (e) {
+      downUntil.set(source, Date.now() + COOLDOWN_MS);
+      errors.push((e as Error).message);
+    }
+  }
+  let best: KlineResult | null = null;
+  for (const source of SOURCES) {
+    const stored = readStored(coin, tf, source, limit);
+    if (stored.length >= 300 && (!best || stored[stored.length - 1].t > best.candles[best.candles.length - 1].t)) {
+      best = { candles: stored, source: "local", stored: source, fetchedAt: Date.now() };
+    }
+  }
+  if (best) {
+    const last = best.candles[best.candles.length - 1].t;
+    logger.error("datasource", `所有数据源都失败，使用本地存储的 K 线：${coin} ${tf}`, { errors, series: best.stored, lastBar: new Date(last * 1000).toISOString() });
+    return served(coin, tf, best, errors);
+  }
+  throw new Error(errors.join("; "));
+}
+
+/** Forget cached results and source failures (tests). */
+export function resetDataSources() {
+  cache.clear();
+  downUntil.clear();
+  lastServed.clear();
 }
 
 export async function getKlines(coin: string, tf: Timeframe, limit = 2000): Promise<KlineResult> {

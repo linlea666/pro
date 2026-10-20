@@ -110,6 +110,6 @@ test("rate limit: IPv6 addresses in one /64 share a window; windows expire on th
 test("closedThrough: bars count as closed only up to the fetch time; stored data never closes its last bar", async () => {
   const { closedThrough } = await import("../src/lib/data/klines.ts");
   const candles: Candle[] = [{ t: 0, o: 1, h: 1, l: 1, c: 1, v: 1 }, { t: 3600, o: 1, h: 1, l: 1, c: 1, v: 1 }];
-  assert.equal(closedThrough({ candles, source: "binance", fetchedAt: 7_100_000 }, 9_000_000), 7100);
+  assert.equal(closedThrough({ candles, source: "binance-futures", fetchedAt: 7_100_000 }, 9_000_000), 7100);
   assert.equal(closedThrough({ candles, source: "local", fetchedAt: 9_000_000 }, 9_000_000), 3600);
 });

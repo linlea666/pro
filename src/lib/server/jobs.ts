@@ -104,6 +104,14 @@ async function tick() {
       if (r.requests || r.error) logger[r.error ? "warn" : "info"]("datasource", r.complete ? "K 线历史已补齐" : "K 线历史补充中", { ...r });
       done("history");
     }
+    // funding settlements and hourly open interest
+    if (due("perp", HOUR - 60_000)) {
+      const { syncPerpHistory } = await import("../data/perp.ts");
+      const r = await syncPerpHistory();
+      if (r.error) logger.warn("datasource", "资金费率 / 持仓量更新失败", r);
+      else if (r.funding || r.openInterest) logger.debug("datasource", "资金费率 / 持仓量已更新", r);
+      done("perp");
+    }
     const busy = globalThis as { __slJobBusy?: boolean };
     // stop-loss calibration: weekly, and right away on a fresh install
     const calibEmpty = !getDb().prepare("SELECT 1 FROM risk_calib LIMIT 1").get();

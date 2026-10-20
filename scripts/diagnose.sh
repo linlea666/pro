@@ -93,12 +93,15 @@ done
 sec "6. 数据库"
 ls -lh "$DB"* 2>/dev/null
 q "PRAGMA user_version;"
-q "SELECT 'klines' t, COUNT(*) n FROM klines UNION ALL SELECT 'logs', COUNT(*) FROM logs UNION ALL SELECT 'scorecard_points', COUNT(*) FROM scorecard_points
+q "SELECT 'candles' t, COUNT(*) n FROM candles UNION ALL SELECT 'funding_rates', COUNT(*) FROM funding_rates UNION ALL SELECT 'open_interest', COUNT(*) FROM open_interest UNION ALL SELECT 'logs', COUNT(*) FROM logs UNION ALL SELECT 'scorecard_points', COUNT(*) FROM scorecard_points
    UNION ALL SELECT 'risk_calib', COUNT(*) FROM risk_calib UNION ALL SELECT 'ai_cache', COUNT(*) FROM ai_cache UNION ALL SELECT 'params_versions', COUNT(*) FROM params_versions
    UNION ALL SELECT 'admins', COUNT(*) FROM admins UNION ALL SELECT 'sessions', COUNT(*) FROM sessions;"
-echo "--- 本地 K 线覆盖（每个周期：币种数、总根数、最早、各币中最晚的起点、最新；目标 5m 30 天 / 15m 1 年 / 1h 2 年 / 4h 5 年 / 日线周线全部）"
-q "SELECT tf, COUNT(*) coins, SUM(n) bars, datetime(MIN(f),'unixepoch') first, datetime(MAX(f),'unixepoch') latest_first, datetime(MAX(l),'unixepoch') last
-   FROM (SELECT coin, tf, COUNT(*) n, MIN(t) f, MAX(t) l FROM klines GROUP BY coin, tf) GROUP BY tf ORDER BY MIN(f);"
+echo "--- 本地 K 线覆盖（每个来源和周期：币种数、总根数、最早、各币中最晚的起点、最新；主来源 binance-futures 的目标 5m 30 天 / 15m 1 年 / 1h 2 年 / 4h 5 年 / 日线周线全部，其他来源只留约 2500 根）"
+q "SELECT source, tf, COUNT(*) coins, SUM(n) bars, datetime(MIN(f),'unixepoch') first, datetime(MAX(f),'unixepoch') latest_first, datetime(MAX(l),'unixepoch') last
+   FROM (SELECT coin, tf, source, COUNT(*) n, MIN(t) f, MAX(t) l FROM candles GROUP BY coin, tf, source) GROUP BY source, tf ORDER BY source, MIN(f);" 60
+echo "--- 资金费率与持仓量（每个币：条数、最早、最新）"
+q "SELECT 'funding' kind, coin, COUNT(*) n, datetime(MIN(t),'unixepoch') first, datetime(MAX(t),'unixepoch') last FROM funding_rates GROUP BY coin
+   UNION ALL SELECT 'oi', coin, COUNT(*), datetime(MIN(t),'unixepoch'), datetime(MAX(t),'unixepoch') FROM open_interest GROUP BY coin;"
 echo "--- K 线历史补充：交易所本身缺数据的序列（无输出表示没有）"
 q "SELECT substr(key, 20) series, value FROM settings WHERE key LIKE 'state.klineHistory.%' AND value NOT LIKE '%\"holes\":[]%';"
 echo "--- 成绩单样本"

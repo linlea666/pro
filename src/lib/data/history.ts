@@ -4,14 +4,14 @@ import { COIN_IDS } from "../symbols.ts";
 import { getDb } from "../server/db.ts";
 import { logger } from "../server/log.ts";
 import { getState, setState } from "../server/settings.ts";
-import { binancePage, KEEP_DAYS, store } from "./klines.ts";
+import { binancePage, KEEP_DAYS, PRIMARY_SOURCE, store } from "./klines.ts";
 
 /**
  * Long local history. The live analysis only needs the newest ~2000 bars, but
  * statistics, the scorecard and research need years. In the background each
  * stored series is walked back to its retention target (KEEP_DAYS) page by page,
- * and holes inside it are fetched again. Only Binance is used here, the source of
- * the live series, so one series never mixes two exchanges.
+ * and holes inside it are fetched again. Only the primary source's series is kept
+ * long; fallback sources only hold about the analysis window.
  */
 
 /** most useful first: when the time budget runs out, 1h and 4h are already done */
@@ -24,7 +24,7 @@ interface SeriesState {
   holes: [number, number][];
 }
 
-const stateKey = (coin: string, tf: Timeframe) => `klineHistory.${coin}.${tf}`;
+const stateKey = (coin: string, tf: Timeframe) => `klineHistory.${PRIMARY_SOURCE}.${coin}.${tf}`;
 
 function readState(coin: string, tf: Timeframe): SeriesState {
   try {
@@ -46,13 +46,13 @@ export function targetStart(tf: Timeframe, nowSec = Date.now() / 1000): number {
 /** Missing stretches inside a stored series: each pair is the stored bars on either side. */
 export function findGaps(coin: string, tf: Timeframe): [number, number][] {
   const rows = getDb()
-    .prepare("SELECT prev, t FROM (SELECT t, LAG(t) OVER (ORDER BY t) prev FROM klines WHERE coin = ? AND tf = ?) WHERE t - prev > ?")
-    .all(coin, tf, TF_SECONDS[tf]) as { prev: number; t: number }[];
+    .prepare("SELECT prev, t FROM (SELECT t, LAG(t) OVER (ORDER BY t) prev FROM candles WHERE coin = ? AND tf = ? AND source = ?) WHERE t - prev > ?")
+    .all(coin, tf, PRIMARY_SOURCE, TF_SECONDS[tf]) as { prev: number; t: number }[];
   return rows.map((r) => [r.prev, r.t]);
 }
 
 function span(coin: string, tf: Timeframe) {
-  return getDb().prepare("SELECT MIN(t) first, MAX(t) last, COUNT(*) n FROM klines WHERE coin = ? AND tf = ?").get(coin, tf) as {
+  return getDb().prepare("SELECT MIN(t) first, MAX(t) last, COUNT(*) n FROM candles WHERE coin = ? AND tf = ? AND source = ?").get(coin, tf, PRIMARY_SOURCE) as {
     first: number | null;
     last: number | null;
     n: number;
@@ -89,9 +89,9 @@ export async function syncHistory(
   const r: SyncResult = { requests: 0, added: 0, filled: 0, complete: true, durationMs: 0 };
   const left = () => Date.now() - t0 < budgetMs;
   // be gentle with the exchange and keep the event loop free for visitors
-  const page = async (coin: string, tf: Timeframe, q: Parameters<typeof binancePage>[2]) => {
+  const page = async (coin: string, tf: Timeframe, q: Parameters<typeof binancePage>[3]) => {
     if (r.requests++ && pauseMs) await new Promise((ok) => setTimeout(ok, pauseMs));
-    return binancePage(coin, tf, q);
+    return binancePage(PRIMARY_SOURCE, coin, tf, q);
   };
 
   try {
@@ -118,7 +118,7 @@ export async function syncHistory(
           if (bars.length < PAGE) st.start = bars.length ? bars[0].t : first;
           if (!bars.length) break;
           const kept = bars.filter((x) => x.t >= target);
-          store(coin, tf, kept);
+          store(coin, tf, PRIMARY_SOURCE, kept);
           r.added += kept.length;
           first = bars[0].t;
         }
@@ -138,7 +138,7 @@ export async function syncHistory(
           for (let from = a + sec; from < b; ) {
             const bars = (await page(coin, tf, { startTime: from, endTime: b - sec, limit: PAGE })).filter((x) => x.t > a && x.t < b);
             if (!bars.length) break;
-            store(coin, tf, bars);
+            store(coin, tf, PRIMARY_SOURCE, bars);
             got += bars.length;
             if (bars.length < PAGE) break;
             from = bars[bars.length - 1].t + sec;

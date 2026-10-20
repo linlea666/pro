@@ -45,7 +45,7 @@ npm test           # 算法单元测试
 node --experimental-strip-types scripts/cli.ts admin --user admin --password 'DevPassword123'   # 创建本地管理员
 ```
 
-需要 Node 22+。行情数据来自 Binance 公共行情镜像（data-api.binance.vision），失败时自动切换到 OKX，无需任何 API key。K 线会保存在本地数据库：首次下载最近 2000 根后，每次只拉取最新约 100 根；所有交易所都无法访问时，继续使用本地数据提供服务。后台还会把历史慢慢补长，供统计、成绩单和研究使用：5 分钟存 30 天、15 分钟存 1 年、1 小时存 2 年、4 小时存 5 年，日线和周线保留全部；发现中间缺了一段会自动补拉（`sudo signallight history` 查看覆盖情况）。后台每分钟预先计算所有币种和周期，页面打开时直接读取结果。
+需要 Node 22+。行情默认来自 Binance U 本位永续合约（fapi.binance.com），失败时依次切换到 OKX 永续合约、Binance 现货，无需任何 API key（服务器需要能访问 fapi.binance.com，美国等受限地区不行，那时会一直用 OKX）。每个来源单独存一条序列，不会把两家交易所的 K 线拼在一起。K 线会保存在本地数据库：首次下载最近 2000 根后，每次只拉取最新约 100 根；所有交易所都无法访问时，继续使用本地数据提供服务。后台还会把主来源的历史慢慢补长，供统计、成绩单和研究使用：5 分钟存 30 天、15 分钟存 1 年、1 小时存 2 年、4 小时存 5 年，日线和周线保留全部；发现中间缺了一段会自动补拉（`sudo signallight history` 查看覆盖情况）。备用来源只保留最近约 2500 根。资金费率（近 2 年）和每小时持仓量每小时更新一次，显示在总览页的“合约市场”里。后台每分钟预先计算所有币种和周期，页面打开时直接读取结果。
 
 ## 功能
 
@@ -53,7 +53,7 @@ node --experimental-strip-types scripts/cli.ts admin --user admin --password 'De
 |---|---|
 | `/` 今日看盘 | 市场温度、10 个主流币在 1 小时 / 4 小时 / 日线上的信号灯 |
 | `/coin/[id]` 分析工作台 | 总览（结论、多周期灯、最近信号及其历史胜率、关键价位、做多 / 做空仓位计算器、信号灯自己的成绩单、按需生成的 AI 分析）、TD 序列、指标共振、支撑阻力、趋势强度、斐波那契（自动识别 + 手动选点）、缠论 |
-| `/learn` 新手学堂 | 28 个术语的大白话解释；分析页里带虚线的词点一下也能看 |
+| `/learn` 新手学堂 | 29 个术语的大白话解释；分析页里带虚线的词点一下也能看 |
 | `/admin` 管理后台 | 运行概览（服务状态、数据源成功率、错误与警告）、日志中心（检索、追踪链路、导出、周归档）、参数调试（91 项参数、试算对比、版本回滚）、AI 配置（Claude，支持自定义 Base URL）、系统设置 |
 
 每个模块都有「多周期一览」（5 分钟到周线的状态一行看完，并给出跨周期总结）；每个指标、支撑阻力方法和术语都可以点开查看：是什么、此刻说明什么、怎么用、常见误区，以及它在当前币种和周期上的历史准确率。
@@ -69,6 +69,7 @@ node --experimental-strip-types scripts/cli.ts admin --user admin --password 'De
 ```
 src/lib/data/klines.ts     行情获取（分页、两级数据源回退、按周期缓存）、本地保留期限
 src/lib/data/history.ts    后台把本地 K 线补长到保留期限，并检查、补齐中间的缺口
+src/lib/data/perp.ts       永续合约的资金费率与持仓量（实时 + 历史）
 src/lib/ta/core.ts         指标数学（EMA/RSI/MACD/ADX/PSAR/一目均衡等）
 src/lib/ta/indicators.ts   28 个指标的多空投票 + 人话解释
 src/lib/ta/td.ts           TD 序列：Setup 9 / TDST / Countdown 13 / Risk Level
