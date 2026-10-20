@@ -57,12 +57,12 @@ function cutoff(c: Candle[], tf: Timeframe, endSec: number | null): Candle[] {
  * same window the live page had then, small timeframes included. Otherwise the live window.
  */
 async function seriesAt(coin: string, tf: Timeframe, replayEnd: number | null): Promise<KlineResult> {
-  const live = await getKlines(coin, tf);
-  if (replayEnd == null) return live;
+  if (replayEnd == null) return getKlines(coin, tf);
   const stored = readWindow(coin, tf, replayEnd, WINDOW, FUTURE_BARS + 1);
   const sec = TF_SECONDS[tf];
   const before = stored.filter((x) => x.t + sec <= replayEnd).length;
-  return before >= 300 ? { candles: stored, source: PRIMARY_SOURCE, fetchedAt: live.fetchedAt } : live;
+  // no network needed: bars that ended before now are final (a bar still forming is left out of "what happened next")
+  return before >= 300 ? { candles: stored, source: PRIMARY_SOURCE, fetchedAt: Date.now() } : getKlines(coin, tf);
 }
 
 async function keyLevels(coin: string, tf: Timeframe, price: number, atr: number, lp: EngineParams["levels"], endSec: number | null = null, replay = false) {

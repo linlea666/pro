@@ -45,6 +45,7 @@ case "$cmd" in
   version) release_version "$(current_release)" ;;
   diagnose) require_root; bash "$CUR/scripts/diagnose.sh" ;;
   history) require_root; cli "$CUR" history "$@" ;;
+  research) require_root; cli "$CUR" research "$@" ;;
   help|*)
     cat <<HELP
 信号灯管理命令：
@@ -59,6 +60,7 @@ case "$cmd" in
   signallight admin             创建管理员或重置密码
   signallight config            编辑配置文件
   signallight history [--sync]  本地 K 线历史覆盖情况；--sync 立即补齐（平时后台会自动补）
+  signallight research [--all]  立即生成研究报告并打印结论（平时每周自动生成，后台“研究报告”页可看）
   signallight diagnose          生成体检报告（只读；密钥和访问者 IP 已隐藏，可发给开发者分析）
   signallight version           查看当前版本
 HELP

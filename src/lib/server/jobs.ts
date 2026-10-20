@@ -68,6 +68,7 @@ export async function backupNow(label = "auto"): Promise<string> {
 }
 
 async function tick() {
+  const busy = globalThis as { __slJobBusy?: boolean };
   try {
     if (due("hourlySummary", HOUR)) {
       const s = sourceSummary(1);
@@ -117,7 +118,6 @@ async function tick() {
       else if (r.funding || r.openInterest) logger.debug("datasource", "资金费率 / 持仓量已更新", r);
       done("perp");
     }
-    const busy = globalThis as { __slJobBusy?: boolean };
     // stop-loss calibration: weekly, and right away on a fresh install
     const calibEmpty = !getDb().prepare("SELECT 1 FROM risk_calib LIMIT 1").get();
     if (calibEmpty || due("riskCalib", 7 * DAY)) {
@@ -135,6 +135,14 @@ async function tick() {
       setState("job.scorecardBacklog", r.remaining > 0 ? "1" : "0");
       if (r.added) logger.info("engine", "信号灯成绩单更新", r);
       done("scorecard");
+    }
+    // research reports: weekly, once the long history is in place
+    if (getState("job.historyComplete") === "1" && due("research", 7 * DAY)) {
+      const { runResearch } = await import("../research/jobs.ts");
+      busy.__slJobBusy = true;
+      const r = await runResearch().finally(() => (busy.__slJobBusy = false));
+      logger.info("engine", "研究报告已生成", r);
+      done("research");
     }
     if (due("digest", DAY)) {
       const s = sourceSummary(24);

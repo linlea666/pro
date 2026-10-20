@@ -34,9 +34,11 @@ interface Digest {
   resistances: number[];
   stats: StatRow[];
 }
+type ResearchSplit = { is: { samples: number; edgeR: number | null }; oos: { samples: number; edgeR: number | null }; better: number; worse: number };
 interface Preview {
   rows: { coin: string; tf: string; before: Digest; after: Digest }[];
   summary: { before: { samples: number; edge: number }; after: { samples: number; edge: number } };
+  research: { before: ResearchSplit; after: ResearchSplit; holdoutFrom: number } | null;
   warnings: string[];
   durationMs: number;
 }
@@ -315,9 +317,9 @@ function VersionRow({ v, st, current, onRollback, busy }: { v: Version; st: Stat
   );
 }
 
-function Delta({ a, b, unit = "" }: { a: number | null; b: number | null; unit?: string }) {
+function Delta({ a, b, unit = "", digits = 1 }: { a: number | null; b: number | null; unit?: string; digits?: number }) {
   if (a == null || b == null) return <span className="text-ink-3">—</span>;
-  const d = Math.round((b - a) * 10) / 10;
+  const d = Math.round((b - a) * 10 ** digits) / 10 ** digits;
   return (
     <span className="num">
       {a}
@@ -350,6 +352,22 @@ function PreviewView({ p }: { p: Preview }) {
           <div className="mt-1 text-base"><Delta a={eb.samples} b={ea.samples} /></div>
         </div>
       </div>
+      {p.research ? (
+        <div className="rounded-lg bg-panel-2 p-3 text-[13px]">
+          <div className="text-xs text-ink-3">
+            本地全部历史上的信号优势（R，相对随机，按样本数加权）：{new Date(p.research.holdoutFrom * 1000).toISOString().slice(0, 10)} 之前为样本内，之后的 12 个月为样本外
+          </div>
+          <div className="mt-1 grid gap-1 sm:grid-cols-2">
+            <div>样本内 <Delta a={p.research.before.is.edgeR} b={p.research.after.is.edgeR} unit="R" digits={3} /> <span className="text-xs text-ink-3">（{p.research.after.is.samples} 笔）</span></div>
+            <div>样本外 <Delta a={p.research.before.oos.edgeR} b={p.research.after.oos.edgeR} unit="R" digits={3} /> <span className="text-xs text-ink-3">（{p.research.after.oos.samples} 笔）</span></div>
+          </div>
+          <div className="mt-1 text-xs text-ink-3">
+            达到“有优势”标准的信号 {p.research.before.better} → {p.research.after.better} 个；“比随机差” {p.research.before.worse} → {p.research.after.worse} 个。样本内和样本外差距越大，越可能是调出来的。
+          </div>
+        </div>
+      ) : (
+        <p className="text-xs text-ink-3">本地长历史还没补齐，暂时没有样本内 / 样本外对比。</p>
+      )}
       {p.warnings.length > 0 ? (
         <div className="rounded-lg border border-warn/40 bg-warn-soft p-3 text-[13px] leading-relaxed">
           <b className="text-warn">⚠ 过拟合提醒</b>

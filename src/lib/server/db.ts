@@ -166,6 +166,17 @@ const MIGRATIONS: string[] = [
   CREATE INDEX events_name_ts ON events(name, ts);
   CREATE INDEX events_vid_ts ON events(vid, ts);
   `,
+  // 9: research reports (the whole report as JSON; the admin page and future pages read from here)
+  `
+  CREATE TABLE research_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    params_version INTEGER NOT NULL,
+    data TEXT NOT NULL
+  );
+  CREATE INDEX research_reports_kind ON research_reports(kind, id);
+  `,
 ];
 
 let db: Database.Database | null = null;

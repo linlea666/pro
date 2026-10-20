@@ -72,10 +72,13 @@ export async function runScorecard(budgetMs = 20_000): Promise<{ added: number; 
     const sec = TF_SECONDS[tf];
     for (const coin of COIN_IDS) {
       try {
-        const k = await getKlines(coin, tf);
-        const until = closedThrough(k);
-        const stored = readStored(coin, tf, PRIMARY_SOURCE, 1_000_000).filter((x) => x.t + sec <= until);
-        const closed = stored.length > k.candles.length ? stored : k.candles.filter((x) => x.t + sec <= until);
+        // the stored history, minus its newest bar (it may still be forming); the live window while there is none
+        let closed = readStored(coin, tf, PRIMARY_SOURCE, 1_000_000).slice(0, -1);
+        if (closed.length < MIN_HISTORY + 2 * H) {
+          const k = await getKlines(coin, tf);
+          const until = closedThrough(k);
+          closed = k.candles.filter((x) => x.t + sec <= until);
+        }
         const ts: number[] = [];
         for (let i = closed.length - 1 - H; i >= MIN_HISTORY; i--) {
           const t = closed[i].t;
