@@ -13,20 +13,21 @@
   - 内部 import 用**相对路径并带 `.ts` 后缀**，比如 `../ta/risk.ts`；`@/` 别名只在 app / components 里用；
   - **不要使用 TS 的参数属性写法**（`constructor(private x)`），也不要用 enum。
 - 常用命令：
-  - `npm test`：单元测试，目前 28 个（全部不联网，CI 在 `.github/workflows/ci.yml` 里跑类型检查、测试和构建）；
+  - `npm test`：单元测试，目前 29 个（全部不联网，CI 在 `.github/workflows/ci.yml` 里跑类型检查、测试和构建）；
   - `npx tsc --noEmit`：类型检查；
   - `npx next build`：生产构建；
   - `npm run dev`：本地开发；
   - `node --experimental-strip-types scripts/cli.ts admin --user admin --password 'DevPassword123'`：创建本地管理员。
 
 ## 代码地图（详见 README 的“结构”一节）
-- `src/lib/analysis.ts`：汇总分析。**只用已收盘的 K 线计算**（以数据抓取时间为准，见 `closedThrough`）。正在走的那根只画在图上，指标数组比 candles 少 1 个。关键位按实时价格重新划分支撑和阻力（`relevel`）。
+- `src/lib/analysis.ts`：汇总分析。时光机回放和成绩单通过 `seriesAt` 读取本地长历史里“当时那 2000 根”（含 15 分钟、1 小时等小周期），本地不够时退回实时窗口。**只用已收盘的 K 线计算**（以数据抓取时间为准，见 `closedThrough`）。正在走的那根只画在图上，指标数组比 candles 少 1 个。关键位按实时价格重新划分支撑和阻力（`relevel`）。
 - `src/lib/data/`：
   - `klines.ts`：行情获取与缓存。来源顺序 Binance 永续（`PRIMARY_SOURCE`，fapi）→ OKX 永续 → Binance 现货；失败的来源冷却 60 秒。K 线存在 `candles` 表，**每个来源一条序列，不混拼**（旧 `klines` 表已清空，只为回滚兼容保留）。`KEEP_DAYS` 是主来源各周期的保留期限（5m 30 天、15m 1 年、1h 2 年、4h 5 年、1d/1w 全部），备用来源只留约 2500 根；
   - `history.ts`：后台把主来源的每个序列往前补到保留期限，并检查、补齐中间的缺口；交易所本身缺的段记在 `state.klineHistory.<来源>.<币>.<周期>`，不重复请求。分析仍只读最新约 2000 根；
   - `perp.ts`：资金费率与持仓量。实时快照 Binance → OKX；历史（资金费率 2 年、持仓量每小时，Binance 只给最近 30 天，往后靠每小时累积）存 `funding_rates`、`open_interest`。
   - 这个云端容器访问 fapi.binance.com 会返回 451（地区限制），本地试跑会自动落到 OKX；韩国服务器可以正常访问。
 - `src/lib/ta/`：
+  - `signals.ts`：信号注册表（TD 9/13、EMA 金叉死叉、RSI 超买超卖、多指标共振，以及每个指标自己的翻转），页面和研究框架共用；
   - `core.ts`、`indicators.ts`（28 个指标投票）、`td.ts`、`levels.ts`（14 种方法的多周期聚类）、`trend.ts`、`fib.ts`、`chan.ts`；
   - `stats.ts`：样本不重叠、扣 0.15% 成本、Wilson 区间、整页做 BH 校正；标签为 证据较强 / 证据弱 / 证据不足 / 历史上不利；
   - `risk.ts`：结构锚点、扫损缓冲、噪音触碰概率；

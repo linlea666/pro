@@ -127,11 +127,12 @@ async function tick() {
       logger.info("engine", "止损参考校准完成", r);
       done("riskCalib");
     }
-    // the traffic light's track record, filled in small batches
-    if (due("scorecard", HOUR - 60_000)) {
+    // the traffic light's track record, filled in small batches: every tick while there is a backlog, then hourly
+    if (getState("job.scorecardBacklog") === "1" || due("scorecard", HOUR - 60_000)) {
       const { runScorecard } = await import("./scorecard.ts");
       busy.__slJobBusy = true;
       const r = await runScorecard().finally(() => (busy.__slJobBusy = false));
+      setState("job.scorecardBacklog", r.remaining > 0 ? "1" : "0");
       if (r.added) logger.info("engine", "信号灯成绩单更新", r);
       done("scorecard");
     }

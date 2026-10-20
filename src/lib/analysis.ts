@@ -1,4 +1,4 @@
-import { closedThrough, getKlines, ttlFor } from "./data/klines.ts";
+import { closedThrough, getKlines, PRIMARY_SOURCE, readWindow, ttlFor, type KlineResult } from "./data/klines.ts";
 import { logger } from "./server/log.ts";
 import { currentParams } from "./server/params-store.ts";
 import { DEFAULT_ENGINE_PARAMS, type EngineParams } from "./params.ts";
@@ -17,6 +17,7 @@ import { forwardStats, labelStats, type SignalStats } from "./ta/stats.ts";
 import { bufferAtr, structureAnchors } from "./ta/risk.ts";
 import { getCalibration } from "./server/riskcalib.ts";
 import { buildVerdict, type Verdict } from "./ta/verdict.ts";
+import { indicatorFlips, signalEvents } from "./ta/signals.ts";
 
 /**
  * Everything the coin page needs for one symbol/timeframe, computed on the
@@ -24,6 +25,10 @@ import { buildVerdict, type Verdict } from "./ta/verdict.ts";
  */
 
 const DISPLAY_BARS = 600;
+/** bars the live analysis works on (the default getKlines window) */
+const WINDOW = 2000;
+/** bars after a replay point kept for "what happened next" */
+const FUTURE_BARS = 200;
 
 /** Higher timeframes that also feed the support/resistance cluster. */
 const LEVEL_TFS: Record<Timeframe, Timeframe[]> = {
@@ -46,9 +51,24 @@ function cutoff(c: Candle[], tf: Timeframe, endSec: number | null): Candle[] {
   return c.filter((x) => x.t + sec <= endSec);
 }
 
-async function keyLevels(coin: string, tf: Timeframe, price: number, atr: number, lp: EngineParams["levels"], endSec: number | null = null) {
+/**
+ * Candles as the page saw them: live, the latest window; in a replay (`replayEnd` set), the stored
+ * long history around that moment when it reaches back far enough, so an old replay sees the
+ * same window the live page had then, small timeframes included. Otherwise the live window.
+ */
+async function seriesAt(coin: string, tf: Timeframe, replayEnd: number | null): Promise<KlineResult> {
+  const live = await getKlines(coin, tf);
+  if (replayEnd == null) return live;
+  const stored = readWindow(coin, tf, replayEnd, WINDOW, FUTURE_BARS + 1);
+  const sec = TF_SECONDS[tf];
+  const before = stored.filter((x) => x.t + sec <= replayEnd).length;
+  return before >= 300 ? { candles: stored, source: PRIMARY_SOURCE, fetchedAt: live.fetchedAt } : live;
+}
+
+async function keyLevels(coin: string, tf: Timeframe, price: number, atr: number, lp: EngineParams["levels"], endSec: number | null = null, replay = false) {
   const tfs = LEVEL_TFS[tf];
-  const [series, daily] = await Promise.all([Promise.all(tfs.map((x) => getKlines(coin, x))), getKlines(coin, "1d")]);
+  const at = replay ? endSec : null;
+  const [series, daily] = await Promise.all([Promise.all(tfs.map((x) => seriesAt(coin, x, at))), seriesAt(coin, "1d", at)]);
   // calendar levels use the previous day/week/month; the day in progress at the cut-off is kept only as "today"
   const days = endSec == null ? daily.candles : daily.candles.filter((x) => x.t < endSec);
   const cands = [...series.flatMap((s, k) => levelCandidates(cutoff(s.candles, tfs[k], endSec), tfs[k], lp)), ...periodCandidates(days, price, lp)];
@@ -196,12 +216,6 @@ function tdMarkers(td: TdState, c: Candle[], from: number): TdMarker[] {
   return out;
 }
 
-function crossUps(a: number[], b: number[]) {
-  const out: number[] = [];
-  for (let i = 1; i < a.length; i++) if (a[i] > b[i] && a[i - 1] <= b[i - 1]) out.push(i);
-  return out;
-}
-
 // Results are cached for as long as the underlying candles are.
 const cache = new Map<string, { at: number; value?: Analysis; pending?: Promise<Analysis> }>();
 
@@ -267,8 +281,9 @@ async function analyzeLogged(coin: string, tf: Timeframe, ep: EngineParams): Pro
 }
 
 async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFAULT_ENGINE_PARAMS, asOf: number | null = null): Promise<Analysis> {
-  const [main, hourlyRaw] = await Promise.all([getKlines(coin, tf), getKlines(coin, "1h")]);
   const sec = TF_SECONDS[tf];
+  const replayEnd = asOf == null ? null : asOf + sec;
+  const [main, hourlyRaw] = await Promise.all([seriesAt(coin, tf, replayEnd), seriesAt(coin, "1h", replayEnd)]);
   // Everything is computed on completed bars only, so a conclusion cannot flip back and forth
   // inside one bar. Live: completed when the data was fetched; replay: completed by the end of the chosen bar.
   const nowSec = closedThrough(main);
@@ -293,7 +308,7 @@ async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFA
   const td = computeTd(c, ep.td);
   const trend = computeTrend(c, panel, ep.trend);
 
-  const { supports, resistances } = await keyLevels(coin, tf, price, atr[L], ep.levels, endSec);
+  const { supports, resistances } = await keyLevels(coin, tf, price, atr[L], ep.levels, endSec, asOf != null);
 
   // major swings only, so the retracement describes a move a beginner would notice
   const fib = autoFib(c, zigzag(c, atr, 5));
@@ -314,50 +329,17 @@ async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFA
       horizonText: horizonText(tf, cal?.horizon ?? H),
     },
   });
-  const { rsiLow, rsiHigh } = ep.indicators;
-  const ev = (side: "buy" | "sell", kind: TdEvent["kind"]) => td.events.filter((e) => e.side === side && e.kind === kind).map((e) => e.i);
-  const e12 = ta.ema(close, 12), e26 = ta.ema(close, 26);
-  const r = ta.rsi(close);
-  const rsiIn = (below: boolean) => {
-    const out: number[] = [];
-    for (let i = 1; i < r.length; i++) {
-      if (below ? r[i] < rsiLow && r[i - 1] >= rsiLow : r[i] > rsiHigh && r[i - 1] <= rsiHigh) out.push(i);
-    }
-    return out;
-  };
-  const strong = Math.max(1, Math.round((panel.readings.length * ep.indicators.strongPct) / 100));
-  const S = ep.td.setupLength, CD = ep.td.countdownLength;
-  const resoBull: number[] = [], resoBear: number[] = [];
-  for (let i = 1; i < c.length; i++) {
-    if (panel.net[i] >= strong && panel.net[i - 1] < strong) resoBull.push(i);
-    if (panel.net[i] <= -strong && panel.net[i - 1] > -strong) resoBear.push(i);
-  }
-  const defs: [string, string, "bull" | "bear", number[]][] = [
-    ["td_buy9", `TD 买入 ${S}`, "bull", ev("buy", "setup9")],
-    ["td_buy13", `TD 买入 ${CD}`, "bull", ev("buy", "countdown13")],
-    ["td_sell9", `TD 卖出 ${S}`, "bear", ev("sell", "setup9")],
-    ["td_sell13", `TD 卖出 ${CD}`, "bear", ev("sell", "countdown13")],
-    ["ema_golden", "EMA 金叉", "bull", crossUps(e12, e26)],
-    ["ema_death", "EMA 死叉", "bear", crossUps(e26, e12)],
-    ["rsi_oversold", "RSI 进入超卖", "bull", rsiIn(true)],
-    ["rsi_overbought", "RSI 进入超买", "bear", rsiIn(false)],
-    ["reso_bull", `多指标共振看多（≥${strong}）`, "bull", resoBull],
-    ["reso_bear", `多指标共振看空（≥${strong}）`, "bear", resoBear],
-  ];
-  const stats = defs.map(([key, name, side, idx]) => forwardStats(c, key, name, side, idx, H, ep.stats));
+  const defs = signalEvents(c, panel, td, ep);
+  const stats = defs.map((d) => forwardStats(c, d.key, d.name, d.side, d.idx, H, ep.stats));
 
   // each indicator's own track record: bars where it flipped to bullish / bearish
   const indicatorStats: Analysis["indicatorStats"] = {};
   const lite = (s: SignalStats): IndicatorStat => ({ samples: s.samples, winRate: s.winRate, winLo: s.winLo, winHi: s.winHi, avgReturn: s.avgReturn, baseWinRate: s.baseWinRate, pValue: s.pValue, reliability: s.reliability });
-  const perIndicator: [string, SignalStats, SignalStats][] = [];
-  for (const [id, bias] of panel.byId) {
-    const up: number[] = [], dn: number[] = [];
-    for (let i = 1; i < bias.length; i++) {
-      if (bias[i] === 1 && bias[i - 1] !== 1) up.push(i);
-      if (bias[i] === -1 && bias[i - 1] !== -1) dn.push(i);
-    }
-    perIndicator.push([id, forwardStats(c, id, id, "bull", up, H, ep.stats), forwardStats(c, id, id, "bear", dn, H, ep.stats)]);
-  }
+  const perIndicator: [string, SignalStats, SignalStats][] = indicatorFlips(panel).map(({ id, up, down }) => [
+    id,
+    forwardStats(c, id, id, "bull", up, H, ep.stats),
+    forwardStats(c, id, id, "bear", down, H, ep.stats),
+  ]);
   // every statistic on the page is one test among many: label them together
   labelStats([...stats, ...perIndicator.flatMap(([, b, s]) => [b, s])], ep.stats);
   for (const [id, b, s] of perIndicator) indicatorStats[id] = { bull: lite(b), bear: lite(s) };
@@ -365,7 +347,7 @@ async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFA
   // signals that fired recently
   const recentWindow = Math.max(3, Math.round(H / 3));
   const active: ActiveSignal[] = [];
-  defs.forEach(([key, name, side, idx], k) => {
+  defs.forEach(({ key, name, side, idx }, k) => {
     const lastI = idx[idx.length - 1];
     if (lastI !== undefined && L - lastI <= recentWindow) active.push({ key, name, side, barsAgo: L - lastI, stats: stats[k] });
   });
@@ -375,6 +357,7 @@ async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFA
   const ema20 = ta.ema(close, 20), ema50 = ta.ema(close, 50), sma200 = ta.sma(close, 200);
   const bb = ta.bollinger(close);
   const m = ta.macd(close);
+  const r = ta.rsi(close);
 
   return {
     coin,

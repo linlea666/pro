@@ -175,6 +175,25 @@ export function readStored(coin: string, tf: Timeframe, source: SourceId, limit:
   }
 }
 
+/**
+ * Stored primary-source bars around a past moment: up to `before` bars opening before
+ * `endSec` and up to `after` bars from it on, oldest first.
+ */
+export function readWindow(coin: string, tf: Timeframe, endSec: number, before: number, after: number): Candle[] {
+  try {
+    const d = getDb();
+    const head = d
+      .prepare("SELECT t, o, h, l, c, v FROM candles WHERE coin = ? AND tf = ? AND source = ? AND t < ? ORDER BY t DESC LIMIT ?")
+      .all(coin, tf, PRIMARY_SOURCE, endSec, before) as Candle[];
+    const tail = d
+      .prepare("SELECT t, o, h, l, c, v FROM candles WHERE coin = ? AND tf = ? AND source = ? AND t >= ? ORDER BY t LIMIT ?")
+      .all(coin, tf, PRIMARY_SOURCE, endSec, after) as Candle[];
+    return head.reverse().concat(tail);
+  } catch {
+    return [];
+  }
+}
+
 export function store(coin: string, tf: Timeframe, source: SourceId, candles: Candle[]) {
   try {
     const d = getDb();

@@ -2,7 +2,7 @@ import { analyzeWith } from "../analysis.ts";
 import { COIN_IDS } from "../symbols.ts";
 import { wilson } from "../ta/stats.ts";
 import { TF_SECONDS, type Timeframe } from "../types.ts";
-import { closedThrough, getKlines, PRIMARY_SOURCE } from "../data/klines.ts";
+import { closedThrough, getKlines, PRIMARY_SOURCE, readStored } from "../data/klines.ts";
 import { getDb } from "./db.ts";
 import { logger } from "./log.ts";
 import { currentParams } from "./params-store.ts";
@@ -12,6 +12,7 @@ import { getState, setState } from "./settings.ts";
  * The traffic light's own track record ("成绩单"). For bars on a fixed grid
  * spaced one stats horizon apart (so samples never overlap), we replay what the
  * light said at that close and record where price was `horizon` bars later.
+ * The grid covers the whole stored history (1h: 2 years, 4h: 5 years, daily: all).
  * Filled newest-first in small time-boxed batches; cleared whenever the engine
  * parameters or the primary data source change, because the old record would describe something else.
  */
@@ -55,8 +56,8 @@ function ensureVersion() {
   }
 }
 
-/** Add missing points, newest first, until `budgetMs` is spent. */
-export async function runScorecard(budgetMs = 20_000): Promise<{ added: number; durationMs: number }> {
+/** Add missing points, newest first, until `budgetMs` is spent; `remaining` is what is still to do. */
+export async function runScorecard(budgetMs = 20_000): Promise<{ added: number; remaining: number; durationMs: number }> {
   const t0 = Date.now();
   ensureVersion();
   const { engine } = currentParams();
@@ -73,11 +74,13 @@ export async function runScorecard(budgetMs = 20_000): Promise<{ added: number; 
       try {
         const k = await getKlines(coin, tf);
         const until = closedThrough(k);
-        const closed = k.candles.filter((x) => x.t + sec <= until);
+        const stored = readStored(coin, tf, PRIMARY_SOURCE, 1_000_000).filter((x) => x.t + sec <= until);
+        const closed = stored.length > k.candles.length ? stored : k.candles.filter((x) => x.t + sec <= until);
         const ts: number[] = [];
         for (let i = closed.length - 1 - H; i >= MIN_HISTORY; i--) {
           const t = closed[i].t;
-          if (Math.floor(t / sec) % H === 0 && !has.get(coin, tf, t)) ts.push(t);
+          // skip a point whose outcome bar is not exactly H bars later (a hole in the history)
+          if (Math.floor(t / sec) % H === 0 && closed[i + H].t === t + H * sec && !has.get(coin, tf, t)) ts.push(t);
         }
         queues.push({ coin, tf, ts, at: new Map(closed.map((x, i) => [x.t, i])), closes: closed.map((x) => x.c) });
       } catch (e) {
@@ -103,7 +106,7 @@ export async function runScorecard(budgetMs = 20_000): Promise<{ added: number; 
       if (Date.now() - t0 >= budgetMs) break;
     }
   }
-  return { added, durationMs: Date.now() - t0 };
+  return { added, remaining: queues.reduce((s, q) => s + q.ts.length, 0), durationMs: Date.now() - t0 };
 }
 
 function record(light: "green" | "red", rows: { light: string; close_pct: number }[], cost: number): LightRecord {
