@@ -1,14 +1,14 @@
 import { PRIMARY_SOURCE } from "../data/klines.ts";
 import type { EngineParams } from "../params.ts";
 import * as ta from "../ta/core.ts";
-import { ENTRY_NAME, findEntries, type EntryKind } from "../ta/plan.ts";
+import { alignHigher, ENTRY_NAME, findEntries, MAX_HOLD_BARS, type EntryKind } from "../ta/plan.ts";
 import { atrSeries, bufferAtr, calibrate } from "../ta/risk.ts";
 import { structureDirection, structureSeries, swings, type StructureState, type Swing } from "../ta/structure.ts";
 import { COIN_IDS } from "../symbols.ts";
-import { TF_SECONDS, type Candle, type Timeframe } from "../types.ts";
+import type { Candle, Timeframe } from "../types.ts";
 import { bhAdjust, cells, controlTrades, judge, makeSplit, trades as fwdTrades, type Trade } from "./engine.ts";
 import { loadHistory, type ResearchReport, type ResearchRow } from "./run.ts";
-import { POLICY_NAME, simulate, type ExitPolicy, type SimContext } from "./sim.ts";
+import { POLICY_NAME, simulate, type ExitPolicy, type SimContext, type SimResult } from "./sim.ts";
 
 /**
  * E10–E14: the evidence behind the trading-plan page.
@@ -21,8 +21,10 @@ import { POLICY_NAME, simulate, type ExitPolicy, type SimContext } from "./sim.t
  *   and stops anchored on equal highs / lows.
  * - E14 beginner habits: a stop hugging the entry, taking +0.5R, trading against the
  *   higher timeframe, shorting a breakout because "it's too high".
+ * - The plan scorecard: following the page's plans mechanically, sizes included.
  *
  * Entries happen at the close of the trigger bar; results are in R, after costs.
+ * One position at a time per coin and rule, so trades never overlap.
  */
 
 export interface Setup {
@@ -37,7 +39,7 @@ export const SETUPS: Setup[] = [
   { tf: "1d", filter: "1w" },
 ];
 
-const MAX_BARS: Partial<Record<Timeframe, number>> = { "4h": 180, "1d": 90 };
+const MAX_BARS = MAX_HOLD_BARS;
 const WARMUP = 300;
 
 
@@ -84,12 +86,7 @@ export function prepare(coin: string, setup: Setup, ep: EngineParams, nowSec: nu
   const fss = structureSeries(f, fAtr, mult);
   const fEma = ta.ema(f.map((x) => x.c), 50);
   // the filter bar known at the close of each entry bar
-  const secC = TF_SECONDS[setup.tf], secF = TF_SECONDS[setup.filter];
-  const fIdx: number[] = new Array(c.length).fill(-1);
-  for (let t = 0, k = -1; t < c.length; t++) {
-    while (k + 1 < f.length && f[k + 1].t + secF <= c[t].t + secC) k++;
-    fIdx[t] = k;
-  }
+  const fIdx = alignHigher(c, setup.tf, f, setup.filter);
   const fDirStruct = (t: number): 1 | -1 | 0 => (fIdx[t] < 0 ? 0 : structureDirection(fss[fIdx[t]]));
   const fDirEma = (t: number): 1 | -1 | 0 => {
     const k = fIdx[t];
@@ -120,7 +117,24 @@ function ctxOf(p: Prepared, setup: Setup, ep: EngineParams): SimContext {
   return { c: p.c, atr: p.atr, swings: p.sw, buf: p.buf.p80, costPct: ep.stats.costPct, maxBars: MAX_BARS[setup.tf] ?? 120 };
 }
 
-const toTrade = (p: Prepared, e: { i: number }, r: { r: number; pct: number }): Trade => ({ t: p.c[e.i].t, coin: p.coin, r: r.r, pct: r.pct });
+const toTrade = (p: Prepared, e: { i: number }, r: { r: number; pct: number }, size = 1): Trade => ({ t: p.c[e.i].t, coin: p.coin, r: r.r * size, pct: r.pct * size });
+
+/**
+ * One position at a time, as a person following the rule would hold it: an event is
+ * taken only once the previous trade has closed, so samples never overlap.
+ */
+export function sequential(evs: Event[], ctx: SimContext, policy: ExitPolicy): { e: Event; r: SimResult }[] {
+  const out: { e: Event; r: SimResult }[] = [];
+  let free = -1;
+  for (const e of evs) {
+    if (e.i < free) continue;
+    const r = simulate(ctx, e.i, e.dir, e.stop, policy);
+    if (!r) continue;
+    out.push({ e, r });
+    free = e.i + r.bars;
+  }
+  return out;
+}
 
 /** deterministic random numbers, so reports can be reproduced */
 function rng(seed: number) {
@@ -132,7 +146,7 @@ function rng(seed: number) {
  * Random-timing control: for each event, entries at random bars of the same coin,
  * same direction and the same stop distance in ATR, managed the same way.
  */
-function randomTrades(p: Prepared, evs: Event[], ctx: SimContext, policy: ExitPolicy, perEvent: number, seed: number): Trade[] {
+function randomTrades(p: Prepared, evs: Event[], ctx: SimContext, policy: ExitPolicy, perEvent: number, seed: number, size: (e: Event) => number = () => 1): Trade[] {
   const r = rng(seed);
   const out: Trade[] = [];
   const n = p.c.length - (ctx.maxBars + 1);
@@ -142,7 +156,7 @@ function randomTrades(p: Prepared, evs: Event[], ctx: SimContext, policy: ExitPo
       const u = WARMUP + Math.floor(r() * (n - WARMUP));
       if (!(p.atr[u] > 0)) continue;
       const res = simulate(ctx, u, e.dir, p.c[u].c - e.dir * riskAtr * p.atr[u], policy);
-      if (res) out.push(toTrade(p, { i: u }, res));
+      if (res) out.push(toTrade(p, { i: u }, res, size(e)));
     }
   }
   return out;
@@ -203,20 +217,20 @@ export async function plansReport(
       row("anchor", "after_drop", `大跌之后继续做空（${label}）`, dn, ctlDn, "随便哪个时点做空");
     }
 
-    // ---- E11: exits, on the entries the plan would offer (with the higher timeframe), against a fixed 2R target
-    {
-      const by: Record<ExitPolicy, Trade[]> = { fixed2r: [], structure: [], chandelier: [], be_chandelier: [], take05r: [] };
+    // ---- E11: exits, on the entries the plan would offer (with the higher timeframe), against a fixed 2R target on the same entries
+    for (const pol of ["structure", "chandelier", "be_chandelier"] as ExitPolicy[]) {
+      const sig: Trade[] = [], base: Trade[] = [];
       for (const p of preps) {
         const ctx = ctxOf(p, setup, ep);
-        for (const e of p.events.filter((e) => agrees(e, "struct") && e.kind !== "reversal")) {
-          for (const pol of ["fixed2r", "structure", "chandelier", "be_chandelier"] as ExitPolicy[]) {
-            const r = simulate(ctx, e.i, e.dir, e.stop, pol);
-            if (r) by[pol].push(toTrade(p, e, r));
-          }
+        for (const { e, r } of sequential(p.events.filter((e) => agrees(e, "struct") && e.kind !== "reversal"), ctx, pol)) {
+          const b = simulate(ctx, e.i, e.dir, e.stop, "fixed2r");
+          if (!b) continue;
+          sig.push(toTrade(p, e, r));
+          base.push(toTrade(p, e, b));
         }
-        await tick();
       }
-      for (const pol of ["structure", "chandelier", "be_chandelier"] as ExitPolicy[]) row("exit", pol, `${POLICY_NAME[pol]}（${label}）`, by[pol], by.fixed2r, POLICY_NAME.fixed2r);
+      row("exit", pol, `${POLICY_NAME[pol]}（${label}）`, sig, base, POLICY_NAME.fixed2r);
+      await tick();
     }
 
     // ---- E12: entry types × filter, against random timing (same direction, stop distance and exits)
@@ -226,12 +240,9 @@ export async function plansReport(
         const sig: Trade[] = [], ctl: Trade[] = [];
         for (const [k, p] of preps.entries()) {
           const ctx = ctxOf(p, setup, ep);
-          const evs = p.events.filter((e) => e.kind === kind && (filter === "none" || agrees(e, filter)));
-          for (const e of evs) {
-            const r = simulate(ctx, e.i, e.dir, e.stop, policy);
-            if (r) sig.push(toTrade(p, e, r));
-          }
-          ctl.push(...randomTrades(p, evs, ctx, policy, 3, 1000 + k));
+          const taken = sequential(p.events.filter((e) => e.kind === kind && (filter === "none" || agrees(e, filter))), ctx, policy);
+          for (const { e, r } of taken) sig.push(toTrade(p, e, r));
+          ctl.push(...randomTrades(p, taken.map((x) => x.e), ctx, policy, 3, 1000 + k));
         }
         const fname = filter === "struct" ? "，只做和大周期结构同向" : filter === "ema" ? "，只做和大周期均线同向" : "";
         row("entry", `${kind}:${filter}`, `${ENTRY_NAME[kind]}${fname}（${label}）`, sig, ctl, "同方向、同止损距离的随机入场", 3);
@@ -244,16 +255,14 @@ export async function plansReport(
       const st: Trade[] = [], fx: Trade[] = [], eq: Trade[] = [], single: Trade[] = [];
       for (const p of preps) {
         const ctx = ctxOf(p, setup, ep);
-        const evs = p.events.filter((e) => agrees(e, "struct") && e.kind !== "reversal");
-        const avg = evs.reduce((s, e) => s + ((p.c[e.i].c - e.stop) * e.dir) / p.atr[e.i], 0) / Math.max(1, evs.length);
-        for (const e of evs) {
-          const a = simulate(ctx, e.i, e.dir, e.stop, policy);
+        const taken = sequential(p.events.filter((e) => agrees(e, "struct") && e.kind !== "reversal"), ctx, policy);
+        const avg = taken.reduce((s, { e }) => s + ((p.c[e.i].c - e.stop) * e.dir) / p.atr[e.i], 0) / Math.max(1, taken.length);
+        for (const { e, r: a } of taken) {
           const b = simulate(ctx, e.i, e.dir, p.c[e.i].c - e.dir * avg * p.atr[e.i], policy);
-          if (a && b) {
-            st.push(toTrade(p, e, a));
-            fx.push(toTrade(p, e, b));
-            (e.equal ? eq : single).push(toTrade(p, e, a));
-          }
+          if (!b) continue;
+          st.push(toTrade(p, e, a));
+          fx.push(toTrade(p, e, b));
+          (e.equal ? eq : single).push(toTrade(p, e, a));
         }
       }
       row("stop", "structure", `认错位放在结构点外（${label}）`, st, fx, "同平均距离的固定 ATR 止损");
@@ -265,29 +274,46 @@ export async function plansReport(
       const plan: Trade[] = [], tight: Trade[] = [], early: Trade[] = [], against: Trade[] = [], withT: Trade[] = [], fade: Trade[] = [], follow: Trade[] = [];
       for (const p of preps) {
         const ctx = ctxOf(p, setup, ep);
-        for (const e of p.events.filter((e) => e.kind !== "reversal")) {
-          const base = simulate(ctx, e.i, e.dir, e.stop, policy);
-          if (!base) continue;
-          if (agrees(e, "struct")) {
-            plan.push(toTrade(p, e, base));
-            withT.push(toTrade(p, e, base));
-            const t = simulate(ctx, e.i, e.dir, p.c[e.i].c - e.dir * 0.3 * p.atr[e.i], policy);
-            if (t) tight.push(toTrade(p, e, t));
-            const q = simulate(ctx, e.i, e.dir, e.stop, "take05r");
-            if (q) early.push(toTrade(p, e, q));
-            if (e.kind === "breakout") {
-              follow.push(toTrade(p, e, base));
-              // "it's too high": short the breakout, stop just above the breakout bar
-              const f = simulate(ctx, e.i, (-e.dir) as 1 | -1, e.dir > 0 ? p.c[e.i].h + 0.3 * p.atr[e.i] : p.c[e.i].l - 0.3 * p.atr[e.i], policy);
-              if (f) fade.push(toTrade(p, e, f));
-            }
-          } else if (opposes(e, "struct")) against.push(toTrade(p, e, base));
+        for (const { e, r: base } of sequential(p.events.filter((e) => e.kind !== "reversal" && agrees(e, "struct")), ctx, policy)) {
+          plan.push(toTrade(p, e, base));
+          withT.push(toTrade(p, e, base));
+          const t = simulate(ctx, e.i, e.dir, p.c[e.i].c - e.dir * 0.3 * p.atr[e.i], policy);
+          if (t) tight.push(toTrade(p, e, t));
+          const q = simulate(ctx, e.i, e.dir, e.stop, "take05r");
+          if (q) early.push(toTrade(p, e, q));
+          if (e.kind === "breakout") {
+            follow.push(toTrade(p, e, base));
+            // "it's too high": short the breakout, stop just above the breakout bar
+            const f = simulate(ctx, e.i, (-e.dir) as 1 | -1, e.dir > 0 ? p.c[e.i].h + 0.3 * p.atr[e.i] : p.c[e.i].l - 0.3 * p.atr[e.i], policy);
+            if (f) fade.push(toTrade(p, e, f));
+          }
         }
+        for (const { e, r } of sequential(p.events.filter((e) => e.kind !== "reversal" && opposes(e, "struct")), ctx, policy)) against.push(toTrade(p, e, r));
       }
       row("behavior", "tight", `止损贴着入场价（0.3 倍 ATR）（${label}）`, tight, plan, "按计划放认错位");
       row("behavior", "early", `赚 0.5R 就走（${label}）`, early, plan, "按计划移动认错位");
       row("behavior", "against", `逆着大周期做（${label}）`, against, withT, "顺着大周期做");
       row("behavior", "fade", `觉得“太高 / 太低”，反着突破做（${label}）`, fade, follow, "跟随突破");
+    }
+
+    // ---- the plan scorecard: every plan the page would have shown as triggered, followed mechanically,
+    // half size for reversals and trades against the higher timeframe (results in R of a full-size risk)
+    {
+      const all: Trade[] = [], allCtl: Trade[] = [], withT: Trade[] = [], withCtl: Trade[] = [];
+      const size = (e: Event) => (e.kind === "reversal" || opposes(e, "struct") ? 0.5 : 1);
+      for (const [k, p] of preps.entries()) {
+        const ctx = ctxOf(p, setup, ep);
+        const offered = p.events.filter((e) => e.kind !== "pullback");
+        const taken = sequential(offered, ctx, policy);
+        for (const { e, r } of taken) all.push(toTrade(p, e, r, size(e)));
+        allCtl.push(...randomTrades(p, taken.map((x) => x.e), ctx, policy, 3, 2000 + k, size));
+        const takenW = sequential(offered.filter((e) => e.kind !== "reversal" && agrees(e, "struct")), ctx, policy);
+        for (const { e, r } of takenW) withT.push(toTrade(p, e, r));
+        withCtl.push(...randomTrades(p, takenW.map((x) => x.e), ctx, policy, 3, 3000 + k));
+        await tick();
+      }
+      row("plan", "page", `按页面计划机械执行：突破、回调确认和反转都做，逆势和反转半仓（${label}）`, all, allCtl, "同方向、同止损距离、同仓位的随机入场", 3);
+      row("plan", "with", `只做顺大周期的计划（${label}）`, withT, withCtl, "同方向、同止损距离的随机入场", 3);
     }
   }
 
@@ -295,7 +321,7 @@ export async function plansReport(
   const q = bhAdjust(rows.map((r) => (r.cells.is.n >= ep.stats.minSamples ? r.cells.is.p : null)));
   return {
     kind: "plans",
-    title: "交易计划的依据：价格锚定、离场、入场、认错位与新手习惯（E10–E14）",
+    title: "交易计划的依据：价格锚定、离场、入场、认错位、新手习惯（E10–E14）与计划成绩单",
     createdAt: Date.now(),
     source: PRIMARY_SOURCE,
     paramsVersion: opts.paramsVersion,
@@ -309,6 +335,8 @@ export async function plansReport(
       `入场在触发 K 线收盘；认错位 = 保护性摆动点外加 p80 扫损缓冲（只用样本内数据校准）；离场默认按“${POLICY_NAME[policy]}”，4 小时最多持有 30 天、日线 90 天。`,
       "结果以 R 计（R = 入场到初始认错位的距离），已扣往返成本。按风险定仓位时，R 可以直接比较。",
       "每一行都和括号外写明的对照比较：随机入场、固定 2R、同平均距离的固定止损，或按计划执行。",
+      "同一个币、同一条规则同一时间只持有一笔：上一笔离场后才接下一个信号，样本互不重叠。",
+      "计划成绩单按页面的规则机械执行；半仓的单子按一半计入，所以结果仍以满仓的一份风险（R）为单位。样本外一栏就是最近 12 个月的滚动表现。",
       "“和大周期同向”有两种判定：结构（更高的高低点或正在向上脱离区间）和均线（收盘在 50 均线之上且均线向上）。",
       "10 个币走势高度相关，合并后的显著性偏乐观，以 BTC / ETH 分开的结果是否一致为准。",
     ],

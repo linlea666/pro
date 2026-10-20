@@ -9,7 +9,7 @@ import { btnCls, fmtTime } from "./ui";
 type Kind = "signals" | "light" | "levels" | "plans";
 type ListItem = { id: number; createdAt: number; kind: Kind; paramsVersion: number };
 const KIND_LABEL: Record<Kind, string> = { light: "信号灯", signals: "信号与指标", levels: "关键位", plans: "交易计划依据" };
-const PLAN_FAMILY: Record<string, string> = { anchor: "E10 价格锚定", exit: "E11 离场方式", entry: "E12 入场类型", stop: "E13 认错位", behavior: "E14 新手习惯" };
+const PLAN_FAMILY: Record<string, string> = { plan: "计划成绩单", anchor: "E10 价格锚定", exit: "E11 离场方式", entry: "E12 入场类型", stop: "E13 认错位", behavior: "E14 新手习惯" };
 /** a row compared with something other than chance gets plainer words */
 const verdictText = (v: string, control?: string) =>
   !control || control.includes("随机") ? v : v === "有优势" ? "明显更好" : v === "比随机差" ? "明显更差" : v === "无可证明的优势" ? "差别不能确定" : v;

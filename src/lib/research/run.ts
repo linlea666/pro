@@ -18,7 +18,7 @@ import { bhAdjust, cells, controlTrades, judge, makeSplit, trades, type Cells, t
 export type ReportKind = "signals" | "light" | "levels" | "plans";
 
 export interface ResearchRow {
-  family: "signal" | "indicator" | "light" | "level" | "anchor" | "exit" | "entry" | "stop" | "behavior";
+  family: "signal" | "indicator" | "light" | "level" | "anchor" | "exit" | "entry" | "stop" | "behavior" | "plan";
   key: string;
   name: string;
   side: "bull" | "bear";

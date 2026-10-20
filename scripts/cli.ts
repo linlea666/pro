@@ -13,6 +13,9 @@
  *   compare --set KEY=VALUE [--set ...] [--tf 1h] [--coin BTC] [--step 2]
  *                                 replay the traffic light with the current and the changed parameters on the
  *                                 same past moments and print both records against the random control
+ *   plan [--coin BTC] [--fw 4h|1d] [--at "2026-09-23 20:00"]
+ *                                 the trend map and both trading plans now, or as they stood when the bar
+ *                                 opening at --at (Beijing time unless a zone is given) closed, with what came next
  */
 import fs from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -163,8 +166,51 @@ async function main() {
       console.log("\n优势单位 R（1R = 入场时 1 倍 ATR），已扣成本，对比同期全部时点。按工作约定，改后至少好 0.1R、BTC/ETH 和前后两半方向一致才可以上线。");
       break;
     }
+    case "plan": {
+      const { currentParams } = await import("../src/lib/server/params-store.ts");
+      const { computeTrendPlan, FRAMEWORKS } = await import("../src/lib/trendplan.ts");
+      const { TF_SECONDS } = await import("../src/lib/types.ts");
+      const coin = (opt("coin") ?? "BTC").toUpperCase();
+      const fw = (opt("fw") ?? "4h") as "4h" | "1d";
+      if (!(fw in FRAMEWORKS)) throw new Error("--fw 只能是 4h 或 1d");
+      const at = opt("at");
+      // a time without a zone is Beijing time, as people quote it
+      const atSec = at ? Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(" ", "T")}+08:00`) / 1000 : null;
+      if (at && !Number.isFinite(atSec)) throw new Error(`看不懂的时间：${at}，例如 --at "2026-09-23 20:00"`);
+      const tf = FRAMEWORKS[fw].tf;
+      const end = atSec == null ? null : Math.floor(atSec / TF_SECONDS[tf]) * TF_SECONDS[tf] + TF_SECONDS[tf];
+      const p = await computeTrendPlan(coin, fw, currentParams().engine, end);
+      const bj = (t: number | null) => (t == null ? "—" : new Date((t + 8 * 3600) * 1000).toISOString().slice(0, 16).replace("T", " "));
+      const fp = (x: number | null | undefined) => (x == null ? "—" : x >= 1000 ? Math.round(x).toLocaleString("en-US") : String(Math.round(x * 100) / 100));
+      console.log(`${coin} ${fw === "4h" ? "日线定方向、4 小时入场" : "周线定方向、日线入场"}：${bj(p.lastClosedT)} 那根 ${tf} K 线收盘（北京时间）`);
+      console.log(`收盘价 ${fp(p.closedPrice)}，ATR ${fp(p.atr)}，数据源 ${p.source}${p.calibrated ? "" : "，缓冲用默认值"}`);
+      console.log(`\n${p.headline}\n${p.bias}`);
+      for (const m of p.map) console.log(`  ${m.tf.padEnd(3)} ${m.view.label}：${m.view.position}`);
+      for (const s of [p.long, p.short]) {
+        console.log(`\n【${s.side === "long" ? "多" : "空"}】${s.headline}`);
+        if (s.trigger) console.log(`  触发：${s.trigger}`);
+        if (s.invalidation && s.entry != null) {
+          const v = s.invalidation;
+          console.log(`  入场 ${fp(s.entry)}，认错区间 ${fp(v.zone[0])}–${fp(v.zone[1])}（锚点 ${fp(v.anchor)}），止损 ${fp(v.stop)}，距离 ${v.distPct}% / ${v.distAtr} 倍 ATR${v.noise != null ? `，噪音碰到的概率 ${v.noise}%` : ""}`);
+          console.log(`  沿途关键位：${s.targets.map((x) => `${fp(x.price)}（${x.label}，${x.r}R）`).join("、") || "—"}；仓位 ${s.size === "half" ? "半仓" : "正常"}`);
+        }
+        for (const w of s.warnings) console.log(`  ! ${w}`);
+        if (s.evidence) console.log(`  历史同类：${s.evidence.n} 笔，平均 ${s.evidence.meanR}R，对随机 ${s.evidence.edgeR}R，样本外 ${s.evidence.oosEdgeR}R，${s.evidence.verdict}`);
+        const o = p.replay?.[s.side];
+        if (o) {
+          console.log(
+            o.status === "none"
+              ? `  之后：${o.watchBars} 根 K 线内没有触发`
+              : `  之后：${bj(o.entryT)} 以 ${fp(o.entry)} 入场、止损 ${fp(o.stop)}，${o.status === "open" ? `仍持有，按最后收盘 ${o.r}R` : `${bj(o.exitT)} ${o.exit === "stop" ? "移动认错位离场" : "到期离场"}，${o.r}R（最多浮盈 ${o.mfe}R）`}`,
+          );
+        }
+      }
+      if (p.scorecard) for (const r of p.scorecard.rows) console.log(`\n成绩单：${r.name}：${r.n} 笔，平均 ${r.meanR}R（随机 ${r.controlR}R），最近 12 个月 ${r.oosN} 笔平均 ${r.oosMeanR}R，${r.verdict}`);
+      if (p.scorecard?.warning) console.log(`! ${p.scorecard.warning}`);
+      break;
+    }
     default:
-      console.log("用法：cli.ts migrate | admin [--user 名称] [--password 密码] | backup | restore 文件 | info | history [--sync] | research [--kind signals|light]");
+      console.log("用法：cli.ts migrate | admin [--user 名称] [--password 密码] | backup | restore 文件 | info | history [--sync] | research [--kind …] | compare --set … | plan [--coin BTC] [--at 时间]");
       process.exitCode = cmd ? 1 : 0;
   }
 }

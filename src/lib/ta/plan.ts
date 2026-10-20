@@ -1,8 +1,8 @@
 import type { Candle, Timeframe } from "../types.ts";
-import { TF_LABEL } from "../types.ts";
+import { TF_LABEL, TF_SECONDS } from "../types.ts";
 import type { Level } from "./levels.ts";
 import { bufferAtr, intactPivots, noiseProb, PIVOT_K, type Calibration } from "./risk.ts";
-import { BREAK_ATR, PIERCE_ATR, type StructureState, type Swing } from "./structure.ts";
+import { BREAK_ATR, PIERCE_ATR, structureDirection, type StructureState, type Swing } from "./structure.ts";
 
 /**
  * Trading plans: for each side, what kind of trade fits the structure now, what
@@ -27,6 +27,26 @@ export const ENTRY_NAME: Record<EntryKind, string> = {
   reversal: "逆势反转（结构被打破后入场）",
 };
 
+/** For each bar of `c`: the last bar of the higher timeframe `f` that had closed by the end of it (−1: none yet). */
+export function alignHigher(c: Candle[], tf: Timeframe, f: Candle[], filterTf: Timeframe): number[] {
+  const secC = TF_SECONDS[tf], secF = TF_SECONDS[filterTf];
+  const out: number[] = new Array(c.length).fill(-1);
+  for (let t = 0, k = -1; t < c.length; t++) {
+    while (k + 1 < f.length && f[k + 1].t + secF <= c[t].t + secC) k++;
+    out[t] = k;
+  }
+  return out;
+}
+
+/** The higher timeframe's structure direction known at the close of each bar of `c`. */
+export function higherDirection(c: Candle[], tf: Timeframe, f: Candle[], filterTf: Timeframe, fss: StructureState[]): (t: number) => 1 | -1 | 0 {
+  const idx = alignHigher(c, tf, f, filterTf);
+  return (t) => (idx[t] < 0 ? 0 : structureDirection(fss[idx[t]]));
+}
+
+/** Longest a trade is held before it is closed at the market (4h: 30 days, daily: 90 days). */
+export const MAX_HOLD_BARS: Partial<Record<Timeframe, number>> = { "4h": 180, "1d": 90 };
+
 /** Retracement zone of the last leg that counts as a pullback. */
 export const PULLBACK_ZONE: [number, number] = [0.382, 0.786];
 
@@ -35,7 +55,7 @@ export interface EntryEvent {
   t: number;
   dir: 1 | -1;
   kind: EntryKind;
-  /** the protective swing the stop hangs on */
+  /** the protective swing the stop hangs on (or a newer extreme beyond it, see protectiveExtreme) */
   anchor: number;
   /** anchor plus the p80 sweep buffer */
   stop: number;
@@ -91,27 +111,38 @@ export function findEntries(a: FindArgs): EntryEvent[] {
     const close = c[t].c, prev = c[t - 1].c;
     for (const dir of [1, -1] as const) {
       const ext = dir > 0 ? s.lastHigh : s.lastLow;
-      const prot = dir > 0 ? s.lastLow : s.lastHigh;
+      const anchor = protectiveExtreme(c, s, dir, t);
       const lvl = ext.price + dir * PIERCE_ATR * A;
-      if ((close - lvl) * dir > 0 && (prev - lvl) * dir <= 0) add(t, dir, "breakout", prot.price);
+      if ((close - lvl) * dir > 0 && (prev - lvl) * dir <= 0) add(t, dir, "breakout", anchor);
       const retr = pullbackDepth(s, dir);
       if (retr) {
         const now = retr(close), before = retr(prev);
-        if (now >= PULLBACK_ZONE[0] && now <= PULLBACK_ZONE[1] && before < PULLBACK_ZONE[0]) add(t, dir, "pullback", prot.price);
+        if (now >= PULLBACK_ZONE[0] && now <= PULLBACK_ZONE[1] && before < PULLBACK_ZONE[0]) add(t, dir, "pullback", anchor);
         const inZone = [1, 2, 3, 4, 5, 6].some((k) => {
           const x = retr(c[t - k].c);
           return x >= PULLBACK_ZONE[0] && x <= PULLBACK_ZONE[1];
         });
         const turned = dir > 0 ? close > c[t - 1].h : close < c[t - 1].l;
-        if (inZone && turned && now < PULLBACK_ZONE[1] && now > 0) add(t, dir, "pullback_confirm", prot.price);
+        if (inZone && turned && now < PULLBACK_ZONE[1] && now > 0) add(t, dir, "pullback_confirm", anchor);
       }
       const opp = dir > 0 ? "down" : "up";
       const broke = s.state === opp && s.breach === "broken" && p.breach !== "broken";
       const flipped = s.state === "range" && (dir > 0 ? s.lastLow.label === "HL" : s.lastHigh.label === "LH") && s.beyond === dir && p.beyond !== dir;
-      if (broke || flipped) add(t, dir, "reversal", prot.price);
+      if (broke || flipped) add(t, dir, "reversal", anchor);
     }
   }
   return out;
+}
+
+/**
+ * Where a trade in `dir` is proven wrong at bar `t`: the last confirmed swing low (high for shorts),
+ * or a lower low (higher high) made since that is not confirmed as a swing yet.
+ */
+export function protectiveExtreme(c: Candle[], s: StructureState, dir: 1 | -1, t: number): number {
+  const prot = dir > 0 ? s.lastLow! : s.lastHigh!;
+  let x = prot.price;
+  for (let j = prot.i; j <= t; j++) x = dir > 0 ? Math.min(x, c[j].l) : Math.max(x, c[j].h);
+  return x;
 }
 
 /** For an intact trend in `dir` whose last leg is complete: how deep a price is into that leg (0 = at its end). */
@@ -164,6 +195,8 @@ export interface SidePlan {
   headline: string;
   trigger: string;
   entry: number | null;
+  /** active plans: open time of the bar whose close triggered it */
+  entryT: number | null;
   /** price range to wait for (pullbacks) */
   zone: [number, number] | null;
   invalidation: {
@@ -178,7 +211,11 @@ export interface SidePlan {
     /** chance plain noise touches the stop within the calibrated horizon, % */
     noise: number | null;
   } | null;
-  targets: { price: number; label: string; rr: number }[];
+  /**
+   * Key levels on the way, with their distance in R. The plan has no fixed take-profit
+   * (the stop trails the structure), so these are places price may pause, not exits.
+   */
+  targets: { price: number; label: string; r: number }[];
   size: "full" | "half";
   /** how to follow the trade once in it */
   trailing: string;
@@ -217,7 +254,8 @@ export function buildPlans(inp: PlanInput): { long: SidePlan; short: SidePlan; b
   const { tf, filterTf, c, atr, ss, cal } = inp;
   const n = c.length - 1;
   const buffers = { p50: bufferAtr(cal, 50), p80: bufferAtr(cal, 80), p90: bufferAtr(cal, 90) };
-  const recent = findEntries({ tf, c, atr, ss, filterAt: inp.filterAt, buf: buffers.p80, from: n - 2 });
+  // triggers on the last 3 closed bars; started earlier so the 6-bar de-duplication matches the research
+  const recent = findEntries({ tf, c, atr, ss, filterAt: inp.filterAt, buf: buffers.p80, from: n - 8 }).filter((e) => e.i >= n - 2);
   return { long: side(1), short: side(-1), buffers };
 
   function side(dir: 1 | -1): SidePlan {
@@ -235,6 +273,7 @@ export function buildPlans(inp: PlanInput): { long: SidePlan; short: SidePlan; b
       headline: `${word}：结构还不清楚，先观望`,
       trigger: "",
       entry: null,
+      entryT: null,
       zone: null,
       invalidation: null,
       targets: [],
@@ -247,13 +286,15 @@ export function buildPlans(inp: PlanInput): { long: SidePlan; short: SidePlan; b
     };
     if (!s?.lastHigh || !s.lastLow || !(A > 0)) return empty;
     const ext = dir > 0 ? s.lastHigh : s.lastLow;
-    const prot = dir > 0 ? s.lastLow : s.lastHigh;
     const live = inp.livePrice;
+    // where a trigger now would hang its stop
+    const guard = protectiveExtreme(c, s, dir, n);
 
     // candidates, best first
-    type Cand = { kind: EntryKind; status: "active" | "watch"; entry: number; zone: [number, number] | null; anchor: number; trigger: string; stop?: number; equal?: boolean; relVol?: number };
+    type Cand = { kind: EntryKind; status: "active" | "watch"; entry: number; zone: [number, number] | null; anchor: number; trigger: string; stop?: number; equal?: boolean; relVol?: number; entryT?: number };
     const cands: Cand[] = [];
-    const ev = recent.filter((e) => e.dir === dir).pop();
+    // entering inside the pullback zone did worse than waiting for the confirming close (E12): never offered
+    const ev = recent.filter((e) => e.dir === dir && e.kind !== "pullback").pop();
     if (ev) {
       const risk = (c[ev.i].c - ev.stop) * dir;
       // still valid: not stopped and not already run more than half the risk
@@ -267,7 +308,8 @@ export function buildPlans(inp: PlanInput): { long: SidePlan; short: SidePlan; b
           stop: ev.stop,
           equal: ev.equal,
           relVol: ev.relVol,
-          trigger: `已在 ${TF} ${new Date(c[ev.i].t * 1000).toISOString().slice(5, 16).replace("T", " ")} 收盘触发（${fmt(c[ev.i].c)}）`,
+          entryT: c[ev.i].t,
+          trigger: `${n === ev.i ? "最近一根" : `${n - ev.i} 根之前的`} ${TF} K 线收盘时已触发（收盘价 ${fmt(c[ev.i].c)}）`,
         });
       }
     }
@@ -285,7 +327,7 @@ export function buildPlans(inp: PlanInput): { long: SidePlan; short: SidePlan; b
           status: "watch",
           entry: (zone[0] + zone[1]) / 2,
           zone,
-          anchor: prot.price,
+          anchor: guard,
           trigger:
             d >= PULLBACK_ZONE[0]
               ? `已在回调区 ${fmt(zone[0])}–${fmt(zone[1])}，等一根 ${TF} K 线${confirm}`
@@ -295,21 +337,29 @@ export function buildPlans(inp: PlanInput): { long: SidePlan; short: SidePlan; b
     }
     if (s.beyond !== dir) {
       const lvl = ext.price + dir * PIERCE_ATR * A;
-      cands.push({ kind: "breakout", status: "watch", entry: lvl, zone: null, anchor: prot.price, trigger: `${TF} 收盘${dir > 0 ? "站上" : "跌破"} ${fmt(lvl)}（前${dir > 0 ? "高" : "低"} ${fmt(ext.price)} 外 0.1 倍 ATR）时触发` });
+      cands.push({ kind: "breakout", status: "watch", entry: lvl, zone: null, anchor: guard, trigger: `${TF}收盘${dir > 0 ? "站上" : "跌破"} ${fmt(lvl)}（前${dir > 0 ? "高" : "低"} ${fmt(ext.price)} 外 0.1 倍 ATR）时触发` });
     }
     const opp = dir > 0 ? "down" : "up";
     if (s.state === opp && s.breach !== "broken") {
       const p2 = dir > 0 ? s.lastHigh : s.lastLow; // the opposite trend's protective swing
       const lvl = p2.price + dir * BREAK_ATR * A;
-      cands.push({ kind: "reversal", status: "watch", entry: lvl, zone: null, anchor: dir > 0 ? s.lastLow.price : s.lastHigh.price, trigger: `${TF} 收盘${dir > 0 ? "站上" : "跌破"} ${fmt(lvl)}（${dir > 0 ? "下降" : "上升"}结构的保护位 ${fmt(p2.price)} 外 0.8 倍 ATR）时触发` });
+      cands.push({ kind: "reversal", status: "watch", entry: lvl, zone: null, anchor: guard, trigger: `${TF}收盘${dir > 0 ? "站上" : "跌破"} ${fmt(lvl)}（${dir > 0 ? "下降" : "上升"}结构的保护位 ${fmt(p2.price)} 外 0.8 倍 ATR）时触发` });
     }
     const rank = (x: Cand) =>
       x.status === "active" ? 0 : x.kind === "pullback_confirm" && alignment === "with" ? 1 : x.kind === "breakout" && alignment !== "against" ? 2 : x.kind === "reversal" ? 3 : 4;
     const stopOf = (x: Cand) => x.stop ?? x.anchor - dir * buffers.p80 * A;
-    const valid = cands.filter((x) => (x.entry - stopOf(x)) * dir > 0);
+    const riskAtr = (x: Cand) => ((x.entry - stopOf(x)) * dir) / A;
+    // the same bounds as the research's entries: a stop closer than 0.3 ATR is noise, farther than 8 ATR no plan
+    const valid = cands.filter((x) => riskAtr(x) >= 0.3 && riskAtr(x) <= 8);
     valid.sort((x, y) => rank(x) - rank(y));
     const best = valid[0];
-    if (!best) return { ...empty, headline: `${word}：现在没有合适的结构位置，先观望`, alternatives: cands.map((x) => x.trigger) };
+    if (!best) {
+      const far = cands.filter((x) => riskAtr(x) > 8).map(riskAtr);
+      return {
+        ...empty,
+        headline: far.length ? `${word}：离结构保护位太远（至少 ${Math.min(...far).toFixed(1)} 倍 ATR），这里没有合适的位置，先观望` : `${word}：现在没有合适的结构位置，先观望`,
+      };
+    }
 
     const stop = stopOf(best);
     const risk = (best.entry - stop) * dir;
@@ -323,7 +373,7 @@ export function buildPlans(inp: PlanInput): { long: SidePlan; short: SidePlan; b
       .sort((x, y) => (x.price - y.price) * dir)
       .filter((x, k, arr) => k === 0 || Math.abs(x.price - arr[k - 1].price) > 0.3 * A)
       .slice(0, 3)
-      .map((x) => ({ ...x, rr: Math.round(((x.price - best.entry) * dir * 10) / risk) / 10 }));
+      .map((x) => ({ ...x, r: Math.round(((x.price - best.entry) * dir * 10) / risk) / 10 }));
     const size: SidePlan["size"] = best.kind === "reversal" || alignment === "against" ? "half" : "full";
     const hold = TYPICAL_HOLD_BARS[tf] ?? 30;
     const holdH = (hold * (tf === "1d" ? 24 : 4));
@@ -331,10 +381,9 @@ export function buildPlans(inp: PlanInput): { long: SidePlan; short: SidePlan; b
     const fundingPx = pays ? Math.abs(inp.funding!.rate) * (holdH / Math.max(1, inp.funding!.intervalH)) * best.entry : 0;
     const costR = Math.round((((inp.costPct / 100) * best.entry + fundingPx) / risk) * 100) / 100;
     const warnings: string[] = [];
-    if (alignment === "against") warnings.push(`逆着${FTF}的方向：历史上逆大周期的单子平均更差，建议半仓、目标看近一点`);
+    if (alignment === "against") warnings.push(`逆着${FTF}的方向：大周期不站在这一边，按计划规则只用半仓`);
     if (best.kind === "reversal") warnings.push("逆势反转是在猜拐点：只用半仓，认错位一破就走");
     if (equal) warnings.push("认错位挂在等高 / 等低点上：这类位置历史上更容易被直接打穿（E9），可以放到下一个结构位之外，或者再缩小仓位");
-    if (targets[0] && targets[0].rr < 1.5) warnings.push(`第一个目标的盈亏比只有 1:${targets[0].rr}，不划算`);
     if (costR > 0.2) warnings.push(`成本（手续费、滑点和持仓期资金费）约占一份风险的 ${Math.round(costR * 100)}%`);
     if (risk / A > 3) warnings.push(`认错位离入场 ${(risk / A).toFixed(1)} 倍 ATR，比较远：仓位要相应缩小`);
     if (best.kind === "breakout" && best.relVol != null && tf !== "1h") {
@@ -350,6 +399,7 @@ export function buildPlans(inp: PlanInput): { long: SidePlan; short: SidePlan; b
       headline: `${best.status === "active" ? "已触发：" : ""}${kindWord}${word}${size === "half" ? "（半仓）" : ""}`,
       trigger: best.trigger,
       entry: best.entry,
+      entryT: best.entryT ?? null,
       zone: best.zone,
       invalidation: {
         anchor: best.anchor,

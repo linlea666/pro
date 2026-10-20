@@ -45,7 +45,7 @@ const LEVEL_TFS: Record<Timeframe, Timeframe[]> = {
  * chosen bar; other timeframes only bars that had fully closed by the end of
  * that bar, so a replay never sees data from its future.
  */
-function cutoff(c: Candle[], tf: Timeframe, endSec: number | null): Candle[] {
+export function cutoff(c: Candle[], tf: Timeframe, endSec: number | null): Candle[] {
   if (endSec == null) return c;
   const sec = TF_SECONDS[tf];
   return c.filter((x) => x.t + sec <= endSec);
@@ -56,7 +56,7 @@ function cutoff(c: Candle[], tf: Timeframe, endSec: number | null): Candle[] {
  * long history around that moment when it reaches back far enough, so an old replay sees the
  * same window the live page had then, small timeframes included. Otherwise the live window.
  */
-async function seriesAt(coin: string, tf: Timeframe, replayEnd: number | null): Promise<KlineResult> {
+export async function seriesAt(coin: string, tf: Timeframe, replayEnd: number | null): Promise<KlineResult> {
   if (replayEnd == null) return getKlines(coin, tf);
   const stored = readWindow(coin, tf, replayEnd, WINDOW, FUTURE_BARS + 1);
   const sec = TF_SECONDS[tf];
@@ -65,7 +65,7 @@ async function seriesAt(coin: string, tf: Timeframe, replayEnd: number | null): 
   return before >= 300 ? { candles: stored, source: PRIMARY_SOURCE, fetchedAt: Date.now() } : getKlines(coin, tf);
 }
 
-async function keyLevels(coin: string, tf: Timeframe, price: number, atr: number, lp: EngineParams["levels"], endSec: number | null = null, replay = false) {
+export async function keyLevels(coin: string, tf: Timeframe, price: number, atr: number, lp: EngineParams["levels"], endSec: number | null = null, replay = false) {
   const tfs = LEVEL_TFS[tf];
   const at = replay ? endSec : null;
   const [series, daily] = await Promise.all([Promise.all(tfs.map((x) => seriesAt(coin, x, at))), seriesAt(coin, "1d", at)]);
