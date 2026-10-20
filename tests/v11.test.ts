@@ -95,3 +95,21 @@ test("risk: structural anchors are intact swing lows below price, nearest first"
   assert.ok(a.every((x) => x.price < c[c.length - 1].c));
   assert.equal(a[0].price, 99.5);
 });
+
+test("rate limit: IPv6 addresses in one /64 share a window; windows expire on their own length", async () => {
+  const { ipKey } = await import("../src/lib/server/ratelimit.ts");
+  assert.equal(ipKey("2001:db8:1:2:aaaa::1"), ipKey("2001:db8:1:2:bbbb::2"));
+  assert.notEqual(ipKey("2001:db8:1:3::1"), ipKey("2001:db8:1:2::1"));
+  assert.equal(ipKey("1.2.3.4"), "1.2.3.4");
+  resetLimits();
+  const t = 5_000_000;
+  assert.equal(allow("hourly", "9.9.9.9", 1, 3600_000, t).ok, true);
+  assert.equal(allow("hourly", "9.9.9.9", 1, 3600_000, t + 120_000).ok, false, "a 1-hour window is still closed after 2 minutes");
+});
+
+test("closedThrough: bars count as closed only up to the fetch time; stored data never closes its last bar", async () => {
+  const { closedThrough } = await import("../src/lib/data/klines.ts");
+  const candles: Candle[] = [{ t: 0, o: 1, h: 1, l: 1, c: 1, v: 1 }, { t: 3600, o: 1, h: 1, l: 1, c: 1, v: 1 }];
+  assert.equal(closedThrough({ candles, source: "binance", fetchedAt: 7_100_000 }, 9_000_000), 7100);
+  assert.equal(closedThrough({ candles, source: "local", fetchedAt: 9_000_000 }, 9_000_000), 3600);
+});

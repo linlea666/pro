@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Timeframe } from "@/lib/types";
 import { TF_LABEL } from "@/lib/types";
 
@@ -31,6 +31,9 @@ export function AiCard({ coin, tf }: { coin: string; tf: Timeframe }) {
   const [res, setRes] = useState<Res | null>(null);
   const [busy, setBusy] = useState(false);
   const supported = AI_TFS.includes(tf);
+  // a generation takes 10–40 s; ignore its answer if the visitor has moved to another coin or timeframe
+  const current = useRef(`${coin}|${tf}`);
+  current.current = `${coin}|${tf}`;
   useEffect(() => {
     let alive = true;
     setRes(null);
@@ -46,13 +49,17 @@ export function AiCard({ coin, tf }: { coin: string; tf: Timeframe }) {
   }, [coin, tf, supported]);
 
   const generate = async () => {
+    const key = `${coin}|${tf}`;
     setBusy(true);
+    let next: Res;
     try {
       const r = await fetch(`/api/ai?coin=${coin}&tf=${tf}`, { method: "POST" });
-      setRes(await r.json());
+      next = await r.json();
     } catch {
-      setRes({ status: "error", kind: "network", message: "网络出错，请稍后再试" });
+      next = { status: "error", kind: "network", message: "网络出错，请稍后再试" };
     }
+    if (current.current !== key) return;
+    setRes(next);
     setBusy(false);
   };
 

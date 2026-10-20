@@ -2,7 +2,7 @@ import { analyzeWith } from "../analysis.ts";
 import { COIN_IDS } from "../symbols.ts";
 import { wilson } from "../ta/stats.ts";
 import { TF_SECONDS, type Timeframe } from "../types.ts";
-import { getKlines } from "../data/klines.ts";
+import { closedThrough, getKlines } from "../data/klines.ts";
 import { getDb } from "./db.ts";
 import { logger } from "./log.ts";
 import { currentParams } from "./params-store.ts";
@@ -63,7 +63,6 @@ export async function runScorecard(budgetMs = 20_000): Promise<{ added: number; 
   const db = getDb();
   const has = db.prepare("SELECT 1 FROM scorecard_points WHERE coin = ? AND tf = ? AND t = ?");
   const ins = db.prepare("INSERT OR REPLACE INTO scorecard_points (coin, tf, t, light, score, close_pct, atr_pct) VALUES (?, ?, ?, ?, ?, ?, ?)");
-  const nowSec = Date.now() / 1000;
   let added = 0;
   // round-robin so every coin/timeframe gets recent points before anyone gets old ones
   const queues: { coin: string; tf: Timeframe; ts: number[]; at: Map<number, number>; closes: number[] }[] = [];
@@ -72,7 +71,9 @@ export async function runScorecard(budgetMs = 20_000): Promise<{ added: number; 
     const sec = TF_SECONDS[tf];
     for (const coin of COIN_IDS) {
       try {
-        const closed = (await getKlines(coin, tf)).candles.filter((x) => x.t + sec <= nowSec);
+        const k = await getKlines(coin, tf);
+        const until = closedThrough(k);
+        const closed = k.candles.filter((x) => x.t + sec <= until);
         const ts: number[] = [];
         for (let i = closed.length - 1 - H; i >= MIN_HISTORY; i--) {
           const t = closed[i].t;
@@ -124,6 +125,8 @@ function record(light: "green" | "red", rows: { light: string; close_pct: number
 
 /** Aggregate record for one timeframe, for one coin or all coins together. */
 export function getScorecard(coin: string | null, tf: Timeframe): Scorecard {
+  // right after a parameter change, don't show the old engine's record under the new horizon/cost
+  ensureVersion();
   const { engine } = currentParams();
   const rows = (
     coin

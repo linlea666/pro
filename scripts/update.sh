@@ -11,7 +11,7 @@ FORCE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --force) FORCE=1; shift ;;
-    --branch) SL_BRANCH="$2"; shift 2 ;;
+    --branch) [ $# -ge 2 ] || die "--branch 需要一个分支名"; SL_BRANCH="$2"; shift 2 ;;
     *) die "未知参数：$1（可用：--force、--branch NAME）" ;;
   esac
 done

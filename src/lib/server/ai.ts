@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createHash } from "node:crypto";
-import { analyze, multiTimeframe, type Analysis, type LightSummary } from "../analysis.ts";
+import { analyze, multiTimeframe, relevel, type Analysis, type LightSummary } from "../analysis.ts";
 import { TF_LABEL, type Timeframe } from "../types.ts";
 import { getDb } from "./db.ts";
 import { decrypt, encrypt } from "./crypto.ts";
@@ -193,11 +193,13 @@ const round = (v: number) => (Math.abs(v) >= 100 ? Math.round(v * 10) / 10 : Mat
 /** Compact, display-ready facts for one coin/timeframe plus the other timeframes. */
 export function buildSnapshot(a: Analysis, mtf: LightSummary[]) {
   const v = a.verdict;
+  // the write-up is cached for the whole closed bar: describe that bar, not the live tick
+  const levels = relevel([...a.levels.supports, ...a.levels.resistances], a.closedPrice);
   const lvl = (l: Analysis["levels"]["supports"][number]) => ({ price: round(l.price), distancePct: Math.round(l.distancePct * 100) / 100, methods: l.methods.slice(0, 3) });
   return {
     coin: a.coin,
     timeframe: TF_LABEL[a.tf],
-    price: a.price,
+    price: a.closedPrice,
     change24hPct: Math.round(a.change24h * 100) / 100,
     verdict: {
       light: v.lightText,
@@ -226,8 +228,8 @@ export function buildSnapshot(a: Analysis, mtf: LightSummary[]) {
     },
     trend: { label: a.trend.label, score: a.trend.current, explain: a.trend.explain },
     indicatorVotes: { bullish: Object.values(a.indicators.summary).reduce((s, x) => s + x.bull, 0), bearish: Object.values(a.indicators.summary).reduce((s, x) => s + x.bear, 0), total: a.indicators.total },
-    supports: a.levels.supports.slice(0, 3).map(lvl),
-    resistances: a.levels.resistances.slice(0, 3).map(lvl),
+    supports: levels.supports.slice(0, 3).map(lvl),
+    resistances: levels.resistances.slice(0, 3).map(lvl),
     fibonacci: a.fib ? { leg: a.fib.direction === "up" ? "上涨段" : "下跌段", retracedPct: Math.round(a.fib.currentRatio * 1000) / 10, zone: a.fib.zoneText } : null,
     chan: a.chan.explain,
     recentSignals: a.active.map((s) => ({ name: s.name, barsAgo: s.barsAgo, historicalWinRatePct: s.stats.winRate, randomWinRatePct: s.stats.baseWinRate, samples: s.stats.samples, reliability: s.stats.reliability })),

@@ -22,7 +22,7 @@ FIREWALL=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --port) PORT="$2"; shift 2 ;;
-    --branch) export SL_BRANCH="$2"; shift 2 ;;
+    --branch) [ $# -ge 2 ] || { echo "--branch 需要一个分支名" >&2; exit 1; }; export SL_BRANCH="$2"; shift 2 ;;
     --repo) export SL_REPO="$2"; shift 2 ;;
     --admin-user) ADMIN_USER="$2"; shift 2 ;;
     --admin-pass) ADMIN_PASS="$2"; shift 2 ;;

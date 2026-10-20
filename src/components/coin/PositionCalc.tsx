@@ -11,9 +11,10 @@ type Side = "long" | "short";
  * Position size from the 2% rule: how large a position (notional) may be so a
  * stop-out costs at most X% of capital. Works for longs and shorts (contracts).
  */
-export function PositionCalc({ price, stopRef, coin }: { price: number; stopRef: number | null; coin: string }) {
-  // the suggested stop sits above price on a red light: that's a short
-  const seedSide: Side = stopRef && stopRef > price ? "short" : "long";
+export function PositionCalc({ price, stopRef, coin, light }: { price: number; stopRef: number | null; coin: string; light: "green" | "yellow" | "red" }) {
+  // a red light's stop sits above price: that's a short (taken from the light, not from the live price,
+  // which may have moved past a stop computed on the last close)
+  const seedSide: Side = light === "red" ? "short" : "long";
   const seedStop = (sd: Side) => (stopRef && (sd === "long" ? stopRef < price : stopRef > price) ? stopRef : price * (sd === "long" ? 0.95 : 1.05));
   const [side, setSide] = useState<Side>(seedSide);
   const [capital, setCapital] = useState(1000);

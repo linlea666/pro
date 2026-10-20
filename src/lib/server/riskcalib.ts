@@ -1,4 +1,4 @@
-import { getKlines } from "../data/klines.ts";
+import { closedThrough, getKlines } from "../data/klines.ts";
 import { COIN_IDS } from "../symbols.ts";
 import { calibrate, type Calibration } from "../ta/risk.ts";
 import { TF_SECONDS, type Timeframe } from "../types.ts";
@@ -43,9 +43,10 @@ export async function runCalibration(): Promise<{ done: number; failed: number; 
   for (const coin of COIN_IDS) {
     for (const tf of CALIBRATED_TFS) {
       try {
-        const { candles } = await getKlines(coin, tf);
+        const k = await getKlines(coin, tf);
         // drop the bar still forming
-        const closed = candles.filter((x) => x.t + TF_SECONDS[tf] <= Date.now() / 1000);
+        const until = closedThrough(k);
+        const closed = k.candles.filter((x) => x.t + TF_SECONDS[tf] <= until);
         if (closed.length < 400) continue;
         const cal = calibrate(closed, tf, H[tf]);
         ins.run(coin, tf, JSON.stringify(cal.probe), JSON.stringify(cal.noise), cal.horizon, cal.samples, Date.now());

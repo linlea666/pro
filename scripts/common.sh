@@ -61,14 +61,17 @@ resolve_ref() {
     ref="$SL_BRANCH"
     sha=$(git ls-remote "$SL_REPO" "refs/heads/$ref" | cut -c1-10)
   else
-    ref=$(git ls-remote --tags --refs "$SL_REPO" 'v*' 2>/dev/null | sed 's#.*refs/tags/##' | sort -V | tail -1)
+    # a failed listing must not look like "no releases yet" and silently deploy main
+    lines=$(git ls-remote --tags --refs "$SL_REPO" 'v*' 2>/dev/null) || return 0
+    # releases only: v1.2.3, not pre-releases such as v1.2.3-rc1
+    ref=$(echo "$lines" | sed 's#.*refs/tags/##' | grep -E '^v[0-9]+(\.[0-9]+)*$' | sort -V | tail -1 || true)
     if [ -z "$ref" ]; then
       ref=main
       sha=$(git ls-remote "$SL_REPO" refs/heads/main | cut -c1-10)
     else
       # annotated tags point at a tag object; the peeled entry (^{}) is the commit
       lines=$(git ls-remote "$SL_REPO" "refs/tags/$ref" "refs/tags/$ref^{}")
-      sha=$(echo "$lines" | grep -F '^{}' | cut -c1-10)
+      sha=$(echo "$lines" | grep -F '^{}' | cut -c1-10 || true)
       [ -n "$sha" ] || sha=$(echo "$lines" | head -1 | cut -c1-10)
     fi
   fi

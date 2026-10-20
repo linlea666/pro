@@ -96,18 +96,21 @@ async function tick() {
         setState("job.archivedWeek", label);
       }
     }
+    const busy = globalThis as { __slJobBusy?: boolean };
     // stop-loss calibration: weekly, and right away on a fresh install
     const calibEmpty = !getDb().prepare("SELECT 1 FROM risk_calib LIMIT 1").get();
     if (calibEmpty || due("riskCalib", 7 * DAY)) {
       const { runCalibration } = await import("./riskcalib.ts");
-      const r = await runCalibration();
+      busy.__slJobBusy = true;
+      const r = await runCalibration().finally(() => (busy.__slJobBusy = false));
       logger.info("engine", "止损参考校准完成", r);
       done("riskCalib");
     }
     // the traffic light's track record, filled in small batches
     if (due("scorecard", HOUR - 60_000)) {
       const { runScorecard } = await import("./scorecard.ts");
-      const r = await runScorecard();
+      busy.__slJobBusy = true;
+      const r = await runScorecard().finally(() => (busy.__slJobBusy = false));
       if (r.added) logger.info("engine", "信号灯成绩单更新", r);
       done("scorecard");
     }

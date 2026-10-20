@@ -41,7 +41,7 @@ export function ScorecardCard({ coin, tf, horizonText }: { coin: string; tf: Tim
           <p>
             <b className="text-ink">黄灯（观望）</b> {s.yellow.samples} 次：之后平均波动 {s.yellow.avgAbsMove ?? "—"}%，所有时点平均 {s.yellow.allAvgAbsMove ?? "—"}%。黄灯只说“方向不明”，不算对错。
           </p>
-          <p className="text-[11px] text-ink-3">区间是 95% 置信区间：样本少时区间很宽，说明还看不出好坏。命中率的“随机”是同期任意时点做同方向的结果。</p>
+          <p className="text-[11px] text-ink-3">区间是 95% 置信区间：样本少时区间很宽，说明还看不出好坏。命中率的“随机”是同期任意时点做同方向的结果。较早的时点本站没有保存 15 分钟等小周期的完整历史，回放时少了这些周期的关键位，所以和当时实际显示的结论可能略有出入。</p>
         </div>
       )}
     </Section>

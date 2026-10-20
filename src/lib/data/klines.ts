@@ -30,6 +30,16 @@ export interface KlineResult {
   fetchedAt: number;
 }
 
+/**
+ * Unix seconds up to which this data is final: a bar counts as closed only if it ended
+ * before the data was fetched (not merely before "now" — the cache can be minutes old).
+ * Stored history served while every exchange is down may end mid-bar, so its last bar never counts.
+ */
+export function closedThrough(k: KlineResult, nowMs = Date.now()): number {
+  if (k.source === "local") return k.candles.length ? k.candles[k.candles.length - 1].t : 0;
+  return Math.floor(Math.min(nowMs, k.fetchedAt) / 1000);
+}
+
 type Entry = { at: number; value?: KlineResult; pending?: Promise<KlineResult> };
 const cache = new Map<string, Entry>();
 

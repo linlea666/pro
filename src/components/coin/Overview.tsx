@@ -132,7 +132,7 @@ export function Overview({ a, mtf, mode, onTf, onTab }: { a: Analysis; mtf: Ligh
           <LevelsList supports={a.levels.supports} resistances={a.levels.resistances} price={a.price} mode={mode} onHover={setHoverLevel} />
         </Section>
 
-        <PositionCalc price={a.price} stopRef={v.stopRef} coin={a.coin} />
+        <PositionCalc price={a.price} stopRef={v.stopRef} coin={a.coin} light={v.light} />
         {!a.replay && <ScorecardCard coin={a.coin} tf={a.tf} horizonText={a.horizonText} />}
       </div>
     </div>

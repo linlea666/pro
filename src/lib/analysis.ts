@@ -1,4 +1,4 @@
-import { getKlines, ttlFor } from "./data/klines.ts";
+import { closedThrough, getKlines, ttlFor } from "./data/klines.ts";
 import { logger } from "./server/log.ts";
 import { currentParams } from "./server/params-store.ts";
 import { DEFAULT_ENGINE_PARAMS, type EngineParams } from "./params.ts";
@@ -59,7 +59,7 @@ async function keyLevels(coin: string, tf: Timeframe, price: number, atr: number
  * Levels are found on completed bars, but the list is read against the live price:
  * a support broken inside the forming bar is shown as resistance above it, with its live distance.
  */
-function relevel(all: Level[], live: number): { supports: Level[]; resistances: Level[] } {
+export function relevel(all: Level[], live: number): { supports: Level[]; resistances: Level[] } {
   const at = (l: Level, side: Level["side"]): Level => ({ ...l, side, distancePct: ((l.price - live) / live) * 100 });
   return {
     supports: all.filter((l) => l.price <= live).map((l) => at(l, "support")).sort((x, y) => y.price - x.price),
@@ -256,7 +256,7 @@ async function analyzeLogged(coin: string, tf: Timeframe, ep: EngineParams): Pro
     const a = await analyzeInner(coin, tf, ep);
     const ms = Date.now() - t0;
     // right after a start every cache is cold and the background jobs run at once: slowness then is expected
-    const slow = ms > 3000 && process.uptime() > 180;
+    const slow = ms > 3000 && process.uptime() > 180 && !(globalThis as { __slJobBusy?: boolean }).__slJobBusy;
     logger[slow ? "warn" : "debug"]("engine", `分析完成 ${coin} ${tf}${slow ? "（偏慢）" : ""}`, { durationMs: ms, bars: a.candles.length });
     return a;
   } catch (e) {
@@ -268,9 +268,9 @@ async function analyzeLogged(coin: string, tf: Timeframe, ep: EngineParams): Pro
 async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFAULT_ENGINE_PARAMS, asOf: number | null = null): Promise<Analysis> {
   const [main, hourlyRaw] = await Promise.all([getKlines(coin, tf), getKlines(coin, "1h")]);
   const sec = TF_SECONDS[tf];
-  const nowSec = Math.floor(Date.now() / 1000);
   // Everything is computed on completed bars only, so a conclusion cannot flip back and forth
-  // inside one bar. Live: completed by now; replay: completed by the end of the chosen bar.
+  // inside one bar. Live: completed when the data was fetched; replay: completed by the end of the chosen bar.
+  const nowSec = closedThrough(main);
   const endSec = asOf == null ? nowSec : asOf + sec;
   const allCandles = main.candles;
   const c = cutoff(allCandles, tf, endSec);
@@ -301,7 +301,8 @@ async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFA
   // ---------------- historical stats
   const H = ep.horizon[tf];
 
-  const cal = getCalibration(coin, tf);
+  // the stored calibration is measured on the whole history; a replay must not see bars after its own time
+  const cal = asOf == null ? getCalibration(coin, tf) : null;
   const verdict = buildVerdict({
     tf, price, atr: atr[L], trend, panel, td, supports, resistances, lastIdx: L, vp: ep.verdict,
     risk: {

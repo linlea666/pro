@@ -35,13 +35,14 @@ export function ReplayBar({
   onPicking: (v: boolean) => void;
   onAsOf: (t: number | null) => void;
 }) {
-  // jump targets snap to real bars of the live chart (minus the bar still forming)
-  const bars = live?.candles ?? [];
-  const lastT = bars.length ? bars[bars.length - 1].t : 0;
+  // jump targets snap to real bars of the live chart, strictly before the last closed bar
+  // (a replay needs at least one closed bar after it to show what happened next)
+  const lastClosed = live?.lastClosedT ?? 0;
+  const bars = (live?.candles ?? []).filter((b) => b.t < lastClosed);
   const jumps = JUMPS.map((j) => {
-    const target = lastT - j.sec;
+    const target = lastClosed - j.sec;
     let idx = -1;
-    for (let i = bars.length - 2; i >= 0; i--) if (bars[i].t <= target) { idx = i; break; }
+    for (let i = bars.length - 1; i >= 0; i--) if (bars[i].t <= target) { idx = i; break; }
     return { ...j, t: idx >= 0 ? bars[idx].t : null };
   }).filter((j) => j.t != null);
 

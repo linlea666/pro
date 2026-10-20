@@ -44,7 +44,8 @@ const RELIABILITY_STYLE: Record<SignalStats["reliability"], { color: string; ico
 };
 
 export function ReliabilityBadge({ r }: { r: SignalStats["reliability"] }) {
-  const s = RELIABILITY_STYLE[r];
+  // unknown labels (e.g. data from a newer server than this page's code) still render
+  const s = RELIABILITY_STYLE[r] ?? { color: "var(--text-3)", icon: "?" };
   return (
     <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium" style={{ color: s.color, borderColor: s.color }}>
       <span aria-hidden="true">{s.icon}</span>
