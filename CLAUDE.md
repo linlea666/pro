@@ -13,7 +13,7 @@
   - 内部 import 用**相对路径并带 `.ts` 后缀**，比如 `../ta/risk.ts`；`@/` 别名只在 app / components 里用；
   - **不要使用 TS 的参数属性写法**（`constructor(private x)`），也不要用 enum。
 - 常用命令：
-  - `npm test`：单元测试，目前 24 个；
+  - `npm test`：单元测试，目前 27 个；
   - `npx tsc --noEmit`：类型检查；
   - `npx next build`：生产构建；
   - `npm run dev`：本地开发；
@@ -37,7 +37,8 @@
   - 定时任务：`jobs.ts`，止损校准每周跑一次，成绩单每小时跑一批（引擎参数或主数据源变了会重新累计）；K 线历史没补齐前每 10 分钟补一批（每批 60 秒），补齐后每 6 小时查一次缺口；资金费率和持仓量每小时更新；
   - `riskcalib.ts`、`scorecard.ts`；
   - AI：`ai.ts`，只在用户点击“AI 分析”按钮时生成，只支持 1 小时及以上周期，有每日上限和每 IP 每小时上限；
-  - 参数版本：`params-store.ts`。
+  - 参数版本：`params-store.ts`；
+  - 邮件：`mail.ts`（nodemailer，版本锁定；SMTP 配置存 settings 的 `mail.config`，授权码加密，留空保留）；告警：`alert.ts` 的 `raiseAlert(kind, title, detail)`，类别 datasource / gap / job / ai / db，同类 30 分钟一封，`sendDigest` 每日摘要。新加的故障点直接调用 `raiseAlert`，它不会抛错也不等待发信。
 - `src/lib/params.ts`：91 项可调参数，引擎和后台共用。
 - `scripts/`：`install.sh`、`update.sh`、`rollback.sh`、`common.sh`、`signallight` 管理命令、`diagnose.sh`（体检报告）、`cli.ts`。
 - `research/`：离线实验 E1–E9，不参与构建，说明见 `research/README.md`。
@@ -74,8 +75,8 @@
 - **v1.2 研究与数据：**
   1. ~~先把历史数据存长（1 小时存 2 年、4 小时存 5 年）~~ 已完成；
   2. ~~合约数据源 fapi.binance.com，包括资金费率和持仓量~~ 已完成；
-  3. 邮件配置（SMTP：服务器、端口、TLS、发件人、授权码留空表示保留原值、收件人、告警开关，加保存和测试按钮）；
-  4. 告警只发给管理员；
+  3. ~~邮件配置（SMTP：服务器、端口、TLS、发件人、授权码留空表示保留原值、收件人、告警开关，加保存和测试按钮）~~ 已完成；
+  4. ~~告警只发给管理员~~ 已完成；
   5. 研究 1 小时红灯的反向现象。
 - **v1.3 防守位页面（认错位 + 盈亏比工具）：** 依据 E9 的结论：
   - 认错位按区间呈现；

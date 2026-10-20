@@ -2,6 +2,7 @@ import type { Candle, Timeframe } from "../types.ts";
 import { TF_SECONDS } from "../types.ts";
 import { getDb } from "../server/db.ts";
 import { recordSource } from "../server/health.ts";
+import { raiseAlert } from "../server/alert.ts";
 import { logger } from "../server/log.ts";
 
 /**
@@ -247,7 +248,10 @@ function served(coin: string, tf: Timeframe, r: KlineResult, errors: string[]): 
   if (prev !== r.source && (prev !== undefined || r.source !== PRIMARY_SOURCE)) {
     const name = r.source === "local" ? "本地存储" : SOURCE_LABEL[r.source];
     if (r.source === PRIMARY_SOURCE) logger.info("datasource", `已恢复主数据源${name}：${coin} ${tf}`);
-    else if (r.source !== "local") logger.warn("datasource", `主数据源暂不可用，改用${name}：${coin} ${tf}`, { errors });
+    else if (r.source !== "local") {
+      logger.warn("datasource", `主数据源暂不可用，改用${name}：${coin} ${tf}`, { errors });
+      raiseAlert("datasource", `主数据源不可用，已切换到${name}`, { 币种: coin, 周期: tf, 错误: errors.join("；") });
+    }
   }
   return r;
 }
@@ -278,8 +282,10 @@ async function load(coin: string, tf: Timeframe, limit: number): Promise<KlineRe
   if (best) {
     const last = best.candles[best.candles.length - 1].t;
     logger.error("datasource", `所有数据源都失败，使用本地存储的 K 线：${coin} ${tf}`, { errors, series: best.stored, lastBar: new Date(last * 1000).toISOString() });
+    raiseAlert("datasource", "所有数据源都失败，正在使用本地存储的 K 线", { 币种: coin, 周期: tf, 错误: errors.join("；") });
     return served(coin, tf, best, errors);
   }
+  raiseAlert("datasource", "所有数据源都失败，且本地没有可用的 K 线", { 币种: coin, 周期: tf, 错误: errors.join("；") });
   throw new Error(errors.join("; "));
 }
 

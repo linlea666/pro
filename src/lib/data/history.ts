@@ -2,6 +2,7 @@ import type { Timeframe } from "../types.ts";
 import { TF_SECONDS } from "../types.ts";
 import { COIN_IDS } from "../symbols.ts";
 import { getDb } from "../server/db.ts";
+import { raiseAlert } from "../server/alert.ts";
 import { logger } from "../server/log.ts";
 import { getState, setState } from "../server/settings.ts";
 import { binancePage, KEEP_DAYS, PRIMARY_SOURCE, store } from "./klines.ts";
@@ -153,6 +154,7 @@ export async function syncHistory(
         r.filled += filled;
         if (gaps.length) {
           const msg = filled ? `本地 K 线有缺口，已补拉 ${filled} 根：${coin} ${tf}` : `交易所本身缺少这段 K 线，已记录：${coin} ${tf}`;
+          if (filled) raiseAlert("gap", "本地 K 线出现缺口，已自动补拉", { 币种: coin, 周期: tf, 缺口: gaps.length, 补回根数: filled });
           logger[filled ? "warn" : "info"]("datasource", msg, {
             gaps: gaps.length,
             filled,

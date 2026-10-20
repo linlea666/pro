@@ -6,6 +6,7 @@ import { logger } from "./log.ts";
 import { getSetting, getState, setState } from "./settings.ts";
 import { sourceSummary } from "./health.ts";
 import { archiveWeek, weekLabel, weekStart } from "./archive.ts";
+import { raiseAlert, sendDigest } from "./alert.ts";
 
 /**
  * In-process scheduler. Runs a tick every 10 minutes; each job records when it
@@ -76,6 +77,8 @@ async function tick() {
       if (pre.runs) logger.info("engine", "预计算状态", { ...pre });
       const mem = process.memoryUsage();
       logger.info("system", "进程状态", { rssMB: Math.round(mem.rss / 1048576), heapMB: Math.round(mem.heapUsed / 1048576), uptimeMin: Math.round(process.uptime() / 60), dbMB: dbSizeMB() });
+      const cap = getSetting("log.maxDbMB");
+      if (dbSizeMB() > cap * 0.9) raiseAlert("db", "数据库接近或超过容量上限", { 当前: `${dbSizeMB()} MB`, 上限: `${cap} MB` });
       done("hourlySummary");
     }
     if (due("cleanup", DAY)) {
@@ -130,6 +133,16 @@ async function tick() {
       if (r.added) logger.info("engine", "信号灯成绩单更新", r);
       done("scorecard");
     }
+    if (due("digest", DAY)) {
+      const s = sourceSummary(24);
+      const extra = [
+        ...Object.entries(s).map(([name, x]) => `数据源 ${name}：成功率 ${x.successRate ?? "—"}%，平均 ${x.avgMs} 毫秒`),
+        `数据库 ${dbSizeMB()} MB`,
+        `K 线历史${getState("job.historyComplete") === "1" ? "已补齐" : "补充中"}`,
+      ];
+      await sendDigest(extra).catch((e) => logger.warn("system", "每日摘要发送失败", { error: (e as Error).message }));
+      done("digest");
+    }
     if (due("backup", DAY)) {
       const file = await backupNow("auto");
       logger.info("system", "数据库自动备份完成", { file: path.basename(file), dbMB: dbSizeMB() });
@@ -137,6 +150,7 @@ async function tick() {
     }
   } catch (e) {
     logger.error("system", "定时任务执行失败", { error: e });
+    raiseAlert("job", "定时任务执行失败", { 错误: (e as Error).message });
   }
 }
 

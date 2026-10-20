@@ -5,6 +5,7 @@ import { TF_LABEL, type Timeframe } from "../types.ts";
 import { getDb } from "./db.ts";
 import { decrypt, encrypt } from "./crypto.ts";
 import { logger } from "./log.ts";
+import { raiseAlert } from "./alert.ts";
 
 /**
  * AI interpretation ("AI 解读"). The model only sees the structured snapshot
@@ -366,6 +367,7 @@ export async function interpret(coin: string, tf: Timeframe): Promise<Interpreta
 
   if (callsToday() >= c.dailyLimit) {
     logger.warn("ai", "今日 AI 解读额度已用完", { limit: c.dailyLimit, coin, tf });
+    raiseAlert("ai", "今日 AI 解读额度已用完", { 额度: c.dailyLimit });
     const old = latestCached(coin, tf);
     if (old) return old;
     throw new AiError(`今日 AI 解读额度（${c.dailyLimit} 次）已用完，明天会自动恢复`, "quota");
@@ -382,6 +384,7 @@ export async function interpret(coin: string, tf: Timeframe): Promise<Interpreta
       recordUsage(false);
       const err = describeApiError(e);
       logger.error("ai", `AI 解读失败 ${coin} ${tf}：${err.message}`, { kind: err.kind, model: c.model, durationMs: Date.now() - t0 });
+      raiseAlert("ai", "AI 解读调用失败", { 原因: err.message, 模型: c.model });
       throw err;
     }
     recordUsage(r.stopReason !== "refusal", r.usage);

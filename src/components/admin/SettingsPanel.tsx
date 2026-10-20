@@ -88,8 +88,116 @@ export function SettingsPanel() {
         )}
       </section>
 
+      <MailForm />
       <PasswordForm />
     </div>
+  );
+}
+
+type MailConfig = { host: string; port: number; security: "ssl" | "starttls" | "none"; user: string; to: string[]; alertsEnabled: boolean; hasPass: boolean };
+
+const SECURITY: { value: MailConfig["security"]; label: string; port: number }[] = [
+  { value: "ssl", label: "SSL/TLS（推荐，通常 465 端口）", port: 465 },
+  { value: "starttls", label: "STARTTLS（通常 587 端口）", port: 587 },
+  { value: "none", label: "不加密（不推荐）", port: 25 },
+];
+
+/** SMTP settings for alert mails; the password is write-only. */
+function MailForm() {
+  const [c, setC] = useState<MailConfig | null>(null);
+  const [canEncrypt, setCanEncrypt] = useState(true);
+  const [form, setForm] = useState({ host: "", port: 465, security: "ssl" as MailConfig["security"], user: "", pass: "", to: "", alertsEnabled: false });
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = (b: { config: MailConfig; canEncrypt: boolean }) => {
+    setC(b.config);
+    setCanEncrypt(b.canEncrypt);
+    setForm({ host: b.config.host, port: b.config.port, security: b.config.security, user: b.config.user, pass: "", to: b.config.to.join("\n"), alertsEnabled: b.config.alertsEnabled });
+  };
+  useEffect(() => {
+    fetch("/api/admin/mail")
+      .then((r) => r.json())
+      .then(load);
+  }, []);
+
+  const post = async (action: "save" | "test") => {
+    setBusy(true);
+    setMsg(null);
+    const r = await fetch("/api/admin/mail", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, ...form }) });
+    const b = await r.json();
+    setBusy(false);
+    if (!r.ok) return setMsg({ ok: false, text: b.error });
+    if (action === "save") load(b);
+    setMsg({ ok: true, text: b.message });
+  };
+
+  const set = (k: keyof typeof form, v: string | number | boolean) => setForm({ ...form, [k]: v });
+  const row = "grid gap-2 sm:grid-cols-[200px_1fr] sm:items-center";
+  return (
+    <section className="card p-4">
+      <h2 className="mb-1 text-[15px] font-semibold">邮件与告警</h2>
+      <p className="mb-3 text-xs text-ink-3">
+        数据源全部失败或切换、K 线出现缺口、定时任务连续失败、AI 调用失败或额度用完、数据库接近上限时，发邮件给下面的收件人。同一类告警 30 分钟内只发一封，另外每天发一封摘要。
+      </p>
+      {!c ? (
+        <div className="h-40 animate-pulse rounded bg-panel-2" />
+      ) : (
+        <div className="space-y-3">
+          {!canEncrypt && <p className="rounded-lg bg-down-soft px-3 py-2 text-[13px] text-down">服务器没有配置 MASTER_KEY，无法加密保存授权码。请在配置文件中设置后重启。</p>}
+          <div className={row}>
+            <label className="text-sm" htmlFor="mail-host">SMTP 服务器</label>
+            <input id="mail-host" className={inputCls} placeholder="例如 smtp.qq.com、smtp.163.com" value={form.host} onChange={(e) => set("host", e.target.value)} />
+          </div>
+          <div className={row}>
+            <label className="text-sm" htmlFor="mail-security">连接方式与端口</label>
+            <div className="flex gap-2">
+              <select
+                id="mail-security"
+                className={inputCls}
+                value={form.security}
+                onChange={(e) => {
+                  const s = SECURITY.find((x) => x.value === e.target.value)!;
+                  setForm({ ...form, security: s.value, port: s.port });
+                }}
+              >
+                {SECURITY.map((x) => (
+                  <option key={x.value} value={x.value}>{x.label}</option>
+                ))}
+              </select>
+              <input aria-label="端口" type="number" className={`${inputCls} max-w-24`} value={form.port} onChange={(e) => set("port", Math.round(+e.target.value))} />
+            </div>
+          </div>
+          <div className={row}>
+            <label className="text-sm" htmlFor="mail-user">发件邮箱 / 登录账号</label>
+            <input id="mail-user" className={inputCls} autoComplete="off" placeholder="name@qq.com" value={form.user} onChange={(e) => set("user", e.target.value)} />
+          </div>
+          <div className={row}>
+            <label className="text-sm" htmlFor="mail-pass">邮箱授权码</label>
+            <div>
+              <input id="mail-pass" type="password" className={inputCls} autoComplete="new-password" placeholder={c.hasPass ? "已保存（留空表示不修改）" : "在邮箱设置里开启 SMTP 后获得，不是登录密码"} value={form.pass} onChange={(e) => set("pass", e.target.value)} />
+            </div>
+          </div>
+          <div className={row}>
+            <label className="text-sm" htmlFor="mail-to">告警收件邮箱</label>
+            <textarea id="mail-to" rows={2} className={inputCls} placeholder="每行一个，最多 10 个" value={form.to} onChange={(e) => set("to", e.target.value)} />
+          </div>
+          <label className="flex cursor-pointer items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-1" checked={form.alertsEnabled} onChange={(e) => set("alertsEnabled", e.target.checked)} />
+            <span>
+              开启告警邮件
+              <span className="block text-xs text-ink-3">建议先“发送测试邮件”确认能收到，再开启。</span>
+            </span>
+          </label>
+          {msg && <p className={`rounded-lg px-3 py-2 text-[13px] ${msg.ok ? "bg-up-soft text-up" : "bg-down-soft text-down"}`}>{msg.text}</p>}
+          <div className="flex flex-wrap gap-2 border-t border-line pt-4">
+            <button className={btnCls} disabled={busy} onClick={() => post("save")}>保存邮件配置</button>
+            <button className={btnGhost} disabled={busy} onClick={() => post("test")}>发送测试邮件</button>
+          </div>
+          <p className="text-xs text-ink-3">测试邮件使用当前表单的内容，不会保存。授权码留空时使用已保存的授权码。阿里云等云服务器通常封禁 25 端口，请用 465 或 587。</p>
+        </div>
+      )}
+    </section>
   );
 }
 
