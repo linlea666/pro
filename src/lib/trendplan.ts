@@ -172,6 +172,7 @@ const CHART_BARS = 150;
 const WATCH_BARS = 30;
 
 const r3 = (x: number) => Math.round(x * 1000) / 1000;
+const signedR = (x: number | null) => (x == null ? "—" : `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(2)}R`);
 
 // ---------------------------------------------------------------- research
 
@@ -238,7 +239,7 @@ export function verdictWords(r: ResearchRow | undefined, what: "plan" | "diff"):
     case "样本不足":
       return what === "plan" ? "样本还不够，下不了结论" : "样本还不够，下不了结论。";
     default:
-      return what === "plan" ? "历史上没有可证明的优势：和同方向、同止损距离的随机入场差不多" : "两种止损平均每笔的差别不能确定。";
+      return what === "plan" ? "历史上没有可证明的优势：和同方向、同止损距离的随机入场比，差别在统计上站不住，或在各段数据上方向不一致" : "两种止损平均每笔的差别不能确定。";
   }
 }
 
@@ -433,6 +434,7 @@ export async function computeTrendPlan(coin: string, fw: Framework, ep: EnginePa
       d.evidence = r ? evidenceOf(r) : null;
       d.verdictText = nearFar.note ?? verdictWords(r, "plan");
       d.stats = nearFar.defend;
+      d.statsText = nearFar.note ?? nearFarText(nearFar.defend, dRow("stop2:near:defend"), sinceText);
       p.defend = d;
     }
   }
@@ -443,7 +445,7 @@ export async function computeTrendPlan(coin: string, fw: Framework, ep: EnginePa
           (Object.keys(CHECK_NAME) as (keyof typeof CHECK_NAME)[]).map((k) => {
             const r = evRow(k);
             const text = r
-              ? `有这一项的守位平均每笔 ${r.cells.is.meanR ?? "—"}R，没有的 ${r.cells.is.meanR != null && r.cells.is.edgeR != null ? r3(r.cells.is.meanR - r.cells.is.edgeR) : "—"}R（样本内 ${r.cells.is.n} 笔有）。${r.verdict === "有优势" || r.verdict === "比随机差" ? "差别在统计上站得住。" : r.verdict === "样本不足" ? "样本还不够。" : "有没有这一项，历史上结果的差别不能确定。"}`
+              ? `有这一项的守位平均每笔 ${signedR(r.cells.is.meanR)}，没有的 ${signedR(r.cells.is.meanR != null && r.cells.is.edgeR != null ? r.cells.is.meanR - r.cells.is.edgeR : null)}（样本内 ${r.cells.is.n} 笔有）。${r.verdict === "有优势" || r.verdict === "比随机差" ? "差别在统计上站得住。" : r.verdict === "样本不足" ? "样本还不够。" : "有没有这一项，历史上结果的差别不能确定。"}`
               : "研究数字会在服务器生成研究报告后显示。";
             return [k, `${CHECK_NAME[k]}：${text}`];
           }),

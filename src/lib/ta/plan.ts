@@ -242,6 +242,8 @@ export interface DefendPlan {
   /** the conclusion, worded from the research verdict */
   verdictText: string | null;
   stats: NearFarStats | null;
+  /** near against far stops on defended levels, in one sentence */
+  statsText: string | null;
 }
 
 export interface SidePlan {

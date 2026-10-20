@@ -478,6 +478,7 @@ export function liveDefends(a: LiveDefendInput): { long: DefendPlan | null; shor
       evidence: null,
       verdictText: null,
       stats: null,
+      statsText: null,
     };
   }
 }

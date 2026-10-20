@@ -50,10 +50,18 @@ const CASES: Case[] = [
     story: "一根 4 小时 K 线从约 64,500 拉到 68,500，成交量是平时的好几倍。",
     lesson: "回放这一刻：页面给出“已触发：突破跟随做多”，认错位在突破前的低点之下，之后按移动认错位拿着。价格高不是理由，结构才是。",
   },
+  {
+    title: "10/15 扫过 80,345 后收回",
+    at: H4("2026-10-15T04:00:00Z"),
+    story: "价格跌破之前没被收盘跌破的 4 小时低点 80,345，最低到约 80,190 后收回，随后一根 4 小时 K 线收盘拐上。",
+    lesson: "回放这一刻：做多计划卡下面会多出一栏“守位做法”，给出远、近两档止损（按风险算仓位，两档亏的钱一样），并标出这种做法在历史上的表现。之后怎么走，看回放结果。",
+  },
 ];
 
 export function LessonsTab({ p, coin, onReplay }: { p: TrendPlan | null; coin: string; onReplay: (tf: Timeframe, at: number, coin: string) => void }) {
   const row = (k: string) => p?.lessons.find((r) => r.key === k) ?? null;
+  const dRow = (k: string) => p?.defendLessons.find((r) => r.key === k) ?? null;
+  const nf = p?.nearFar.plans ?? null;
   const tf = p?.tf ?? "4h";
   const hit = p?.scorecard?.rows[0]?.hit ?? null;
   const [peer, setPeer] = useState<TrendPlan | null>(null);
@@ -145,7 +153,35 @@ export function LessonsTab({ p, coin, onReplay }: { p: TrendPlan | null; coin: s
         </div>
       </Section>
 
-      <Section title="6. 回放真实案例：当时页面会怎么说" className="lg:col-span-2">
+      <Section title="6. 一个位值不值，看它失效前走了多远" className="lg:col-span-2">
+        <div className="space-y-2 text-[14px] leading-relaxed text-ink-2">
+          <p>
+            任何关键位迟早都会被突破。一个位值不值得守，要看守着它做，在打到止损之前价格能走多远。用 <Term k="R">R</Term>（止损距离）来量，BTC 的几千点和 ETH 的一百点才能放在一起比。
+          </p>
+          <p className="rounded-lg border border-line px-3 py-2 text-[13px]">
+            <b className="text-ink">个例</b>：BTC 冲到约 87,400 后回落，9/22 晚到 9/23 白天几次回到 86,500–87,000 一带。在这里做空、止损放在位外 0.85 倍 ATR，止损前最远走了 6.4–7.6R（约 6,700–7,200 点）。但按“跟着结构移动认错位”，这几笔都在 10/2 冲回约 87,200 的反弹里离场，最后只拿到 +0.4R 到 +1.0R。好例子总能找到，要看的是所有同类时刻的平均。
+          </p>
+          {p?.levelReach ? (
+            <p>{p.levelReach.text}</p>
+          ) : (
+            <p className="text-[12px] text-ink-3">（关键位“守到止损能走多远”的研究数字会在服务器生成研究报告后显示。）</p>
+          )}
+          <Evidence r={dRow("defend:all")} what="守位做法（扫过后收回或长影线拒绝，再收盘拐回就入场）" vs="同方向、同止损距离的随机入场" />
+          <p>
+            止损放近一点（1 小时极点之外）呢？按风险算仓位，近止损每笔亏的钱和远止损一样，只是仓位更大
+            {nf && nf.near.quickPct != null && nf.far.quickPct != null && (
+              <>
+                ，也更容易被扫：历史上近止损 24 小时内被扫 <b className="num text-ink">{nf.near.quickPct}%</b>，远止损 {nf.far.quickPct}%
+              </>
+            )}
+            。
+          </p>
+          <Evidence r={dRow("stop2:near:plans")} what="近止损（1 小时极点之外）" vs="同一批入场用远止损" />
+          <p>所以计划不靠“这个位一定守得住”：先定认错位，按风险算仓位，跟着结构拿住。</p>
+        </div>
+      </Section>
+
+      <Section title="7. 回放真实案例：当时页面会怎么说" className="lg:col-span-2">
         <p className="mb-3 text-[13px] leading-relaxed text-ink-3">点“回放”会把 BTC 的页面倒回那一刻（4 小时 K 线收盘时），只用当时已经有的数据给出趋势地图和计划，并显示之后真实发生了什么。</p>
         <div className="grid gap-3 md:grid-cols-2">
           {CASES.map((c) => (

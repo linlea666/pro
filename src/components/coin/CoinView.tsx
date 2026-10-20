@@ -289,7 +289,17 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
             ) : (
               <Skeleton />
             ))}
-          {tab === "learn" && <LessonsTab p={planFresh} coin={coinId} onReplay={replayAt} />}
+          {tab === "learn" && (
+            <LessonsTab
+              p={planFresh}
+              coin={coinId}
+              onReplay={(t, at, c) => {
+                // the cases are 4-hour moments: replay them in the rhythm they were written for
+                setFw("4h");
+                replayAt(t, at, c);
+              }}
+            />
+          )}
           {planFresh && (
             <p className="mt-4 text-right text-[11px] text-ink-3">
               数据来源 {SOURCE_NOTE[planFresh.source] ?? SOURCE_NOTE.local} · 更新于 {ago(planFresh.updatedAt)}
