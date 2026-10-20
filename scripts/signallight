@@ -43,6 +43,7 @@ case "$cmd" in
     ;;
   config) require_root; "${EDITOR:-nano}" "$SL_ENV"; echo "修改完成后执行：sudo signallight restart" ;;
   version) release_version "$(current_release)" ;;
+  diagnose) require_root; bash "$CUR/scripts/diagnose.sh" ;;
   help|*)
     cat <<HELP
 信号灯管理命令：
@@ -56,6 +57,7 @@ case "$cmd" in
   signallight restore <文件>     从备份恢复数据库
   signallight admin             创建管理员或重置密码
   signallight config            编辑配置文件
+  signallight diagnose          生成体检报告（只读；密钥和访问者 IP 已隐藏，可发给开发者分析）
   signallight version           查看当前版本
 HELP
     ;;
