@@ -1,8 +1,8 @@
 import { DEFAULT_ENGINE_PARAMS, type EngineParams } from "../params.ts";
 import type { Candle, Timeframe } from "../types.ts";
 import { TF_SECONDS } from "../types.ts";
-import { protectiveExtreme, relVolume } from "./plan.ts";
-import { intactPivots, PIVOT_K } from "./risk.ts";
+import { fmt, protectiveExtreme, relVolume, stopOption, type DefendPlan, type StopOption } from "./plan.ts";
+import { intactPivots, PIVOT_K, type Calibration } from "./risk.ts";
 import type { StructureState } from "./structure.ts";
 
 /**
@@ -345,4 +345,139 @@ export function findDefends(a: DefendArgs): DefendEvent[] {
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------- for the page
+
+/**
+ * Whether the hour chart can be used at `end` (a close of the main timeframe): warmed up for LOWER_WARMUP hours,
+ * and its bar ending at `end` is there — not a gap, not lagging behind the main chart.
+ */
+export function lowerReady(times: number[], end: number): boolean {
+  if (!times.length || times[0] > end - LOWER_WARMUP * 3600) return false;
+  const k = lastAtOrBefore(times, end - 3600);
+  return k >= 0 && times[k] === end - 3600;
+}
+
+/** Did any bar after the entry bar `i` (the forming one included) reach `stop`? */
+function touched(c: Candle[], i: number, forming: Candle | null, dir: 1 | -1, stop: number): boolean {
+  const bars = forming ? [...c.slice(i + 1), forming] : c.slice(i + 1);
+  return bars.some((x) => (dir > 0 ? x.l <= stop : x.h >= stop));
+}
+
+const NEAR_TOUCHED = (stop: number) => `近止损 ${fmt(stop)} 入场后已经被碰过：按近止损做的话，这笔已经出局`;
+
+/**
+ * The near stop of a plan entered at the close of bar `i`, placed as the research placed it (E18): beyond the hour
+ * chart's protective extreme at that close plus its sweep buffer, at least `minAtr` of the main ATR at the entry.
+ * Only when it is nearer than the far stop and no bar since has reached it; otherwise why not.
+ */
+export function planNearStop(o: {
+  lower: LowerFrame;
+  times: number[];
+  tf: Timeframe;
+  c: Candle[];
+  atr: number[];
+  i: number;
+  dir: 1 | -1;
+  far: number;
+  forming: Candle | null;
+  minAtr?: number;
+}): { stop: number | null; note: string | null } {
+  const end = o.c[o.i].t + TF_SECONDS[o.tf];
+  if (!lowerReady(o.times, end)) return { stop: null, note: "入场那根收盘时没有可用的 1 小时数据，只有结构认错位一档" };
+  const n = nearStop(o.lower, o.times, o.dir, end, o.c[o.i].c, o.atr[o.i], undefined, o.minAtr);
+  if (n == null) return { stop: null, note: "1 小时上还没有可用的结构点，只有结构认错位一档" };
+  if (!((n - o.far) * o.dir > 0)) return { stop: null, note: "1 小时的结构点并不比结构认错位近，只有一档止损" };
+  if (touched(o.c, o.i, o.forming, o.dir, n)) return { stop: null, note: NEAR_TOUCHED(n) };
+  return { stop: n, note: null };
+}
+
+/** What happened at the level, in words (no conclusion about whether it holds). */
+function describe(e: DefendEvent, rules: DefendRules): string {
+  const long = e.dir > 0;
+  const lo = long ? "低" : "高";
+  const wick = `长${long ? "下" : "上"}影线`;
+  const intact = long ? "之前没被收盘跌破的低点" : "之前没被收盘突破的高点";
+  const what =
+    e.levelKind === "fresh"
+      ? `创 ${rules.freshBars} 根新${lo} ${fmt(e.extreme)}，留下${wick}`
+      : e.levelKind === "flip"
+        ? `回踩被突破过的${long ? "高" : "低"}点 ${fmt(e.level)}（${long ? "阻力变支撑" : "支撑变阻力"}），${e.shape === "sweep" ? "扫过后收回" : `留下${wick}`}`
+        : e.shape === "sweep"
+          ? `扫过${intact} ${fmt(e.level)} 后收回`
+          : `回到${intact} ${fmt(e.level)} 附近，留下${wick}`;
+  return `${what}，之后第一次收盘拐${long ? "上" : "下"}`;
+}
+
+export interface LiveDefendInput extends Omit<DefendArgs, "from"> {
+  /** the bar still forming (its wicks count against the stops) and the latest price */
+  forming: Candle | null;
+  livePrice: number;
+  /** the main timeframe's calibration, for the chance noise touches a stop */
+  cal: Calibration | null;
+  costPct: number;
+  funding: { rate: number; intervalH: number } | null;
+}
+
+/** bars scanned back from the last close, so the 6-bar de-duplication matches a scan of the whole history */
+const LIVE_BACK = 40;
+
+/**
+ * A level defended on one of the last 3 closed bars, per side, still valid: no bar since reached the far stop,
+ * the price is not beyond it and has not run half the risk yet. Against the higher timeframe means half size,
+ * as for the other plans. The near stop is dropped (with the reason) when a bar since reached it or the hour
+ * chart was not up to date at the entry.
+ */
+export function liveDefends(a: LiveDefendInput): { long: DefendPlan | null; short: DefendPlan | null } {
+  const { c, atr, tf } = a;
+  const n = c.length - 1;
+  const sec = TF_SECONDS[tf];
+  const rules = a.rules ?? DEFAULT_ENGINE_PARAMS.defend;
+  const times = a.lower ? a.lower.c.map((x) => x.t) : [];
+  const evs = n > LIVE_BACK ? findDefends({ ...a, from: n - LIVE_BACK }).filter((e) => e.i >= n - 2) : [];
+  const pick = (dir: 1 | -1) => {
+    const list = evs.filter((e) => e.dir === dir);
+    for (let k = list.length - 1; k >= 0; k--) {
+      const p = toPlan(list[k]);
+      if (p) return p;
+    }
+    return null;
+  };
+  return { long: pick(1), short: pick(-1) };
+
+  function toPlan(e: DefendEvent): DefendPlan | null {
+    const dir = e.dir;
+    const entry = c[e.i].c;
+    const risk = (entry - e.far) * dir;
+    if (touched(c, e.i, a.forming, dir, e.far) || (a.livePrice - e.far) * dir <= 0 || (a.livePrice - entry) * dir >= 0.5 * risk) return null;
+    const opt = (stop: number): StopOption => stopOption({ entry, stop, dir, atr: atr[e.i], cal: a.cal, tf, costPct: a.costPct, funding: a.funding });
+    const ready = !!a.lower && lowerReady(times, c[e.i].t + sec);
+    let near: StopOption | null = null, nearNote: string | null = null;
+    if (!a.lower) nearNote = "没有 1 小时数据，只有一档止损";
+    else if (!ready || e.near == null) nearNote = "入场那根收盘时没有可用的 1 小时结构，只有一档止损";
+    else if (!((e.near - e.far) * dir > 0)) nearNote = "1 小时的极点止损并不比结构认错位近，只有一档止损";
+    else if (touched(c, e.i, a.forming, dir, e.near)) nearNote = NEAR_TOUCHED(e.near);
+    else near = opt(e.near);
+    const alignment = e.filter === dir ? "with" : e.filter === -dir ? "against" : "neutral";
+    return {
+      side: dir > 0 ? "long" : "short",
+      shape: e.shape,
+      levelKind: e.levelKind,
+      level: e.level,
+      extreme: e.extreme,
+      text: describe(e, rules),
+      entry,
+      entryT: c[e.i].t,
+      alignment,
+      size: alignment === "against" ? "half" : "full",
+      far: opt(e.far),
+      near,
+      nearNote,
+      checks: { flow: e.flow, oi: e.oi, turn: ready ? e.turn : null },
+      evidence: null,
+      verdictText: null,
+      stats: null,
+    };
+  }
 }

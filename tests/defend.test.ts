@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import type { Candle } from "../src/lib/types.ts";
 import { atrSeries } from "../src/lib/ta/risk.ts";
 import { structureSeries } from "../src/lib/ta/structure.ts";
-import { findDefends, nearStop, netTakerFlow, oiFlush, type DefendEvent, type LowerFrame, type OiSeries } from "../src/lib/ta/defend.ts";
+import { findDefends, liveDefends, lowerReady, nearStop, netTakerFlow, oiFlush, planNearStop, type DefendEvent, type LowerFrame, type OiSeries } from "../src/lib/ta/defend.ts";
+import { findEntries } from "../src/lib/ta/plan.ts";
+import { prevPeriodHL } from "../src/lib/ta/levels.ts";
+import { defenseTiers } from "../src/lib/ta/tiers.ts";
+import { swings } from "../src/lib/ta/structure.ts";
 import { runUp, simulate, type SimContext } from "../src/lib/research/sim.ts";
 import { DEFAULT_ENGINE_PARAMS, engineParams, validateParams } from "../src/lib/params.ts";
 
@@ -152,4 +156,145 @@ test("near stop: from the hour chart, beyond the defended extreme even when the 
   assert.ok(deep! < plain! - 5, "pushed beyond a lower extreme");
   const far = nearStop(lower, times, 1, end, entry, 100 * entry);
   assert.ok(far! <= entry - 50 * entry, "never closer than half the main ATR");
+});
+
+/** The market cut at the close of 4-hour bar k: everything known then (the hour bars up to that close). */
+function cutAt(m: ReturnType<typeof market>, k: number) {
+  const atr = atrSeries(m.c), ss = structureSeries(m.c, atr);
+  const hatr = atrSeries(m.h), hss = structureSeries(m.h, hatr);
+  const end = m.c[k].t + 4 * H;
+  const hn = m.h.filter((x) => x.t < end).length;
+  const lower: LowerFrame = { c: m.h.slice(0, hn), atr: hatr.slice(0, hn), ss: hss.slice(0, hn), buf: 0.5 };
+  return { c: m.c.slice(0, k + 1), atr: atr.slice(0, k + 1), ss: ss.slice(0, k + 1), lower, oi: m.oi, end };
+}
+
+test("live defends: the events a scan of the whole history finds, with the stops it found", () => {
+  const m = market(4 * 1500, 7);
+  const all = defends(m);
+  let n = 0;
+  for (const e of all.slice(10, 40)) {
+    const x = cutAt(m, e.i);
+    const live = liveDefends({ tf: "4h", c: x.c, atr: x.atr, ss: x.ss, filterAt: () => 0, buf: 0.8, lower: x.lower, oi: x.oi, forming: null, livePrice: x.c[e.i].c, cal: null, costPct: 0.15, funding: null });
+    const p = live[e.dir > 0 ? "long" : "short"];
+    assert.ok(p, `event at ${e.i} is shown at its close`);
+    assert.equal(p!.entryT, m.c[e.i].t);
+    assert.equal(p!.far.stop, e.far);
+    assert.equal(p!.level, e.level);
+    if (p!.near) assert.equal(p!.near.stop, e.near);
+    assert.ok(p!.text.length > 10);
+    n++;
+  }
+  assert.ok(n >= 20);
+});
+
+test("live defends: a bar since the entry that reached the near stop drops it; the far stop or a big run drops the plan", () => {
+  const m = market(4 * 1500, 7);
+  const withNear = defends(m).filter((e) => e.near != null && (e.near - e.far) * e.dir > 0 && e.i < m.c.length - 2);
+  let n = 0;
+  for (const e of withNear.slice(0, 15)) {
+    const x = cutAt(m, e.i);
+    const entry = x.c[e.i].c;
+    const next = (low: number): Candle => ({ t: x.c[e.i].t + 4 * H, o: entry, h: Math.max(entry, low), l: Math.min(entry, low), c: entry, v: 1 });
+    const run = (bar: Candle, livePrice = entry) =>
+      liveDefends({ tf: "4h", c: [...x.c, bar], atr: [...x.atr, x.atr[e.i]], ss: [...x.ss, x.ss[e.i]], filterAt: () => 0, buf: 0.8, lower: x.lower, oi: x.oi, forming: null, livePrice, cal: null, costPct: 0.15, funding: null })[e.dir > 0 ? "long" : "short"];
+    const between = (e.near! + e.far) / 2;
+    const p = run(next(between));
+    if (!p || p.entryT !== x.c[e.i].t) continue; // a newer event took its place
+    assert.equal(p.near, null, "the near stop was reached");
+    assert.match(p.nearNote!, /已经被碰过/);
+    assert.equal(p.far.stop, e.far);
+    const gone = run(next(e.far - e.dir * 0.01 * entry));
+    assert.ok(!gone || gone.entryT !== x.c[e.i].t, "the far stop was reached");
+    const ran = run(next(entry), entry + e.dir * 0.6 * (entry - e.far) * e.dir);
+    assert.ok(!ran || ran.entryT !== x.c[e.i].t, "already ran half the risk");
+    n++;
+  }
+  assert.ok(n >= 5, `checked ${n}`);
+});
+
+test("near stop of a plan: as the research placed it, only when nearer than the far stop and the hour chart is up to date", () => {
+  const m = market(4 * 1500, 11);
+  const atr = atrSeries(m.c), ss = structureSeries(m.c, atr);
+  const hatr = atrSeries(m.h);
+  const lower: LowerFrame = { c: m.h, atr: hatr, ss: structureSeries(m.h, hatr), buf: 0.5 };
+  const times = m.h.map((x) => x.t);
+  let same = 0, none = 0;
+  for (const e of findEntries({ tf: "4h", c: m.c, atr, ss, filterAt: () => 0, buf: 0.8, from: 400 }).slice(0, 60)) {
+    const end = m.c[e.i].t + 4 * H;
+    const research = nearStop(lower, times, e.dir, end, m.c[e.i].c, atr[e.i]);
+    const r = planNearStop({ lower, times, tf: "4h", c: m.c.slice(0, e.i + 1), atr, i: e.i, dir: e.dir, far: e.stop, forming: null });
+    if (research != null && (research - e.stop) * e.dir > 0) {
+      assert.equal(r.stop, research);
+      same++;
+    } else {
+      assert.equal(r.stop, null);
+      assert.ok(r.note);
+      none++;
+    }
+  }
+  assert.ok(same > 10, `${same} / ${none}`);
+  const e = findEntries({ tf: "4h", c: m.c, atr, ss, filterAt: () => 0, buf: 0.8, from: 400 })[0];
+  const end = m.c[e.i].t + 4 * H;
+  // a far stop nearer than the hour chart's: one stop only
+  const n0 = nearStop(lower, times, e.dir, end, m.c[e.i].c, atr[e.i])!;
+  const tight = planNearStop({ lower, times, tf: "4h", c: m.c.slice(0, e.i + 1), atr, i: e.i, dir: e.dir, far: (n0 + m.c[e.i].c) / 2, forming: null });
+  assert.equal(tight.stop, null);
+  assert.match(tight.note!, /并不比/);
+  // the hour bar ending at the entry close missing (a gap or lagging data): no near stop
+  const gap = times.filter((t) => t !== end - H);
+  assert.equal(lowerReady(times, end), true);
+  assert.equal(lowerReady(gap, end), false);
+  assert.equal(lowerReady(times.filter((t) => t > end - 100 * H), end), false, "not warmed up");
+});
+
+test("previous week / month: the period containing the moment is left out, on a Monday too", () => {
+  const D = 86400;
+  const monday = Date.parse("2026-10-12T00:00:00Z") / 1000;
+  const daily: Candle[] = [];
+  for (let k = -21; k < 3; k++) {
+    const t = monday + k * D;
+    const week = Math.floor(k / 7); // -3, -2, -1 before this Monday; 0 from it
+    daily.push({ t, o: 100, h: 110 + week * 10 + (k % 7 === 0 ? 0 : 1), l: 90 + week * 10, c: 100, v: 1 });
+  }
+  const last = prevPeriodHL(daily, monday, "week")!;
+  assert.deepEqual(last, { h: 101, l: 80 }, "the week just finished, even with no bar of the new week yet");
+  assert.deepEqual(prevPeriodHL(daily, monday + 8 * 3600, "week"), last, "Monday 08:00: the new week is left out");
+  assert.equal(prevPeriodHL(daily, monday + 3 * D, "month")!.l, 60, "September");
+});
+
+test("lines of defence: near, mid, far, each further away and on the defended side", () => {
+  const m = market(4 * 1500, 5);
+  const atr = atrSeries(m.c);
+  const daily: Candle[] = [];
+  for (const x of m.h) {
+    const t = x.t - (x.t % 86400);
+    const d = daily[daily.length - 1];
+    if (d && d.t === t) {
+      d.h = Math.max(d.h, x.h);
+      d.l = Math.min(d.l, x.l);
+      d.c = x.c;
+    } else daily.push({ t, o: x.o, h: x.h, l: x.l, c: x.c, v: 1 });
+  }
+  const datr = atrSeries(daily), dss = structureSeries(daily, datr);
+  let seen = 0;
+  for (const k of [600, 800, 1000, 1200, 1400]) {
+    const c = m.c.slice(0, k + 1);
+    const endSec = c[k].t + 4 * H;
+    const closedDays = daily.filter((d) => d.t + 86400 <= endSec);
+    const inp = { tf: "4h" as const, c, atr: atr.slice(0, k + 1), sw: swings(c, atr.slice(0, k + 1)), higherTf: "1d" as const, higher: dss[closedDays.length - 1] ?? null, daily: closedDays, endSec, live: c[k].c };
+    for (const dir of [1, -1] as const) {
+      const lines = defenseTiers(inp, dir);
+      const order = ["near", "mid", "far"];
+      let prev = -Infinity;
+      for (const l of lines) {
+        assert.ok(l.distAtr > 0, "on the defended side");
+        assert.ok(l.distAtr >= prev, "further each time");
+        prev = l.distAtr;
+        seen++;
+      }
+      assert.deepEqual(lines.map((l) => l.tier), order.filter((t) => lines.some((l) => l.tier === t)), "in order, each at most once");
+      if (lines[0]) assert.ok(lines[0].tier === "near" && lines[0].distAtr >= 0.5);
+    }
+  }
+  assert.ok(seen >= 10);
 });

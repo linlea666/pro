@@ -128,6 +128,32 @@ function periods(daily: Candle[], key: (d: Date) => string) {
 }
 
 const monthKey = (d: Date) => `${d.getUTCFullYear()}-${d.getUTCMonth()}`;
+/** Monday-based week key (UTC) */
+const weekKey = (d: Date) => {
+  const day = (d.getUTCDay() + 6) % 7;
+  const monday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day));
+  return monday.toISOString().slice(0, 10);
+};
+
+/**
+ * High and low of the last complete week (month) before `endSec`, from daily bars (UTC calendar): the period
+ * containing `endSec` is left out whatever the bars hold, so nothing after `endSec` is read.
+ */
+export function prevPeriodHL(daily: Candle[], endSec: number, period: "week" | "month"): { h: number; l: number } | null {
+  const key = period === "week" ? weekKey : monthKey;
+  const now = key(new Date(endSec * 1000));
+  let cur: { k: string; h: number; l: number } | null = null;
+  for (const x of daily) {
+    if (x.t >= endSec) break;
+    const k = key(new Date(x.t * 1000));
+    if (k === now) continue;
+    if (cur && cur.k === k) {
+      cur.h = Math.max(cur.h, x.h);
+      cur.l = Math.min(cur.l, x.l);
+    } else cur = { k, h: x.h, l: x.l };
+  }
+  return cur ? { h: cur.h, l: cur.l } : null;
+}
 
 // ---------------------------------------------------------------- per-timeframe methods
 
@@ -219,12 +245,7 @@ export function periodCandidates(daily: Candle[], price: number, lp: LP = DEFAUL
     if (w > 0 && Number.isFinite(p) && p > 0) out.push({ price: p, method, label, tf, weight: w * mult });
   };
   const prevDay = daily[daily.length - 2];
-  const weeks = periods(daily, (d) => {
-    // ISO-ish week key: Monday-based
-    const day = (d.getUTCDay() + 6) % 7;
-    const monday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day));
-    return monday.toISOString().slice(0, 10);
-  });
+  const weeks = periods(daily, weekKey);
   const months = periods(daily, monthKey);
   const prevWeek = weeks[weeks.length - 1];
   const prevMonth = months[months.length - 1];

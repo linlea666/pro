@@ -1,14 +1,16 @@
 import { closedThrough, type KlineResult } from "./data/klines.ts";
-import { getPerpSnapshot } from "./data/perp.ts";
+import { getPerpSnapshot, openInterestSeries } from "./data/perp.ts";
 import { cutoff, horizonText, keyLevels, relevel, ReplayError, seriesAt } from "./analysis.ts";
 import { logger } from "./server/log.ts";
 import { currentParams } from "./server/params-store.ts";
 import { getCalibration } from "./server/riskcalib.ts";
 import { DEFAULT_ENGINE_PARAMS, type EngineParams } from "./params.ts";
-import { getReport, type ResearchReport, type ResearchRow } from "./research/run.ts";
+import { getReport, type ReportKind, type ResearchReport, type ResearchRow } from "./research/run.ts";
 import { simulate } from "./research/sim.ts";
-import { buildPlans, findEntries, higherDirection, MAX_HOLD_BARS, type EntryKind, type PlanEvidence, type SidePlan } from "./ta/plan.ts";
-import { atrSeries } from "./ta/risk.ts";
+import { liveDefends, lowerReady, LOWER_WARMUP, nearStop, planNearStop, type LowerFrame } from "./ta/defend.ts";
+import { buildPlans, findEntries, higherDirection, MAX_HOLD_BARS, stopOption, type DefendPlan, type EntryKind, type NearFarStats, type PlanEvidence, type SidePlan } from "./ta/plan.ts";
+import { atrSeries, bufferAtr } from "./ta/risk.ts";
+import { defenseTiers, type DefenseLine } from "./ta/tiers.ts";
 import { describeStructure, structureDirection, structureSeries, swings, type StructureState, type StructureView, type Swing } from "./ta/structure.ts";
 import { TF_LABEL, TF_SECONDS, type Candle, type Timeframe } from "./types.ts";
 
@@ -66,6 +68,18 @@ export interface PlanScorecard {
   warning: string | null;
 }
 
+/** A trade followed with the page's rules from its entry: closed, or still open (marked at the last close). */
+export interface StopResult {
+  stop: number;
+  status: "open" | "closed";
+  /** result in R after costs */
+  r: number;
+  exit: "stop" | "target" | "time" | null;
+  exitT: number | null;
+  /** best excursion in R before the exit (closed trades) */
+  mfe: number | null;
+}
+
 export interface PlanOutcome {
   kind: EntryKind;
   /** none: the trigger did not come within `watchBars`; open: still running at the end of the data */
@@ -80,6 +94,31 @@ export interface PlanOutcome {
   exitT: number | null;
   /** best excursion in R before the exit */
   mfe: number | null;
+  /** the same entry with the near stop, when the plan had one (4-hour entries) */
+  near: StopResult | null;
+}
+
+/** What happened after a defended level was traded: with the far stop and with the near one. */
+export interface DefendOutcome {
+  entryT: number;
+  entry: number;
+  far: StopResult;
+  near: StopResult | null;
+}
+
+/** E16 in a few numbers: do key levels run further than random prices before they fail? */
+export interface LevelReach {
+  tf: Timeframe;
+  methods: number;
+  /** methods judged better / worse than random lines */
+  better: number;
+  worse: number;
+  /** share reaching 2R before the stop, %: range over the methods, and random lines */
+  reach2: [number, number] | null;
+  reach2Random: number | null;
+  text: string;
+  /** one line for the price ladder */
+  short: string;
 }
 
 export interface TrendPlan {
@@ -117,7 +156,15 @@ export interface TrendPlan {
   scorecard: PlanScorecard | null;
   /** research rows the lessons quote: anchoring, exits, beginner habits, stops */
   lessons: ScoreRow[];
-  replay?: { end: number; future: Candle[]; long: PlanOutcome | null; short: PlanOutcome | null };
+  /** near / mid / far lines of defence for a long (below) and a short (above), described only */
+  defenses: { long: DefenseLine[]; short: DefenseLine[] };
+  /** research on defended levels and near stops: rows the lessons quote, and a line per stall sign */
+  defendLessons: ScoreRow[];
+  defendChecks: Record<"flow" | "oi" | "turn", string> | null;
+  /** near against far stops on the page's plans (4-hour entries), and when that sample starts */
+  nearFar: { plans: NearFarStats | null; defend: NearFarStats | null; since: string | null; note: string | null };
+  levelReach: LevelReach | null;
+  replay?: { end: number; future: Candle[]; long: PlanOutcome | null; short: PlanOutcome | null; defend: { long: DefendOutcome | null; short: DefendOutcome | null } };
 }
 
 const CHART_BARS = 150;
@@ -128,17 +175,18 @@ const r3 = (x: number) => Math.round(x * 1000) / 1000;
 
 // ---------------------------------------------------------------- research
 
-let reportMemo: { at: number; value: (ResearchReport & { id: number }) | null } | null = null;
+const reportMemo = new Map<ReportKind, { at: number; value: (ResearchReport & { id: number }) | null }>();
 
-function latestPlansReport() {
-  if (reportMemo && Date.now() - reportMemo.at < 10 * 60_000) return reportMemo.value;
+function latestReport(kind: ReportKind) {
+  const hit = reportMemo.get(kind);
+  if (hit && Date.now() - hit.at < 10 * 60_000) return hit.value;
   let value: (ResearchReport & { id: number }) | null = null;
   try {
-    value = getReport(undefined, "plans");
+    value = getReport(undefined, kind);
   } catch {
     // no database (CLI, tests): plans without evidence
   }
-  reportMemo = { at: Date.now(), value };
+  reportMemo.set(kind, { at: Date.now(), value });
   return value;
 }
 
@@ -174,9 +222,74 @@ export function evidenceKey(p: SidePlan): string | null {
 const LESSON_KEYS = ["anchor:after_rally", "anchor:after_drop", "exit:structure", "stop:structure", "stop:equal", "behavior:tight", "behavior:early", "behavior:against", "behavior:fade"];
 
 function research(tf: Timeframe) {
-  const report = latestPlansReport();
+  const report = latestReport("plans");
   if (!report) return { report: null, rows: new Map<string, ResearchRow>() };
   return { report, rows: new Map(report.rows.filter((r) => r.tf === tf).map((r) => [r.key, r])) };
+}
+
+/** The conclusion of a research row in words: a plan against random entries, or one way against another. */
+export function verdictWords(r: ResearchRow | undefined, what: "plan" | "diff"): string {
+  if (!r) return what === "plan" ? "研究数字会在服务器生成研究报告后显示" : "研究数字会在服务器生成研究报告后显示。";
+  switch (r.verdict) {
+    case "有优势":
+      return what === "plan" ? "历史上比同方向、同止损距离的随机入场好，统计上站得住" : "近止损平均每笔明显更好，统计上站得住。";
+    case "比随机差":
+      return what === "plan" ? "历史上比同方向、同止损距离的随机入场差，统计上站得住" : "近止损平均每笔明显更差，统计上站得住。";
+    case "样本不足":
+      return what === "plan" ? "样本还不够，下不了结论" : "样本还不够，下不了结论。";
+    default:
+      return what === "plan" ? "历史上没有可证明的优势：和同方向、同止损距离的随机入场差不多" : "两种止损平均每笔的差别不能确定。";
+  }
+}
+
+function nearFarOf(r: ResearchRow | undefined): NearFarStats | null {
+  if (!r) return null;
+  const e = r.extra ?? {};
+  const v = (k: string) => (e[k] == null ? null : e[k]);
+  return {
+    key: r.key,
+    n: r.cells.is.n + r.cells.oos.n,
+    near: { stopPct: v("stopPct"), quickPct: v("quickStopPct"), reach2: v("reach2") },
+    far: { stopPct: v("far_stopPct"), quickPct: v("far_quickStopPct"), reach2: v("far_reach2") },
+    edgeR: r.cells.is.edgeR,
+    oosEdgeR: r.cells.oos.edgeR,
+    verdict: r.verdict,
+  };
+}
+
+/** One sentence on near against far stops for plans like this one. */
+function nearFarText(s: NearFarStats | null, row: ResearchRow | undefined, since: string | null): string {
+  if (!s) return verdictWords(undefined, "diff");
+  const pct = (x: number | null) => (x == null ? "—" : `${x}%`);
+  return `${since ? `${since} 以来` : "最近"}同类 ${s.n} 笔：近止损 24 小时内被扫 ${pct(s.near.quickPct)}，止损前先到 2R ${pct(s.near.reach2)}；远止损分别是 ${pct(s.far.quickPct)}、${pct(s.far.reach2)}。${verdictWords(row, "diff")}`;
+}
+
+const DEFEND_ROW: Record<string, string> = { "pivot:sweep": "defend:sweep", "pivot:rejection": "defend:rejection", flip: "defend:flip", fresh: "defend:fresh" };
+const CHECK_NAME = { flow: "主动成交", oi: "持仓量骤降", turn: "1 小时转强" } as const;
+
+/** E16 from the latest levels report, for the entry timeframe; the conclusion is worded from the verdicts. */
+function levelReachOf(tf: Timeframe): LevelReach | null {
+  const rep = latestReport("levels");
+  const rows = rep?.rows.filter((r) => r.family === "level_mfe" && r.tf === tf) ?? [];
+  const methods = rows.filter((r) => !r.key.endsWith(":random"));
+  if (!methods.length) return null;
+  const rnd = rows.find((r) => r.key.endsWith(":random"));
+  const reach = methods.map((r) => r.extra?.reach2).filter((x): x is number => x != null);
+  const better = methods.filter((r) => r.verdict === "有优势").length;
+  const worse = methods.filter((r) => r.verdict === "比随机差").length;
+  const r2 = reach.length ? ([Math.min(...reach), Math.max(...reach)] as [number, number]) : null;
+  const rr = rnd?.extra?.reach2 ?? null;
+  const judged = better ? `${better} 种在统计上比随机价位好` : "没有一种在统计上比随机价位好";
+  return {
+    tf,
+    methods: methods.length,
+    better,
+    worse,
+    reach2: r2,
+    reach2Random: rr,
+    text: `${methods.length} 种找位方法里，价格回到位上之后，在止损（位外 0.85 倍 ATR）之前先走到 2R 的比例是 ${r2 ? `${r2[0]}%–${r2[1]}%` : "—"}，随机画的价位是 ${rr ?? "—"}%；守到止损来算，${judged}${worse ? `，${worse} 种更差` : ""}。`,
+    short: `关键位只是沿途可能停顿的地方：研究里 ${methods.length} 种找位方法守到止损，${better ? `只有 ${better} 种` : "没有一种"}比守在随机价位上更好（E16）。`,
+  };
 }
 
 function scorecardOf(report: ResearchReport & { id: number }, rows: Map<string, ResearchRow>, tf: Timeframe): PlanScorecard | null {
@@ -270,6 +383,73 @@ export async function computeTrendPlan(coin: string, fw: Framework, ep: EnginePa
     p.evidence = r ? evidenceOf(r) : null;
   }
 
+  // near stops and defended levels: researched for 4-hour entries with the hour chart only (E17, E18)
+  const dRep = latestReport("defend");
+  const dRows = new Map((dRep?.rows ?? []).filter((r) => r.tf === F.tf).map((r) => [r.key, r]));
+  const measuredRules = dRep?.rules ?? DEFAULT_ENGINE_PARAMS.defend;
+  // numbers measured with other settings describe another rule: hidden until the next report
+  const rulesChanged = (Object.keys(ep.defend) as (keyof EngineParams["defend"])[]).some((k) => measuredRules[k] !== ep.defend[k]);
+  const dRow = (k: string) => (rulesChanged ? undefined : dRows.get(k));
+  const since = dRep?.coverage.find((c) => c.tf === "1h")?.from;
+  const sinceText = since ? new Date((since + LOWER_WARMUP * 3600) * 1000).toISOString().slice(0, 7) : null;
+  const nearFar = {
+    plans: nearFarOf(dRow("stop2:near:plans")),
+    defend: nearFarOf(dRow("stop2:near:defend")),
+    since: sinceText,
+    note: rulesChanged ? "守位和近止损的参数改过，等下一份研究报告再显示历史数字。" : dRep ? null : "近止损和守位的研究数字会在服务器生成研究报告后显示。",
+  };
+  const H1 = F.tf === "4h" ? frames.get("1h") : undefined;
+  const lower: LowerFrame | null =
+    H1 && byTf.get("1h")!.source === main.source && H1.c.length > LOWER_WARMUP
+      ? { c: H1.c, atr: H1.atr, ss: H1.ss, buf: bufferAtr(replayEnd == null ? getCalibration(coin, "1h") : null, 80) }
+      : null;
+  const lowerTimes = lower ? lower.c.map((x) => x.t) : [];
+  const defends = F.tf === "4h"
+    ? liveDefends({ tf: F.tf, c: E.c, atr: E.atr, ss: E.ss, filterAt, buf: plans.buffers.p80, lower, oi: openInterestSeries(coin, end, end - 40 * 86400), rules: ep.defend, forming: formingBar, livePrice: live, cal, costPct: ep.stats.costPct, funding })
+    : { long: null, short: null };
+  for (const p of [plans.long, plans.short]) {
+    const dir = p.side === "long" ? 1 : -1;
+    const lo = dir > 0 ? "低" : "高";
+    if (p.invalidation && p.entry != null) {
+      if (F.tf !== "4h") p.nearNote = "这个节奏没有近止损的研究，只给结构认错位";
+      else if (p.status === "watch") p.nearNote = `触发后按 1 小时结构算：1 小时最近${lo}点之外再留扫损缓冲（至少 ${ep.defend.minNearAtr} 倍 ATR），比上面的认错位近时才有这一档`;
+      else if (!lower) p.nearNote = "没有可用的 1 小时数据，只有结构认错位一档";
+      else {
+        const i = E.c.findIndex((x) => x.t === p.entryT);
+        const r = i >= 0 ? planNearStop({ lower, times: lowerTimes, tf: F.tf, c: E.c, atr: E.atr, i, dir, far: p.invalidation.stop, forming: formingBar, minAtr: ep.defend.minNearAtr }) : { stop: null, note: null };
+        p.near = r.stop != null ? stopOption({ entry: E.c[i].c, stop: r.stop, dir, atr: E.atr[i], cal, tf: F.tf, costPct: ep.stats.costPct, funding }) : null;
+        p.nearNote = r.note;
+      }
+      if (F.tf === "4h") {
+        // the research measured near stops on plans with the daily direction that are not reversals
+        const measured = p.alignment === "with" && p.kind !== "reversal";
+        p.nearStats = measured ? nearFar.plans : null;
+        p.nearText = !measured ? "这类计划（不顺日线方向，或是反转）没有单独测过近止损。" : nearFar.note ?? nearFarText(nearFar.plans, dRow("stop2:near:plans"), sinceText);
+      }
+    }
+    const d: DefendPlan | null = defends[p.side];
+    if (d) {
+      const r = dRow(DEFEND_ROW[d.levelKind === "pivot" ? `pivot:${d.shape}` : d.levelKind]) ?? dRow("defend:all");
+      d.evidence = r ? evidenceOf(r) : null;
+      d.verdictText = nearFar.note ?? verdictWords(r, "plan");
+      d.stats = nearFar.defend;
+      p.defend = d;
+    }
+  }
+  const evRow = (k: keyof typeof CHECK_NAME) => dRow(`defend:ev:${k}:far`);
+  const defendChecks =
+    F.tf === "4h" && dRep && !rulesChanged
+      ? (Object.fromEntries(
+          (Object.keys(CHECK_NAME) as (keyof typeof CHECK_NAME)[]).map((k) => {
+            const r = evRow(k);
+            const text = r
+              ? `有这一项的守位平均每笔 ${r.cells.is.meanR ?? "—"}R，没有的 ${r.cells.is.meanR != null && r.cells.is.edgeR != null ? r3(r.cells.is.meanR - r.cells.is.edgeR) : "—"}R（样本内 ${r.cells.is.n} 笔有）。${r.verdict === "有优势" || r.verdict === "比随机差" ? "差别在统计上站得住。" : r.verdict === "样本不足" ? "样本还不够。" : "有没有这一项，历史上结果的差别不能确定。"}`
+              : "研究数字会在服务器生成研究报告后显示。";
+            return [k, `${CHECK_NAME[k]}：${text}`];
+          }),
+        ) as Record<keyof typeof CHECK_NAME, string>)
+      : null;
+
   const map: TrendMapRow[] = F.map.map((tf) => {
     const f = frames.get(tf)!;
     const n = f.c.length - 1;
@@ -308,6 +488,14 @@ export async function computeTrendPlan(coin: string, fw: Framework, ep: EnginePa
     costPct: ep.stats.costPct,
     scorecard: report ? scorecardOf(report, rows, F.tf) : null,
     lessons: LESSON_KEYS.map((k) => rows.get(k)).filter((x): x is ResearchRow => !!x).map(scoreRow),
+    defenses: (() => {
+      const tierIn = { tf: F.tf, c: E.c, atr: E.atr, sw: E.sw, higherTf: F.filter, higher: H.ss[H.ss.length - 1] ?? null, daily: frames.get("1d")?.c ?? [], endSec: E.c[L].t + TF_SECONDS[F.tf], live };
+      return { long: defenseTiers(tierIn, 1), short: defenseTiers(tierIn, -1) };
+    })(),
+    defendLessons: ["defend:all", "stop2:near:plans"].map((k) => dRow(k)).filter((x): x is ResearchRow => !!x).map(scoreRow),
+    defendChecks,
+    nearFar,
+    levelReach: levelReachOf(F.tf),
   };
 
   if (replayEnd != null) {
@@ -319,32 +507,59 @@ export async function computeTrendPlan(coin: string, fw: Framework, ep: EnginePa
     const filterAll = higherDirection(full, F.tf, hAll, F.filter, fh.ss);
     const ctx = { c: full, atr: fe.atr, swings: fe.sw, buf: plans.buffers.p80, costPct: ep.stats.costPct, maxBars: MAX_HOLD_BARS[F.tf] ?? 120 };
     const later = findEntries({ tf: F.tf, c: full, atr: fe.atr, ss: fe.ss, filterAt: filterAll, buf: plans.buffers.p80, from: L - 7 }).filter((e) => e.i > L && e.i <= L + WATCH_BARS);
+    const run = (i: number, dir: 1 | -1, stop: number): StopResult => {
+      const entry = full[i].c;
+      const res = simulate(ctx, i, dir, stop, "structure");
+      if (res) return { stop, status: "closed", r: r3(res.r), exit: res.exit, exitT: full[i + res.bars].t, mfe: r3(res.mfe) };
+      // still open at the end of the stored bars: marked at the last close
+      const last = full[full.length - 1].c;
+      const R = (entry - stop) * dir;
+      return { stop, status: "open", r: r3((dir * (last - entry) - (ep.stats.costPct / 100) * entry) / R), exit: null, exitT: null, mfe: null };
+    };
+    // the hour chart with what came after the moment, for plans that trigger later (as the research placed their near stop)
+    const hAfter = lower ? byTf.get("1h")!.candles.filter((x) => x.t + 3600 <= closedThrough(byTf.get("1h")!)) : [];
+    const lowerAfter: LowerFrame | null = lower ? { ...frame("1h", hAfter, mult), buf: lower.buf } : null;
+    const timesAfter = lowerAfter ? lowerAfter.c.map((x) => x.t) : [];
+    const nearAt = (i: number, dir: 1 | -1, far: number): number | null => {
+      if (!lowerAfter || !lowerReady(timesAfter, full[i].t + secE)) return null;
+      const n = nearStop(lowerAfter, timesAfter, dir, full[i].t + secE, full[i].c, fe.atr[i], undefined, ep.defend.minNearAtr);
+      return n != null && (n - far) * dir > 0 ? n : null;
+    };
     const outcome = (p: SidePlan): PlanOutcome | null => {
       if (!p.kind || p.status === "none") return null;
       const dir = p.side === "long" ? 1 : -1;
       const base = { kind: p.kind, watchBars: WATCH_BARS };
-      let i = -1, stop = NaN;
+      let i = -1, stop = NaN, near: number | null = null;
       if (p.status === "active" && p.entryT != null && p.invalidation) {
         i = full.findIndex((x) => x.t === p.entryT);
         stop = p.invalidation.stop;
+        near = p.near?.stop ?? null;
       } else {
         const ev = later.find((e) => e.dir === dir && e.kind === p.kind);
         if (ev) {
           i = ev.i;
           stop = ev.stop;
+          near = F.tf === "4h" ? nearAt(i, dir, stop) : null;
         }
       }
-      if (i < 0) return { ...base, status: "none", entryT: null, entry: null, stop: null, r: null, exit: null, exitT: null, mfe: null };
-      const entry = full[i].c;
-      const res = simulate(ctx, i, dir, stop, "structure");
-      if (res) return { ...base, status: "closed", entryT: full[i].t, entry, stop, r: r3(res.r), exit: res.exit, exitT: full[i + res.bars].t, mfe: r3(res.mfe) };
-      // still open at the end of the stored bars: marked at the last close
-      const last = full[full.length - 1].c;
-      const R = (entry - stop) * dir;
-      const marked = (dir * (last - entry) - (ep.stats.costPct / 100) * entry) / R;
-      return { ...base, status: "open", entryT: full[i].t, entry, stop, r: r3(marked), exit: null, exitT: null, mfe: null };
+      if (i < 0) return { ...base, status: "none", entryT: null, entry: null, stop: null, r: null, exit: null, exitT: null, mfe: null, near: null };
+      const r = run(i, dir, stop);
+      return { ...base, status: r.status, entryT: full[i].t, entry: full[i].c, stop, r: r.r, exit: r.exit, exitT: r.exitT, mfe: r.mfe, near: near != null ? run(i, dir, near) : null };
     };
-    out.replay = { end: replayEnd, future: full.slice(L + 1, L + 1 + 200), long: outcome(plans.long), short: outcome(plans.short) };
+    const defendOutcome = (d: DefendPlan | null): DefendOutcome | null => {
+      if (!d) return null;
+      const i = full.findIndex((x) => x.t === d.entryT);
+      if (i < 0) return null;
+      const dir = d.side === "long" ? 1 : -1;
+      return { entryT: d.entryT, entry: d.entry, far: run(i, dir, d.far.stop), near: d.near ? run(i, dir, d.near.stop) : null };
+    };
+    out.replay = {
+      end: replayEnd,
+      future: full.slice(L + 1, L + 1 + 200),
+      long: outcome(plans.long),
+      short: outcome(plans.short),
+      defend: { long: defendOutcome(plans.long.defend), short: defendOutcome(plans.short.defend) },
+    };
   }
   return out;
 }

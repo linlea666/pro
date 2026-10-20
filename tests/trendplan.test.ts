@@ -9,7 +9,8 @@ process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "sl-plan-"));
 process.env.LOG_LEVEL = "error";
 const { getDb } = await import("../src/lib/server/db.ts");
 const { store } = await import("../src/lib/data/klines.ts");
-const { computeTrendPlan } = await import("../src/lib/trendplan.ts");
+const { computeTrendPlan, verdictWords } = await import("../src/lib/trendplan.ts");
+const { saveReport } = await import("../src/lib/research/run.ts");
 const { DEFAULT_ENGINE_PARAMS } = await import("../src/lib/params.ts");
 const { TF_SECONDS } = await import("../src/lib/types.ts");
 const { atrSeries } = await import("../src/lib/ta/risk.ts");
@@ -33,7 +34,8 @@ function bars(tf: Timeframe, from: number, to: number, bump = 1): Candle[] {
   const out: Candle[] = [];
   for (let t = Math.ceil(from / sec) * sec; t <= to; t += sec) {
     const o = price(t) * bump, c = price(t + sec) * bump;
-    out.push({ t, o, c, h: Math.max(o, c) * 1.003, l: Math.min(o, c) * 0.997, v: 1000 + 500 * Math.sin(t / 7777) });
+    const v = 1000 + 500 * Math.sin(t / 7777);
+    out.push({ t, o, c, h: Math.max(o, c) * 1.003, l: Math.min(o, c) * 0.997, v, tbv: v * (0.5 + 0.3 * Math.sin(t / 5555)) });
   }
   return out;
 }
@@ -51,6 +53,48 @@ globalThis.fetch = (async (input: string) => {
 const FROM: Record<string, number> = { "15m": NOW - 300 * D, "1h": NOW - 700 * D, "4h": NOW - 1500 * D, "1d": NOW - 3000 * D, "1w": NOW - 3000 * D };
 const TFS: Timeframe[] = ["15m", "1h", "4h", "1d", "1w"];
 for (const tf of TFS) store("BTC", tf, "binance-futures", bars(tf, FROM[tf], NOW));
+// hourly open interest, as the archive and the live sync keep it
+{
+  const ins = getDb().prepare("INSERT INTO open_interest (coin, source, t, oi, oi_value) VALUES ('BTC', 'binance-futures', ?, ?, NULL)");
+  getDb().transaction(() => {
+    for (let t = NOW - 700 * D; t <= NOW; t += 3600) ins.run(t, 1e5 * (1 + 0.05 * Math.sin(t / 40000) + 0.02 * Math.sin(t / 3000)));
+  })();
+}
+
+// research reports as the weekly job would save them (made up numbers)
+const grp = (n: number, meanR: number, edgeR: number) => ({ n, hit: 40, hitLo: 35, hitHi: 45, baseHit: 40, meanPct: 0, meanR, edgeR, p: 0.5 });
+const fakeRow = (key: string, family: string, verdict: string, extra: Record<string, number | null> = {}) => ({
+  family,
+  key,
+  name: key,
+  side: "bull",
+  tf: "4h",
+  horizon: 30,
+  cells: { is: grp(200, 0.1, 0.02), oos: grp(100, 0, -0.01), btc: grp(50, 0, 0), eth: grp(50, 0, 0), firstHalf: grp(100, 0, 0), secondHalf: grp(100, 0, 0) },
+  q: 0.9,
+  consistent: false,
+  verdict,
+  extra,
+});
+const fakeReport = (kind: string, rows: ReturnType<typeof fakeRow>[]) =>
+  ({ kind, title: kind, createdAt: Date.now(), source: "binance-futures", paramsVersion: 0, costPct: 0.15, alpha: 0.05, holdoutFrom: NOW - 365 * D, coins: ["BTC"], coverage: [{ tf: "1h", coins: 1, bars: 1, from: NOW - 700 * D, to: NOW, holdoutFrom: NOW - 365 * D }], rows, notes: [], durationMs: 1 }) as never;
+const nearExtra = { stopPct: 68, quickStopPct: 16, reach2: 33, far_stopPct: 65, far_quickStopPct: 3, far_reach2: 29 };
+saveReport(
+  fakeReport("defend", [
+    fakeRow("stop2:near:plans", "stop2", "无可证明的优势", nearExtra),
+    fakeRow("stop2:near:defend", "stop2", "无可证明的优势", nearExtra),
+    fakeRow("defend:all", "defend", "无可证明的优势"),
+    ...["sweep", "rejection", "flip", "fresh"].map((k) => fakeRow(`defend:${k}`, "defend", "无可证明的优势")),
+    ...["flow", "oi", "turn"].map((k) => fakeRow(`defend:ev:${k}:far`, "defend", "无可证明的优势")),
+  ]),
+);
+saveReport(
+  fakeReport("levels", [
+    fakeRow("level_mfe:swing", "level_mfe", "无可证明的优势", { reach2: 30 }),
+    fakeRow("level_mfe:pivot", "level_mfe", "无可证明的优势", { reach2: 28 }),
+    fakeRow("level_mfe:random", "level_mfe", "无可证明的优势", { reach2: 37 }),
+  ]),
+);
 
 test("plan replay: the trend map and plans at an old moment never see what came after it", async () => {
   const end = NOW - 200 * D + TF_SECONDS["4h"];
@@ -70,6 +114,8 @@ test("plan replay: the trend map and plans at an old moment never see what came 
     d.prepare("DELETE FROM candles WHERE coin = 'BTC' AND tf = ? AND t >= ?").run(tf, end);
     store("BTC", tf, "binance-futures", bars(tf, end, NOW, 1.5));
   }
+  // and open interest after the moment collapses
+  d.prepare("UPDATE open_interest SET oi = oi / 10 WHERE t > ?").run(end);
   const after = await computeTrendPlan("BTC", "4h", DEFAULT_ENGINE_PARAMS, end);
   const strip = (p: typeof before) => {
     const { replay: _r, updatedAt: _u, ...rest } = p;
@@ -93,6 +139,64 @@ function path_(pts: number[]): Candle[] {
   }
   return c;
 }
+
+test("plan page: research on near stops and defended levels reaches the plans, worded from the verdicts", async () => {
+  const end = NOW - 100 * D + TF_SECONDS["4h"];
+  const p = await computeTrendPlan("BTC", "4h", DEFAULT_ENGINE_PARAMS, end);
+  assert.equal(p.nearFar.note, null);
+  assert.equal(p.nearFar.plans?.n, 300, "all trades of the row");
+  assert.deepEqual(p.nearFar.plans?.near, { stopPct: 68, quickPct: 16, reach2: 33 });
+  assert.equal(p.levelReach?.methods, 2);
+  assert.equal(p.levelReach?.reach2Random, 37);
+  assert.deepEqual(p.levelReach?.reach2, [28, 30]);
+  assert.match(p.levelReach!.short, /没有一种/);
+  assert.deepEqual(p.defendLessons.map((r) => r.key), ["defend:all", "stop2:near:plans"]);
+  assert.match(p.defendChecks!.flow, /^主动成交：.*差别不能确定/);
+  let sides = 0;
+  const moments = [p];
+  for (const k of [97, 93, 89, 85, 81, 77, 73, 69]) moments.push(await computeTrendPlan("BTC", "4h", DEFAULT_ENGINE_PARAMS, NOW - k * D + 2 * TF_SECONDS["4h"]));
+  for (const s of moments.flatMap((x) => [x.long, x.short])) {
+    if (!s.invalidation) continue;
+    sides++;
+    if (s.alignment === "with" && s.kind !== "reversal") {
+      assert.deepEqual(s.nearStats, p.nearFar.plans);
+      assert.match(s.nearText!, /24 小时内被扫 16%.*差别不能确定/);
+    } else {
+      assert.equal(s.nearStats, null, "not what the research measured");
+      assert.match(s.nearText!, /没有单独测过/);
+    }
+    if (s.status === "watch") assert.match(s.nearNote!, /触发后按 1 小时结构算/);
+    if (s.defend) assert.match(s.defend.verdictText!, /没有可证明的优势/);
+  }
+  assert.ok(sides > 0);
+  for (const l of [...p.defenses.long, ...p.defenses.short]) assert.ok(l.distAtr > 0);
+
+  // other settings for the defended levels: the saved numbers describe another rule
+  const changed = { ...DEFAULT_ENGINE_PARAMS, defend: { ...DEFAULT_ENGINE_PARAMS.defend, stallBars: 2 } };
+  const q = await computeTrendPlan("BTC", "4h", changed, end);
+  assert.equal(q.nearFar.plans, null);
+  assert.match(q.nearFar.note!, /参数改过/);
+  assert.equal(q.defendChecks, null);
+  for (const s of [q.long, q.short]) if (s.nearText && s.nearStats === null && s.alignment === "with" && s.kind !== "reversal") assert.match(s.nearText, /参数改过/);
+
+  // the daily framework has no near stops or defended levels
+  const daily = await computeTrendPlan("BTC", "1d", DEFAULT_ENGINE_PARAMS, NOW - 100 * D);
+  for (const s of [daily.long, daily.short]) {
+    assert.equal(s.near, null);
+    assert.equal(s.defend, null);
+    if (s.invalidation) assert.match(s.nearNote!, /这个节奏没有/);
+  }
+});
+
+test("plan page: the conclusion follows the verdict", () => {
+  const r = (verdict: string) => fakeRow("x", "defend", verdict) as never;
+  assert.match(verdictWords(r("无可证明的优势"), "plan"), /没有可证明的优势/);
+  assert.match(verdictWords(r("有优势"), "plan"), /好，统计上站得住/);
+  assert.match(verdictWords(r("比随机差"), "plan"), /差，统计上站得住/);
+  assert.match(verdictWords(r("样本不足"), "diff"), /样本还不够/);
+  assert.match(verdictWords(r("有优势"), "diff"), /近止损平均每笔明显更好/);
+  assert.match(verdictWords(undefined, "plan"), /研究报告后显示/);
+});
 
 test("plans: a waiting plan hangs its stop below a new low that is not a confirmed swing yet", () => {
   // higher highs and lows up to 110, then a fall under the last higher low (104) that has not turned into a swing

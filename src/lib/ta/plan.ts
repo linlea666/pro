@@ -189,6 +189,61 @@ export interface PlanEvidence {
   verdict: string;
 }
 
+/** One place for the stop, as the page shows it. */
+export interface StopOption {
+  stop: number;
+  distPct: number;
+  distAtr: number;
+  /** chance plain noise touches it within the calibrated horizon, % (null: not calibrated, e.g. in a replay) */
+  noise: number | null;
+  /** round-trip costs and funding over a typical hold, as a share of this risk */
+  costR: number;
+}
+
+/** What the research measured on near against far stops for plans like this one (filled in by the caller). */
+export interface NearFarStats {
+  key: string;
+  /** trades measured (the hour chart is kept for 2 years, so all of it is recent) */
+  n: number;
+  /** stopped out at a loss; stopped within 6 bars (24 hours on 4-hour bars); reached 2R before the stop, % */
+  near: { stopPct: number | null; quickPct: number | null; reach2: number | null };
+  far: { stopPct: number | null; quickPct: number | null; reach2: number | null };
+  /** near minus far, mean R per trade, in sample and in the last 12 months */
+  edgeR: number | null;
+  oosEdgeR: number | null;
+  verdict: string;
+}
+
+/**
+ * Defending a level (src/lib/ta/defend.ts): price came to a level that had held (or made a fresh extreme),
+ * swept it and closed back or left a long wick, and the next close turned back. Shown beside the plan of the
+ * same side, never ranked with it: the research found no edge (E17), and the page says so.
+ */
+export interface DefendPlan {
+  side: "long" | "short";
+  shape: "sweep" | "rejection";
+  levelKind: "pivot" | "flip" | "fresh";
+  level: number;
+  extreme: number;
+  /** what happened, in words */
+  text: string;
+  entry: number;
+  /** open time of the bar whose close was the entry */
+  entryT: number;
+  alignment: "with" | "against" | "neutral";
+  size: "full" | "half";
+  far: StopOption;
+  near: StopOption | null;
+  nearNote: string | null;
+  /** the three stall signs at the entry close: true / false, null when the data is missing */
+  checks: { flow: boolean | null; oi: boolean | null; turn: boolean | null };
+  /** filled in by the caller from the latest research report */
+  evidence: PlanEvidence | null;
+  /** the conclusion, worded from the research verdict */
+  verdictText: string | null;
+  stats: NearFarStats | null;
+}
+
 export interface SidePlan {
   side: "long" | "short";
   kind: EntryKind | null;
@@ -230,6 +285,15 @@ export interface SidePlan {
   evidence: PlanEvidence | null;
   /** other triggers worth watching on this side */
   alternatives: string[];
+  /** a second, nearer stop just beyond the hour chart's extreme (triggered plans, 4-hour entries only) */
+  near: StopOption | null;
+  /** why there is no near stop, or how it will be set once the plan triggers */
+  nearNote: string | null;
+  /** research on near against far stops for plans like this one, and its conclusion in words */
+  nearStats: NearFarStats | null;
+  nearText: string | null;
+  /** a level being defended on this side right now (filled in by the caller) */
+  defend: DefendPlan | null;
 }
 
 export interface PlanInput {
@@ -252,9 +316,30 @@ export interface PlanInput {
   funding: { rate: number; intervalH: number } | null;
 }
 
-const fmt = (p: number) => (p >= 1000 ? Math.round(p).toLocaleString("en-US") : p >= 1 ? p.toFixed(2) : p.toPrecision(4));
+export const fmt = (p: number) => (p >= 1000 ? Math.round(p).toLocaleString("en-US") : p >= 1 ? p.toFixed(2) : p.toPrecision(4));
 /** typical hold of a trade followed with the structure stop, in bars (E11, 4h ≈ 5 days) */
 const TYPICAL_HOLD_BARS: Partial<Record<Timeframe, number>> = { "4h": 30, "1d": 16 };
+
+/** Costs (round trip, and funding paid over a typical hold) as a share of the risk. */
+export function planCostR(o: { entry: number; risk: number; dir: 1 | -1; tf: Timeframe; costPct: number; funding: { rate: number; intervalH: number } | null }): number {
+  const hold = TYPICAL_HOLD_BARS[o.tf] ?? 30;
+  const holdH = (hold * (o.tf === "1d" ? 24 : 4));
+  const pays = o.funding && (o.dir > 0 ? o.funding.rate > 0 : o.funding.rate < 0);
+  const fundingPx = pays ? Math.abs(o.funding!.rate) * (holdH / Math.max(1, o.funding!.intervalH)) * o.entry : 0;
+  return Math.round((((o.costPct / 100) * o.entry + fundingPx) / o.risk) * 100) / 100;
+}
+
+/** A stop as the page shows it: distance in % and ATR, the chance noise touches it, costs as a share of its risk. */
+export function stopOption(o: { entry: number; stop: number; dir: 1 | -1; atr: number; cal: Calibration | null; tf: Timeframe; costPct: number; funding: { rate: number; intervalH: number } | null }): StopOption {
+  const risk = (o.entry - o.stop) * o.dir;
+  return {
+    stop: o.stop,
+    distPct: Math.round((risk / o.entry) * 10000) / 100,
+    distAtr: Math.round((risk / o.atr) * 10) / 10,
+    noise: noiseProb(o.cal, risk / o.atr),
+    costR: planCostR({ entry: o.entry, risk, dir: o.dir, tf: o.tf, costPct: o.costPct, funding: o.funding }),
+  };
+}
 
 export function buildPlans(inp: PlanInput): { long: SidePlan; short: SidePlan; buffers: { p50: number; p80: number; p90: number } } {
   const { tf, filterTf, c, atr, ss, cal } = inp;
@@ -289,6 +374,11 @@ export function buildPlans(inp: PlanInput): { long: SidePlan; short: SidePlan; b
       warnings: [],
       evidence: null,
       alternatives: [],
+      near: null,
+      nearNote: null,
+      nearStats: null,
+      nearText: null,
+      defend: null,
     };
     if (!s?.lastHigh || !s.lastLow || !(A > 0)) return empty;
     const ext = dir > 0 ? s.lastHigh : s.lastLow;
@@ -384,11 +474,7 @@ export function buildPlans(inp: PlanInput): { long: SidePlan; short: SidePlan; b
       .slice(0, 3)
       .map((x) => ({ ...x, r: Math.round(((x.price - best.entry) * dir * 10) / risk) / 10 }));
     const size: SidePlan["size"] = best.kind === "reversal" || alignment === "against" ? "half" : "full";
-    const hold = TYPICAL_HOLD_BARS[tf] ?? 30;
-    const holdH = (hold * (tf === "1d" ? 24 : 4));
-    const pays = inp.funding && (dir > 0 ? inp.funding.rate > 0 : inp.funding.rate < 0);
-    const fundingPx = pays ? Math.abs(inp.funding!.rate) * (holdH / Math.max(1, inp.funding!.intervalH)) * best.entry : 0;
-    const costR = Math.round((((inp.costPct / 100) * best.entry + fundingPx) / risk) * 100) / 100;
+    const costR = planCostR({ entry: best.entry, risk, dir, tf, costPct: inp.costPct, funding: inp.funding });
     const warnings: string[] = [];
     if (alignment === "against") warnings.push(`逆着${FTF}的方向：大周期不站在这一边，按计划规则只用半仓`);
     if (best.kind === "reversal") warnings.push("逆势反转是在猜拐点：只用半仓，认错位一破就走");
@@ -426,6 +512,11 @@ export function buildPlans(inp: PlanInput): { long: SidePlan; short: SidePlan; b
       warnings,
       evidence: null,
       alternatives: valid.slice(1).map((x) => x.trigger),
+      near: null,
+      nearNote: null,
+      nearStats: null,
+      nearText: null,
+      defend: null,
     };
   }
 }

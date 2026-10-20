@@ -216,16 +216,28 @@ async function main() {
           console.log(`  入场 ${fp(s.entry)}，认错区间 ${fp(v.zone[0])}–${fp(v.zone[1])}（锚点 ${fp(v.anchor)}），止损 ${fp(v.stop)}，距离 ${v.distPct}% / ${v.distAtr} 倍 ATR${v.noise != null ? `，噪音碰到的概率 ${v.noise}%` : ""}`);
           console.log(`  沿途关键位：${s.targets.map((x) => `${fp(x.price)}（${x.label}，${x.r}R）`).join("、") || "—"}；仓位 ${s.size === "half" ? "半仓" : "正常"}`);
         }
+        if (s.near) console.log(`  近止损 ${fp(s.near.stop)}，距离 ${s.near.distPct}% / ${s.near.distAtr} 倍 ATR${s.near.noise != null ? `，噪音碰到的概率 ${s.near.noise}%` : ""}，成本约 ${s.near.costR}R`);
+        else if (s.nearNote) console.log(`  近止损：${s.nearNote}`);
+        if (s.nearText) console.log(`  近 / 远止损：${s.nearText}`);
         for (const w of s.warnings) console.log(`  ! ${w}`);
         if (s.evidence) console.log(`  历史同类：${s.evidence.n} 笔，平均 ${s.evidence.meanR}R，对随机 ${s.evidence.edgeR}R，样本外 ${s.evidence.oosEdgeR}R，${s.evidence.verdict}`);
         const o = p.replay?.[s.side];
+        const res = (x: { status: string; r: number; exit: string | null; exitT: number | null; mfe: number | null }) =>
+          x.status === "open" ? `仍持有，按最后收盘 ${x.r}R` : `${bj(x.exitT)} ${x.exit === "stop" ? "移动认错位离场" : "到期离场"}，${x.r}R（最多浮盈 ${x.mfe}R）`;
         if (o) {
-          console.log(
-            o.status === "none"
-              ? `  之后：${o.watchBars} 根 K 线内没有触发`
-              : `  之后：${bj(o.entryT)} 以 ${fp(o.entry)} 入场、止损 ${fp(o.stop)}，${o.status === "open" ? `仍持有，按最后收盘 ${o.r}R` : `${bj(o.exitT)} ${o.exit === "stop" ? "移动认错位离场" : "到期离场"}，${o.r}R（最多浮盈 ${o.mfe}R）`}`,
-          );
+          console.log(o.status === "none" ? `  之后：${o.watchBars} 根 K 线内没有触发` : `  之后：${bj(o.entryT)} 以 ${fp(o.entry)} 入场、止损 ${fp(o.stop)}，${res({ status: o.status, r: o.r!, exit: o.exit, exitT: o.exitT, mfe: o.mfe })}`);
+          if (o.near) console.log(`        用近止损 ${fp(o.near.stop)}：${res(o.near)}`);
         }
+        const d = s.defend;
+        if (d) {
+          console.log(`  守位做法：${d.text}${d.size === "half" ? "（逆日线，半仓）" : ""}`);
+          console.log(`    入场 ${fp(d.entry)}（${bj(d.entryT + TF_SECONDS[tf])} 收盘），远止损 ${fp(d.far.stop)}（${d.far.distAtr} 倍 ATR）${d.near ? `，近止损 ${fp(d.near.stop)}（${d.near.distAtr} 倍 ATR）` : `；${d.nearNote}`}`);
+          console.log(`    ${(["flow", "oi", "turn"] as const).map((k) => `${{ flow: "主动成交", oi: "持仓量骤降", turn: "1 小时转强" }[k]} ${d.checks[k] == null ? "数据缺" : d.checks[k] ? "有" : "没有"}`).join("，")}；${d.verdictText}`);
+          const od = p.replay?.defend[s.side];
+          if (od) console.log(`    之后：远止损 ${res(od.far)}${od.near ? `；近止损 ${res(od.near)}` : ""}`);
+        }
+        const lines = p.defenses[s.side];
+        if (lines.length) console.log(`  防线：${lines.map((x) => `${x.label} ${fp(x.price)}（${x.distAtr} 倍 ATR）`).join("；")}`);
       }
       if (p.scorecard) for (const r of p.scorecard.rows) console.log(`\n成绩单：${r.name}：${r.n} 笔，平均 ${r.meanR}R（随机 ${r.controlR}R），最近 12 个月 ${r.oosN} 笔平均 ${r.oosMeanR}R，${r.verdict}`);
       if (p.scorecard?.warning) console.log(`! ${p.scorecard.warning}`);
