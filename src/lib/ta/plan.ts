@@ -89,11 +89,16 @@ export interface FindArgs {
  *   higher low (lower high) followed by a close beyond the last swing.
  * The same kind and direction is not repeated within 6 bars.
  */
+/** Volume of bar `i` against the median of the 20 bars before it. */
+export function relVolume(c: Candle[], i: number): number {
+  const med = c.slice(Math.max(0, i - 20), i).map((x) => x.v).sort((x, y) => x - y)[10] || c[i].v;
+  return c[i].v / med;
+}
+
 export function findEntries(a: FindArgs): EntryEvent[] {
   const { tf, c, atr, ss, filterAt, buf, from } = a;
   const out: EntryEvent[] = [];
   const last = new Map<string, number>();
-  const vol = c.map((x) => x.v);
   const add = (i: number, dir: 1 | -1, kind: EntryKind, anchor: number) => {
     const key = `${kind}${dir}`;
     if (i - (last.get(key) ?? -1e9) < 6) return;
@@ -102,8 +107,7 @@ export function findEntries(a: FindArgs): EntryEvent[] {
     if (!(risk >= 0.3 && risk <= 8)) return;
     last.set(key, i);
     const equal = intactPivots(c, atr, i, PIVOT_K[tf], dir > 0 ? "low" : "high", 300).filter((p) => Math.abs(p.price - anchor) <= 0.1 * atr[i]).length >= 2;
-    const med = [...vol.slice(Math.max(0, i - 20), i)].sort((x, y) => x - y)[10] || vol[i];
-    out.push({ i, t: c[i].t, dir, kind, anchor, stop, filter: filterAt(i), equal, relVol: vol[i] / med });
+    out.push({ i, t: c[i].t, dir, kind, anchor, stop, filter: filterAt(i), equal, relVol: relVolume(c, i) });
   };
   for (let t = Math.max(7, from); t < c.length; t++) {
     const s = ss[t], p = ss[t - 1], A = atr[t];

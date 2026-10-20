@@ -6,10 +6,33 @@ import type { ResearchReport, ResearchRow } from "@/lib/research/run";
 import { TF_LABEL } from "@/lib/types";
 import { btnCls, fmtTime } from "./ui";
 
-type Kind = "signals" | "light" | "levels" | "plans";
+type Kind = "signals" | "light" | "levels" | "plans" | "defend";
 type ListItem = { id: number; createdAt: number; kind: Kind; paramsVersion: number };
-const KIND_LABEL: Record<Kind, string> = { light: "信号灯", signals: "信号与指标", levels: "关键位", plans: "交易计划依据" };
-const PLAN_FAMILY: Record<string, string> = { plan: "计划成绩单", anchor: "E10 价格锚定", exit: "E11 离场方式", entry: "E12 入场类型", stop: "E13 认错位", behavior: "E14 新手习惯" };
+const KIND_LABEL: Record<Kind, string> = { light: "信号灯", signals: "信号与指标", levels: "关键位", plans: "交易计划依据", defend: "守位依据" };
+/** the questions inside a report, for its filter */
+const FAMILIES: Partial<Record<Kind, Record<string, string>>> = {
+  plans: { plan: "计划成绩单", anchor: "E10 价格锚定", exit: "E11 离场方式", entry: "E12 入场类型", stop: "E13 认错位", behavior: "E14 新手习惯" },
+  levels: { level: "E6 触位反向（2R 止盈）", level_mfe: "E16 守住之前能走多远" },
+  defend: { defend: "E17 守位计划与止跌 / 止涨证据", stop2: "E18 近止损与远止损" },
+};
+
+/** The numbers a row carries besides the edge, in a few words. */
+function detail(x: ResearchRow): string {
+  const e = x.extra ?? {};
+  const v = (k: string, unit = "%") => (e[k] == null ? "—" : `${e[k]}${unit}`);
+  if (x.family === "level") return `均值 ${x.cells.is.meanR ?? "—"}R · 刺穿 ${v("piercedPct")} / 失效 ${v("brokenPct")}`;
+  if (x.family === "level_mfe") return `止损前先到 2R ${v("reach2")}（随机 ${v("reach2Ctl")}）· 最远中位 ${v("mfeMedR", "R")} · 2R 平半 ${v("scaleR", "R")}`;
+  const parts: string[] = [];
+  if (e.stopPct != null) parts.push(`被扫 ${v("stopPct")}（6 根内 ${v("quickStopPct")}）· 先到 2R ${v("reach2")}`);
+  if (e.far_stopPct != null) parts.push(`远止损：被扫 ${v("far_stopPct")}（6 根内 ${v("far_quickStopPct")}）· 先到 2R ${v("far_reach2")}`);
+  if (e.last_stopPct != null) parts.push(`按最新价：被扫 ${v("last_stopPct")}`);
+  if (e.turnedPct != null) parts.push(`${v("turnedPct")} 的事件等到了 1 小时转强`);
+  if (e.slipCostNearR != null) parts.push(`滑点让近止损少 ${v("slipCostNearR", "R")}、远止损少 ${v("slipCostFarR", "R")}`);
+  if (e.crowdedPct != null) parts.push(`${v("crowdedPct")} 的近止损在拥挤处`);
+  if (e.pct != null) parts.push(`占 ${v("pct")}`);
+  if (e.unknown != null && e.unknown > 0) parts.push(`${e.unknown} 笔数据缺失未计`);
+  return parts.join(" · ") || "—";
+}
 /** a row compared with something other than chance gets plainer words */
 const verdictText = (v: string, control?: string) =>
   !control || control.includes("随机") ? v : v === "有优势" ? "明显更好" : v === "比随机差" ? "明显更差" : v === "无可证明的优势" ? "差别不能确定" : v;
@@ -71,7 +94,7 @@ export function ResearchPanel() {
     return r.rows.filter(
       (x) =>
         (tf === "all" || x.tf === tf) &&
-        (r.kind === "signals" ? x.family === family : r.kind === "plans" ? !(family in PLAN_FAMILY) || x.family === family : true) &&
+        (r.kind === "signals" ? x.family === family : FAMILIES[r.kind] ? !(family in FAMILIES[r.kind]!) || x.family === family : true) &&
         (!onlyFindings || x.verdict === "有优势" || x.verdict === "比随机差"),
     );
   }, [r, tf, family, onlyFindings]);
@@ -90,7 +113,7 @@ export function ResearchPanel() {
       {msg && <p className={`rounded-lg px-3 py-2 text-[13px] ${msg.ok ? "bg-up-soft text-up" : "bg-down-soft text-down"}`}>{msg.text}</p>}
 
       <div className="flex flex-wrap gap-2 text-sm">
-        {(["light", "plans", "signals", "levels"] as const).map((k) => (
+        {(["light", "plans", "defend", "signals", "levels"] as const).map((k) => (
           <button
             key={k}
             className={`rounded-lg px-3 py-1.5 ${kind === k ? "bg-ink text-bg" : "border border-line text-ink-2"}`}
@@ -157,10 +180,10 @@ export function ResearchPanel() {
                 <option key={c.tf} value={c.tf}>{TF_LABEL[c.tf]}</option>
               ))}
             </select>
-            {r.kind === "plans" && (
-              <select className="rounded-lg border border-line bg-panel-2 px-2 py-1.5" value={family in PLAN_FAMILY ? family : "all"} onChange={(e) => setFamily(e.target.value)}>
+            {FAMILIES[r.kind] && (
+              <select className="rounded-lg border border-line bg-panel-2 px-2 py-1.5" value={family in FAMILIES[r.kind]! ? family : "all"} onChange={(e) => setFamily(e.target.value)}>
                 <option value="all">全部问题</option>
-                {Object.entries(PLAN_FAMILY).map(([k, v]) => (
+                {Object.entries(FAMILIES[r.kind]!).map(([k, v]) => (
                   <option key={k} value={k}>{v}</option>
                 ))}
               </select>
@@ -183,18 +206,17 @@ export function ResearchPanel() {
                   <th className="py-1.5 pr-3 font-normal">信号</th>
                   <th className="py-1.5 pr-3 font-normal">周期</th>
                   <th className="py-1.5 pr-3 font-normal">样本内笔数</th>
-                  <th className="py-1.5 pr-3 font-normal">{r.kind === "plans" ? "命中 vs 对照" : "命中 vs 随机"}</th>
+                  <th className="py-1.5 pr-3 font-normal">{r.kind === "plans" || r.kind === "defend" ? "命中 vs 对照" : "命中 vs 随机"}</th>
                   <th className="py-1.5 pr-3 font-normal">优势（样本内）</th>
                   <th className="py-1.5 pr-3 font-normal">样本外</th>
                   <th className="py-1.5 pr-3 font-normal">BTC</th>
                   <th className="py-1.5 pr-3 font-normal">ETH</th>
                   <th className="py-1.5 pr-3 font-normal">前半</th>
                   <th className="py-1.5 pr-3 font-normal">后半</th>
-                  {r.kind === "levels" && <th className="py-1.5 pr-3 font-normal">平均 R</th>}
-                  {r.kind === "levels" && <th className="py-1.5 pr-3 font-normal">刺穿 / 失效</th>}
+                  {(r.kind === "levels" || r.kind === "defend") && <th className="py-1.5 pr-3 font-normal">细节</th>}
                   <th className="py-1.5 pr-3 font-normal">q 值</th>
                   <th className="py-1.5 pr-3 font-normal">结论</th>
-                  {r.kind === "plans" && <th className="py-1.5 font-normal">对照</th>}
+                  {(r.kind === "plans" || r.kind === "defend") && <th className="py-1.5 font-normal">对照</th>}
                 </tr>
               </thead>
               <tbody className="num">
@@ -215,15 +237,10 @@ export function ResearchPanel() {
                     <td className="py-1.5 pr-3"><Edge g={x.cells.eth} /></td>
                     <td className="py-1.5 pr-3"><Edge g={x.cells.firstHalf} /></td>
                     <td className="py-1.5 pr-3"><Edge g={x.cells.secondHalf} /></td>
-                    {r.kind === "levels" && <td className="py-1.5 pr-3">{x.cells.is.meanR ?? "—"}</td>}
-                    {r.kind === "levels" && (
-                      <td className="py-1.5 pr-3">
-                        {x.extra?.piercedPct ?? "—"}% / {x.extra?.brokenPct ?? "—"}%
-                      </td>
-                    )}
+                    {(r.kind === "levels" || r.kind === "defend") && <td className="py-1.5 pr-3 text-xs text-ink-2">{detail(x)}</td>}
                     <td className="py-1.5 pr-3">{x.q ?? "—"}</td>
                     <td className="py-1.5 pr-3" style={{ color: VERDICT_COLOR[x.verdict] }}>{verdictText(x.verdict, x.control)}</td>
-                    {r.kind === "plans" && <td className="py-1.5 text-xs text-ink-3">{x.control}</td>}
+                    {(r.kind === "plans" || r.kind === "defend") && <td className="py-1.5 text-xs text-ink-3">{x.control}</td>}
                   </tr>
                 ))}
               </tbody>

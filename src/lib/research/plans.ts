@@ -71,6 +71,8 @@ export interface Prepared {
   /** sweep buffers (ATR) calibrated on the in-sample part only */
   buf: { p50: number; p80: number; p90: number };
   events: Event[];
+  /** the higher timeframe's direction by structure, known at the close of bar i */
+  fDir: (i: number) => 1 | -1 | 0;
 }
 
 /** Everything for one coin and setup: structure, filters, calibrated buffers and the entry events. */
@@ -110,21 +112,21 @@ export function prepare(coin: string, setup: Setup, ep: EngineParams, nowSec: nu
     equal: e.equal,
     relVol: e.relVol,
   }));
-  return { coin, c, atr, ss, sw, buf, events };
+  return { coin, c, atr, ss, sw, buf, events, fDir: fDirStruct };
 }
 
-function ctxOf(p: Prepared, setup: Setup, ep: EngineParams): SimContext {
+export function ctxOf(p: Prepared, setup: Setup, ep: EngineParams): SimContext {
   return { c: p.c, atr: p.atr, swings: p.sw, buf: p.buf.p80, costPct: ep.stats.costPct, maxBars: MAX_BARS[setup.tf] ?? 120 };
 }
 
-const toTrade = (p: Prepared, e: { i: number }, r: { r: number; pct: number }, size = 1): Trade => ({ t: p.c[e.i].t, coin: p.coin, r: r.r * size, pct: r.pct * size });
+export const toTrade = (p: Prepared, e: { i: number }, r: { r: number; pct: number }, size = 1): Trade => ({ t: p.c[e.i].t, coin: p.coin, r: r.r * size, pct: r.pct * size });
 
 /**
  * One position at a time, as a person following the rule would hold it: an event is
  * taken only once the previous trade has closed, so samples never overlap.
  */
-export function sequential(evs: Event[], ctx: SimContext, policy: ExitPolicy): { e: Event; r: SimResult }[] {
-  const out: { e: Event; r: SimResult }[] = [];
+export function sequential<E extends { i: number; dir: 1 | -1; stop: number }>(evs: E[], ctx: SimContext, policy: ExitPolicy): { e: E; r: SimResult }[] {
+  const out: { e: E; r: SimResult }[] = [];
   let free = -1;
   for (const e of evs) {
     if (e.i < free) continue;
@@ -146,7 +148,7 @@ function rng(seed: number) {
  * Random-timing control: for each event, entries at random bars of the same coin,
  * same direction and the same stop distance in ATR, managed the same way.
  */
-function randomTrades(p: Prepared, evs: Event[], ctx: SimContext, policy: ExitPolicy, perEvent: number, seed: number, size: (e: Event) => number = () => 1): Trade[] {
+export function randomTrades<E extends { i: number; dir: 1 | -1; stop: number }>(p: Prepared, evs: E[], ctx: SimContext, policy: ExitPolicy, perEvent: number, seed: number, size: (e: E) => number = () => 1): Trade[] {
   const r = rng(seed);
   const out: Trade[] = [];
   const n = p.c.length - (ctx.maxBars + 1);

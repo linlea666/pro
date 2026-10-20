@@ -106,7 +106,7 @@ function volumeProfile(c: Candle[], bins = 48) {
   return { poc: lo + (poc + 0.5) * step, val: lo + a * step, vah: lo + (b + 1) * step, hvn };
 }
 
-function roundStep(price: number): number {
+export function roundStep(price: number): number {
   const mag = 10 ** Math.floor(Math.log10(price));
   const lead = price / mag;
   return lead < 2 ? mag / 10 : lead < 5 ? mag / 4 : mag / 2;

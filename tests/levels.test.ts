@@ -33,9 +33,18 @@ test("levels report: every method is measured against random lines on the same c
   assert.ok(placebo.cells.is.n > 100);
   assert.equal(placebo.cells.is.edgeR, 0, "random lines against themselves");
   assert.equal(placebo.q, null, "the control itself is not tested");
-  for (const x of r.rows) {
+  for (const x of r.rows.filter((x) => x.family === "level")) {
     assert.ok(x.extra!.brokenPct! <= x.extra!.piercedPct!, "a level invalidated was pierced first");
     assert.ok(x.cells.is.meanR! >= -1.1 && x.cells.is.meanR! <= 2, "results are in R");
+  }
+  // E16: the same touches held until the stop; the further the target, the fewer reach it
+  const mfe = r.rows.filter((x) => x.family === "level_mfe");
+  assert.equal(mfe.length, r.rows.filter((x) => x.family === "level").length);
+  assert.equal(mfe.find((x) => x.key === "level_mfe:random")!.cells.is.edgeR, 0);
+  for (const x of mfe) {
+    const e = x.extra!;
+    assert.ok(e.reach1! >= e.reach2! && e.reach2! >= e.reach3! && e.reach3! >= e.reach5!, x.key);
+    assert.ok(x.cells.is.meanR! >= -1.1, "never worse than the stop plus costs");
   }
   // a random walk has no levels worth trading
   assert.equal(r.rows.filter((x) => x.verdict === "有优势").length, 0);

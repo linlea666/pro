@@ -1,0 +1,344 @@
+import type { Candle, Timeframe } from "../types.ts";
+import { TF_SECONDS } from "../types.ts";
+import { protectiveExtreme, relVolume } from "./plan.ts";
+import { intactPivots, PIVOT_K } from "./risk.ts";
+import type { StructureState } from "./structure.ts";
+
+/**
+ * Defending a level: price comes to a level that has held (or to a broken one from the other
+ * side, or makes a fresh extreme), pokes through or gets rejected, and stops going further — the trade is taken with the
+ * stop just beyond that extreme. Whether price has really stalled there is the hard part;
+ * three pieces of evidence, each answering a different question, are recorded for it:
+ *
+ * - flow (taker volume): did sellers stop pushing? Net taker buying between the previous
+ *   low and an equal-or-lower new low (CVD divergence), or a heavy, seller-dominated sweep
+ *   bar that still closed back (absorption).
+ * - open interest: was it a flush? Open interest falling hard into the low means positions
+ *   were closed or liquidated, not new shorts piling in.
+ * - lower timeframe turn: the hour chart made a higher low after the extreme and closed above
+ *   its last swing high.
+ *
+ * Each is true / false, or null when the data is missing (older bars without taker volume,
+ * hours before the open-interest history). The research weighs them (src/lib/research/defend.ts);
+ * this file only describes, with the same code for the page and the research.
+ * Longs below; shorts are the mirror image.
+ */
+
+/** bars after the extreme within which the stall has to show */
+const STALL_BARS = 3;
+/** a fresh extreme: the lowest low (highest high) of this many bars */
+const FRESH_BARS = 50;
+/** the lower-timeframe stop is never closer than this many ATR of the main timeframe */
+const MIN_NEAR_ATR = 0.5;
+/** hours of hour bars needed before the hour chart's structure is trusted */
+export const LOWER_WARMUP = 300;
+/** bars after the stall within which waiting for the hour chart to turn may end */
+const CONFIRM_BARS = 6;
+
+export type DefendShape = "sweep" | "rejection";
+
+export interface DefendEvent {
+  /** bar at whose close the stall shows: the entry */
+  i: number;
+  t: number;
+  dir: 1 | -1;
+  /** "sweep": traded through the level and closed back; "rejection": a long wick away from the extreme */
+  shape: DefendShape;
+  /**
+   * pivot: a swing low (high) that had held; flip: a swing high (low) broken upward (downward) and now
+   * retested from the other side; fresh: a new 50-bar extreme with no level under it
+   */
+  levelKind: "pivot" | "flip" | "fresh";
+  level: number;
+  /** times the level had been tested before (pivot levels) */
+  tests: number;
+  /** bar of the extreme and its price */
+  e: number;
+  extreme: number;
+  /** stop just beyond the extreme, from the hour chart (null without hour bars) */
+  near: number | null;
+  /** stop beyond the main timeframe's protective swing plus the sweep buffer */
+  far: number;
+  flow: boolean | null;
+  oi: boolean | null;
+  turn: boolean | null;
+  /**
+   * the entry when waiting for the hour chart to turn: the bar (this one or up to CONFIRM_BARS later, before any
+   * new extreme) by whose close it has, with the stops there; null if it did not, or without hour bars.
+   * Looks ahead of `i`: for the research and for "wait for it" on the page, never for the entry at `i`.
+   */
+  confirm: { i: number; near: number | null; far: number } | null;
+  /** higher timeframe direction at entry */
+  filter: 1 | -1 | 0;
+  /** the extreme sits on equal lows (highs) */
+  equal: boolean;
+  relVol: number;
+}
+
+/** Hour bars and their structure, for the near stop and the turn. */
+export interface LowerFrame {
+  c: Candle[];
+  atr: number[];
+  ss: StructureState[];
+  /** sweep buffer (ATR of the hour chart), the calibrated p80 */
+  buf: number;
+}
+
+/** Open interest by the hour, oldest first. */
+export interface OiSeries {
+  t: number[];
+  oi: number[];
+}
+
+export interface DefendArgs {
+  tf: Timeframe;
+  c: Candle[];
+  atr: number[];
+  ss: StructureState[];
+  filterAt: (i: number) => 1 | -1 | 0;
+  /** sweep buffer (ATR) behind the main timeframe's protective swing: the calibrated p80 */
+  buf: number;
+  lower: LowerFrame | null;
+  oi: OiSeries | null;
+  from: number;
+}
+
+/** Index of the last element of a sorted array at or before `x` (−1 if none). */
+export function lastAtOrBefore(arr: number[], x: number): number {
+  let lo = 0, hi = arr.length - 1, ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (arr[mid] <= x) {
+      ans = mid;
+      lo = mid + 1;
+    } else hi = mid - 1;
+  }
+  return ans;
+}
+
+/**
+ * Net taker buying (base coin) of the bars opening in [from, to); null when the bars do not reach back to
+ * `from` or any of them lacks taker volume.
+ */
+export function netTakerFlow(c: Candle[], times: number[], from: number, to: number): number | null {
+  if (!times.length || times[0] > from) return null;
+  let k = lastAtOrBefore(times, from - 1) + 1;
+  let sum = 0, n = 0;
+  for (; k < c.length && c[k].t < to; k++) {
+    if (c[k].tbv == null) return null;
+    sum += 2 * c[k].tbv! - c[k].v;
+    n++;
+  }
+  return n ? sum : null;
+}
+
+/**
+ * Open interest fell hard around the sweep: its change from `from` to `end` (4 hours before the extreme bar
+ * to its close) is below minus the 80th percentile of the absolute changes over windows of the same length
+ * in the 30 days before.
+ */
+export function oiFlush(oi: OiSeries, from: number, end: number): boolean | null {
+  const at = (t: number) => {
+    const k = lastAtOrBefore(oi.t, t);
+    return k >= 0 && t - oi.t[k] <= 2 * 3600 ? oi.oi[k] : null;
+  };
+  const span = end - from;
+  const now = at(end), before = at(from);
+  if (now == null || before == null || !(span > 0)) return null;
+  const changes: number[] = [];
+  for (let t = end - 30 * 86400; t <= from - span; t += 4 * 3600) {
+    const a = at(t), b = at(t + span);
+    if (a != null && b != null) changes.push(Math.abs(b / a - 1));
+  }
+  if (changes.length < 60) return null;
+  changes.sort((x, y) => x - y);
+  return now / before - 1 <= -changes[Math.floor(changes.length * 0.8)];
+}
+
+/**
+ * The hour chart turned in `dir` between the extreme and `end`: a higher low (lower high) made after the
+ * extreme, then a close beyond the last swing on the other side.
+ */
+function turned(lower: LowerFrame, times: number[], dir: 1 | -1, extremeT: number, end: number): boolean {
+  const last = lastAtOrBefore(times, end - TF_SECONDS["1h"]);
+  for (let k = lastAtOrBefore(times, extremeT) + 1; k >= 0 && k <= last; k++) {
+    const s = lower.ss[k];
+    const sw = dir > 0 ? s.lastLow : s.lastHigh;
+    if (sw && sw.t > extremeT && sw.label === (dir > 0 ? "HL" : "LH") && s.beyond === dir) return true;
+  }
+  return false;
+}
+
+/**
+ * Stop from the hour chart for a trade in `dir` entered at `entry` at time `end`: beyond its protective extreme
+ * (and beyond `extreme`, the low being defended, when given) plus the hour chart's sweep buffer, at least
+ * MIN_NEAR_ATR of the main timeframe's ATR from the entry.
+ */
+export function nearStop(lower: LowerFrame, times: number[], dir: 1 | -1, end: number, entry: number, mainAtr: number, extreme?: number): number | null {
+  const k = lastAtOrBefore(times, end - TF_SECONDS["1h"]);
+  if (k < 0) return null;
+  const s = lower.ss[k];
+  if (!(dir > 0 ? s.lastLow : s.lastHigh) || !(lower.atr[k] > 0)) return null;
+  let anchor = protectiveExtreme(lower.c, s, dir, k);
+  if (extreme != null) anchor = dir > 0 ? Math.min(anchor, extreme) : Math.max(anchor, extreme);
+  const stop = anchor - dir * lower.buf * lower.atr[k];
+  const min = entry - dir * MIN_NEAR_ATR * mainAtr;
+  return dir > 0 ? Math.min(stop, min) : Math.max(stop, min);
+}
+
+/**
+ * Swing highs (side "high") broken upward — a close more than 0.8 ATR above — and not closed back below by
+ * more than 0.8 ATR since, known at the close of bar `t`, within `look` bars: resistance turned support
+ * (and the mirror image for lows). `tests` counts nothing here and stays 0.
+ */
+export function flippedPivots(c: Candle[], atr: number[], t: number, K: number, side: "high" | "low", look = 300): { i: number; price: number }[] {
+  const sg = side === "high" ? 1 : -1;
+  const out: { i: number; price: number }[] = [];
+  for (let i = Math.max(K, t - look); i <= t - K; i++) {
+    let ok = true;
+    for (let j = i - K; j <= i + K && ok; j++) if (j !== i && (side === "high" ? c[j].h > c[i].h : c[j].l < c[i].l)) ok = false;
+    if (!ok) continue;
+    const L = side === "high" ? c[i].h : c[i].l;
+    let flipped = false;
+    for (let j = i + K + 1; j <= t; j++) {
+      const a = atr[j] || atr[t];
+      const beyond = ((c[j].c - L) * sg) / a;
+      if (!flipped && beyond > 0.8) flipped = true;
+      else if (flipped && beyond < -0.8) {
+        flipped = false;
+        break;
+      }
+    }
+    if (flipped) out.push({ i, price: L });
+  }
+  return out;
+}
+
+/** Defended levels on closed bars, both directions; the same direction is not repeated within 6 bars. */
+export function findDefends(a: DefendArgs): DefendEvent[] {
+  const { tf, c, atr, ss, filterAt, buf, lower, oi, from } = a;
+  const sec = TF_SECONDS[tf];
+  const out: DefendEvent[] = [];
+  const lastAt = new Map<number, number>();
+  const lowerTimes = lower ? lower.c.map((x) => x.t) : [];
+  const mainTimes = c.map((x) => x.t);
+  const K = PIVOT_K[tf];
+  for (let i = Math.max(FRESH_BARS + 5, from); i < c.length; i++) {
+    const A = atr[i];
+    if (!(A > 0)) continue;
+    for (const dir of [1, -1] as const) {
+      if (i - (lastAt.get(dir) ?? -1e9) < 6) continue;
+      const lowOf = (k: number) => (dir > 0 ? c[k].l : c[k].h);
+      const beyond = (x: number, y: number) => (x - y) * dir < 0; // x further out than y
+      // the extreme: one of the last STALL_BARS bars, not exceeded since and the most extreme of the 5 bars before it
+      let e = -1;
+      for (let k = i - 1; k >= i - STALL_BARS; k--) {
+        let ok = true;
+        for (let j = k - 5; j <= i && ok; j++) if (j !== k && !beyond(lowOf(k), lowOf(j)) && lowOf(j) !== lowOf(k)) ok = false;
+        // ties: the earlier bar is the extreme
+        for (let j = k - 5; j < k && ok; j++) if (lowOf(j) === lowOf(k)) ok = false;
+        if (ok) {
+          e = k;
+          break;
+        }
+      }
+      if (e < 0) continue;
+      const x = c[e], Ae = atr[e];
+      if (!(Ae > 0)) continue;
+      const ext = lowOf(e);
+      // the stall: no further extreme since (checked above) and a close back beyond the extreme bar's close
+      if (!((c[i].c - x.c) * dir > 0)) continue;
+      // only the first stall after an extreme
+      let first = true;
+      for (let j = e + 1; j < i && first; j++) if ((c[j].c - x.c) * dir > 0) first = false;
+      if (!first) continue;
+
+      // price action at the extreme
+      const range = x.h - x.l;
+      const wick = dir > 0 ? Math.min(x.o, x.c) - x.l : x.h - Math.max(x.o, x.c);
+      const rejection = range > 0 && wick >= 0.5 * range && (dir > 0 ? x.c - x.l : x.h - x.c) >= (2 / 3) * range;
+      // a held level the extreme reached: intact pivots on this side, or broken ones from the other side
+      // (resistance turned support), known before the extreme bar; the nearest to the extreme wins
+      let level: number | null = null, tests = 0, shape: DefendShape | null = null;
+      let levelKind: DefendEvent["levelKind"] = "pivot";
+      const held = [
+        ...intactPivots(c, atr, e - 1, K, dir > 0 ? "low" : "high", 300).map((p) => ({ price: p.price, tests: p.tests, kind: "pivot" as const })),
+        ...flippedPivots(c, atr, e - 1, K, dir > 0 ? "high" : "low", 300).map((p) => ({ price: p.price, tests: 0, kind: "flip" as const })),
+      ];
+      for (const p of held) {
+        const into = (p.price - ext) * dir; // how far the extreme went beyond the level (ATR units below)
+        if (into < -0.25 * Ae || into > 0.8 * Ae) continue;
+        const swept = into > 0 && (x.c - p.price) * dir >= -0.1 * Ae;
+        if (!swept && !rejection) continue;
+        if (level == null || Math.abs(p.price - ext) < Math.abs(level - ext)) {
+          level = p.price;
+          tests = p.tests;
+          shape = swept ? "sweep" : "rejection";
+          levelKind = p.kind;
+        }
+      }
+      if (level == null) {
+        // a fresh extreme with nothing under it: only a rejection counts
+        let fresh = rejection;
+        for (let j = e - FRESH_BARS + 1; j < e && fresh; j++) if (j >= 0 && !beyond(ext, lowOf(j))) fresh = false;
+        if (!fresh) continue;
+        level = ext;
+        levelKind = "fresh";
+        shape = "rejection";
+      }
+
+      // the hour chart only counts once its structure has warmed up (LOWER_WARMUP hours before the extreme)
+      const low = lower && lowerTimes.length && lowerTimes[0] <= x.t - LOWER_WARMUP * 3600 ? lower : null;
+      // stops for an entry at the close of bar k: far beyond the main timeframe's protective swing (never closer
+      // than the near one), near beyond the hour chart's extreme; null when the risk is outside 0.3–8 ATR
+      const stopsAt = (k: number): { near: number | null; far: number } | null => {
+        const s = ss[k];
+        if (!(dir > 0 ? s.lastLow : s.lastHigh) || !(atr[k] > 0)) return null;
+        let far = protectiveExtreme(c, s, dir, k) - dir * buf * atr[k];
+        const near = low ? nearStop(low, lowerTimes, dir, c[k].t + sec, c[k].c, atr[k], ext) : null;
+        if (near != null && (far - near) * dir > 0) far = near;
+        const risk = ((c[k].c - far) * dir) / atr[k];
+        return risk >= 0.3 && risk <= 8 ? { near, far } : null;
+      };
+      const st = stopsAt(i);
+      if (!st) continue;
+      const { near, far } = st;
+
+      // evidence
+      let flow: boolean | null = null;
+      if (x.tbv != null && x.v > 0) {
+        // absorption: a heavy bar dominated by sellers (buyers for shorts) that still closed back
+        const buyShare = x.tbv / x.v;
+        const absorbed = relVolume(c, e) >= 2 && (dir > 0 ? buyShare < 0.45 : buyShare > 0.55);
+        // divergence: price made an equal or further extreme than the previous swing on this side (known before
+        // the extreme), but cumulative taker flow did not — takers were net buyers (sellers for shorts) from the
+        // close of that swing's bar to the close of the extreme bar. Not applicable when the extreme stopped short of it.
+        const prev = dir > 0 ? ss[e - 1].lastLow : ss[e - 1].lastHigh;
+        let divergence: boolean | null | undefined;
+        if (prev && (prev.price - ext) * dir >= -0.1 * Ae) {
+          const sum = netTakerFlow(c, mainTimes, prev.t + sec, x.t + sec);
+          divergence = sum == null ? null : sum * dir > 0;
+        }
+        flow = absorbed || divergence === true ? true : divergence === null ? null : false;
+      }
+      const oiE = oi ? oiFlush(oi, x.t - 4 * 3600, x.t + sec) : null;
+      const turn = low ? turned(low, lowerTimes, dir, x.t, c[i].t + sec) : null;
+      // waiting for the hour chart: the first close (this bar or up to CONFIRM_BARS later) by which it has turned,
+      // with no new extreme in between
+      let confirm: DefendEvent["confirm"] = null;
+      if (low) {
+        for (let k = i; k < c.length && k <= i + CONFIRM_BARS; k++) {
+          if (k > i && beyond(lowOf(k), ext)) break;
+          if (!turned(low, lowerTimes, dir, x.t, c[k].t + sec)) continue;
+          const sk = stopsAt(k);
+          if (sk) confirm = { i: k, near: sk.near, far: sk.far };
+          break;
+        }
+      }
+      const equal = intactPivots(c, atr, i, K, dir > 0 ? "low" : "high", 300).filter((p) => Math.abs(p.price - ext) <= 0.1 * A).length >= 2;
+      lastAt.set(dir, i);
+      out.push({ i, t: c[i].t, dir, shape: shape!, levelKind, level, tests, e, extreme: ext, near, far, flow, oi: oiE, turn, confirm, filter: filterAt(i), equal, relVol: relVolume(c, e) });
+    }
+  }
+  return out;
+}
