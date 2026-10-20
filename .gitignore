@@ -4,3 +4,7 @@ node_modules
 next-env.d.ts
 .env*.local
 data/
+
+# research data and outputs (re-downloadable: node research/fetch.mjs research/hist)
+research/hist/
+research/out/
