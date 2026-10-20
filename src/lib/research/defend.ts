@@ -1,8 +1,9 @@
 import { MARK_SOURCE, PRIMARY_SOURCE, readStored } from "../data/klines.ts";
+import { openInterestSeries } from "../data/perp.ts";
 import type { EngineParams } from "../params.ts";
 import { getDb } from "../server/db.ts";
 import { COIN_IDS } from "../symbols.ts";
-import { findDefends, lastAtOrBefore, LOWER_WARMUP, nearStop, type DefendEvent, type LowerFrame, type OiSeries } from "../ta/defend.ts";
+import { findDefends, lastAtOrBefore, LOWER_WARMUP, nearStop, type DefendEvent, type LowerFrame } from "../ta/defend.ts";
 import { roundStep } from "../ta/levels.ts";
 import { atrSeries, bufferAtr, calibrate } from "../ta/risk.ts";
 import { structureSeries } from "../ta/structure.ts";
@@ -67,11 +68,6 @@ interface CoinData {
   defs: Def[];
 }
 
-function oiSeries(coin: string, nowSec: number): OiSeries | null {
-  const rows = getDb().prepare("SELECT t, oi FROM open_interest WHERE coin = ? AND source = ? AND t <= ? ORDER BY t").all(coin, PRIMARY_SOURCE, nowSec) as { t: number; oi: number }[];
-  return rows.length ? { t: rows.map((r) => r.t), oi: rows.map((r) => r.oi) } : null;
-}
-
 /**
  * Funding crowded against `dir` at time `at`: the last settlement is in the bottom fifth of the 90 days
  * before (shorts paying, for a long) or the top fifth (longs paying, for a short).
@@ -106,7 +102,7 @@ function load(coin: string, ep: EngineParams, nowSec: number, holdoutFrom: numbe
   }
   const fr = getDb().prepare("SELECT t, rate FROM funding_rates WHERE coin = ? AND source = ? AND t <= ? ORDER BY t").all(coin, PRIMARY_SOURCE, nowSec) as { t: number; rate: number }[];
   const funding = { t: fr.map((x) => x.t), rate: fr.map((x) => x.rate) };
-  const defs = findDefends({ tf: SETUP.tf, c: p.c, atr: p.atr, ss: p.ss, filterAt: p.fDir, buf: p.buf.p80, lower, oi: oiSeries(coin, nowSec), from: WARMUP }).map((d) => ({
+  const defs = findDefends({ tf: SETUP.tf, c: p.c, atr: p.atr, ss: p.ss, filterAt: p.fDir, buf: p.buf.p80, lower, oi: openInterestSeries(coin, nowSec), from: WARMUP, rules: ep.defend }).map((d) => ({
     ...d,
     coin,
     fuel: fundingFuel(funding, d.dir, d.t + sec),
@@ -303,10 +299,12 @@ export async function defendReport(
     if (!cd.lower) return [];
     const out: (Ev & { near: number; far: number })[] = [];
     for (const e of cd.p.events) {
-      if (e.fStruct !== e.dir || e.kind === "reversal") continue;
+      // the page's plans that go with the daily direction: breakouts and confirmed pullbacks (it never offers
+      // entering inside the pullback zone, and reversals are against the old trend by definition)
+      if (e.fStruct !== e.dir || e.kind === "reversal" || e.kind === "pullback") continue;
       const t = cd.p.c[e.i].t;
-      if (cd.lowerTimes[0] > t - 300 * 3600) continue;
-      const n = nearStop(cd.lower, cd.lowerTimes, e.dir, t + sec, cd.p.c[e.i].c, cd.p.atr[e.i]);
+      if (cd.lowerTimes[0] > t - LOWER_WARMUP * 3600) continue;
+      const n = nearStop(cd.lower, cd.lowerTimes, e.dir, t + sec, cd.p.c[e.i].c, cd.p.atr[e.i], undefined, ep.defend.minNearAtr);
       if (n == null || !((e.stop - n) * e.dir < 0)) continue;
       out.push({ i: e.i, dir: e.dir, stop: e.stop, near: n, far: e.stop });
     }
@@ -410,6 +408,7 @@ export async function defendReport(
     createdAt: Date.now(),
     source: PRIMARY_SOURCE,
     paramsVersion: opts.paramsVersion,
+    rules: { ...ep.defend },
     costPct: ep.stats.costPct,
     alpha: ep.stats.alpha,
     holdoutFrom: split.holdoutFrom,

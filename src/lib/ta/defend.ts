@@ -1,3 +1,4 @@
+import { DEFAULT_ENGINE_PARAMS, type EngineParams } from "../params.ts";
 import type { Candle, Timeframe } from "../types.ts";
 import { TF_SECONDS } from "../types.ts";
 import { protectiveExtreme, relVolume } from "./plan.ts";
@@ -24,12 +25,14 @@ import type { StructureState } from "./structure.ts";
  * Longs below; shorts are the mirror image.
  */
 
-/** bars after the extreme within which the stall has to show */
-const STALL_BARS = 3;
-/** a fresh extreme: the lowest low (highest high) of this many bars */
-const FRESH_BARS = 50;
-/** the lower-timeframe stop is never closer than this many ATR of the main timeframe */
-const MIN_NEAR_ATR = 0.5;
+/**
+ * The rule's settings (EngineParams.defend, defaults = the definitions fixed before the research ran):
+ * stallBars — bars after the extreme within which the stall has to show; freshBars — a fresh extreme is the
+ * lowest low (highest high) of this many bars; reachAtr — how far short of a level the extreme may stop and
+ * still count as reaching it; minNearAtr — the lower-timeframe stop is never closer than this many ATR of the
+ * main timeframe.
+ */
+export type DefendRules = EngineParams["defend"];
 /** hours of hour bars needed before the hour chart's structure is trusted */
 export const LOWER_WARMUP = 300;
 /** bars after the stall within which waiting for the hour chart to turn may end */
@@ -101,6 +104,7 @@ export interface DefendArgs {
   lower: LowerFrame | null;
   oi: OiSeries | null;
   from: number;
+  rules?: DefendRules;
 }
 
 /** Index of the last element of a sorted array at or before `x` (−1 if none). */
@@ -172,9 +176,9 @@ function turned(lower: LowerFrame, times: number[], dir: 1 | -1, extremeT: numbe
 /**
  * Stop from the hour chart for a trade in `dir` entered at `entry` at time `end`: beyond its protective extreme
  * (and beyond `extreme`, the low being defended, when given) plus the hour chart's sweep buffer, at least
- * MIN_NEAR_ATR of the main timeframe's ATR from the entry.
+ * `minAtr` of the main timeframe's ATR from the entry.
  */
-export function nearStop(lower: LowerFrame, times: number[], dir: 1 | -1, end: number, entry: number, mainAtr: number, extreme?: number): number | null {
+export function nearStop(lower: LowerFrame, times: number[], dir: 1 | -1, end: number, entry: number, mainAtr: number, extreme?: number, minAtr = DEFAULT_ENGINE_PARAMS.defend.minNearAtr): number | null {
   const k = lastAtOrBefore(times, end - TF_SECONDS["1h"]);
   if (k < 0) return null;
   const s = lower.ss[k];
@@ -182,7 +186,7 @@ export function nearStop(lower: LowerFrame, times: number[], dir: 1 | -1, end: n
   let anchor = protectiveExtreme(lower.c, s, dir, k);
   if (extreme != null) anchor = dir > 0 ? Math.min(anchor, extreme) : Math.max(anchor, extreme);
   const stop = anchor - dir * lower.buf * lower.atr[k];
-  const min = entry - dir * MIN_NEAR_ATR * mainAtr;
+  const min = entry - dir * minAtr * mainAtr;
   return dir > 0 ? Math.min(stop, min) : Math.max(stop, min);
 }
 
@@ -216,23 +220,23 @@ export function flippedPivots(c: Candle[], atr: number[], t: number, K: number, 
 
 /** Defended levels on closed bars, both directions; the same direction is not repeated within 6 bars. */
 export function findDefends(a: DefendArgs): DefendEvent[] {
-  const { tf, c, atr, ss, filterAt, buf, lower, oi, from } = a;
+  const { tf, c, atr, ss, filterAt, buf, lower, oi, from, rules = DEFAULT_ENGINE_PARAMS.defend } = a;
   const sec = TF_SECONDS[tf];
   const out: DefendEvent[] = [];
   const lastAt = new Map<number, number>();
   const lowerTimes = lower ? lower.c.map((x) => x.t) : [];
   const mainTimes = c.map((x) => x.t);
   const K = PIVOT_K[tf];
-  for (let i = Math.max(FRESH_BARS + 5, from); i < c.length; i++) {
+  for (let i = Math.max(rules.freshBars + 5, from); i < c.length; i++) {
     const A = atr[i];
     if (!(A > 0)) continue;
     for (const dir of [1, -1] as const) {
       if (i - (lastAt.get(dir) ?? -1e9) < 6) continue;
       const lowOf = (k: number) => (dir > 0 ? c[k].l : c[k].h);
       const beyond = (x: number, y: number) => (x - y) * dir < 0; // x further out than y
-      // the extreme: one of the last STALL_BARS bars, not exceeded since and the most extreme of the 5 bars before it
+      // the extreme: one of the last `stallBars` bars, not exceeded since and the most extreme of the 5 bars before it
       let e = -1;
-      for (let k = i - 1; k >= i - STALL_BARS; k--) {
+      for (let k = i - 1; k >= i - rules.stallBars; k--) {
         let ok = true;
         for (let j = k - 5; j <= i && ok; j++) if (j !== k && !beyond(lowOf(k), lowOf(j)) && lowOf(j) !== lowOf(k)) ok = false;
         // ties: the earlier bar is the extreme
@@ -267,7 +271,7 @@ export function findDefends(a: DefendArgs): DefendEvent[] {
       ];
       for (const p of held) {
         const into = (p.price - ext) * dir; // how far the extreme went beyond the level (ATR units below)
-        if (into < -0.25 * Ae || into > 0.8 * Ae) continue;
+        if (into < -rules.reachAtr * Ae || into > 0.8 * Ae) continue;
         const swept = into > 0 && (x.c - p.price) * dir >= -0.1 * Ae;
         if (!swept && !rejection) continue;
         if (level == null || Math.abs(p.price - ext) < Math.abs(level - ext)) {
@@ -280,7 +284,7 @@ export function findDefends(a: DefendArgs): DefendEvent[] {
       if (level == null) {
         // a fresh extreme with nothing under it: only a rejection counts
         let fresh = rejection;
-        for (let j = e - FRESH_BARS + 1; j < e && fresh; j++) if (j >= 0 && !beyond(ext, lowOf(j))) fresh = false;
+        for (let j = e - rules.freshBars + 1; j < e && fresh; j++) if (j >= 0 && !beyond(ext, lowOf(j))) fresh = false;
         if (!fresh) continue;
         level = ext;
         levelKind = "fresh";
@@ -295,7 +299,7 @@ export function findDefends(a: DefendArgs): DefendEvent[] {
         const s = ss[k];
         if (!(dir > 0 ? s.lastLow : s.lastHigh) || !(atr[k] > 0)) return null;
         let far = protectiveExtreme(c, s, dir, k) - dir * buf * atr[k];
-        const near = low ? nearStop(low, lowerTimes, dir, c[k].t + sec, c[k].c, atr[k], ext) : null;
+        const near = low ? nearStop(low, lowerTimes, dir, c[k].t + sec, c[k].c, atr[k], ext, rules.minNearAtr) : null;
         if (near != null && (far - near) * dir > 0) far = near;
         const risk = ((c[k].c - far) * dir) / atr[k];
         return risk >= 0.3 && risk <= 8 ? { near, far } : null;

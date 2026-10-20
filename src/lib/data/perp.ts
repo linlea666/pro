@@ -1,4 +1,5 @@
 import { getDb } from "../server/db.ts";
+import type { OiSeries } from "../ta/defend.ts";
 import { logger } from "../server/log.ts";
 import { COIN_IDS } from "../symbols.ts";
 import { getJson, PRIMARY_SOURCE } from "./klines.ts";
@@ -89,6 +90,14 @@ export function perpHistoryStats(coin: string, nowSec = Date.now() / 1000) {
     avgRate7d: avg.n ? avg.a : null,
     oiChange24hPct: usable ? Math.round(((now.oi - before.oi) / before.oi) * 1000) / 10 : null,
   };
+}
+
+/** Hourly open interest of the primary source from `fromSec` to `toSec`, oldest first; null when there is none. */
+export function openInterestSeries(coin: string, toSec: number, fromSec = 0): OiSeries | null {
+  const rows = getDb()
+    .prepare("SELECT t, oi FROM open_interest WHERE coin = ? AND source = ? AND t >= ? AND t <= ? ORDER BY t")
+    .all(coin, PRIMARY_SOURCE, fromSec, toSec) as { t: number; oi: number }[];
+  return rows.length ? { t: rows.map((r) => r.t), oi: rows.map((r) => r.oi) } : null;
 }
 
 const cache = new Map<string, { at: number; value: PerpSnapshot }>();

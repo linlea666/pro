@@ -5,6 +5,7 @@ import { atrSeries } from "../src/lib/ta/risk.ts";
 import { structureSeries } from "../src/lib/ta/structure.ts";
 import { findDefends, nearStop, netTakerFlow, oiFlush, type DefendEvent, type LowerFrame, type OiSeries } from "../src/lib/ta/defend.ts";
 import { runUp, simulate, type SimContext } from "../src/lib/research/sim.ts";
+import { DEFAULT_ENGINE_PARAMS, engineParams, validateParams } from "../src/lib/params.ts";
 
 const H = 3600;
 const bar = (t: number, o: number, h: number, l: number, c: number, extra: Partial<Candle> = {}): Candle => ({ t: t * H, o, h, l, c, v: 1, ...extra });
@@ -41,12 +42,22 @@ function market(hours: number, seed: number) {
   return { h, c, oi: oiS };
 }
 
-function defends(m: ReturnType<typeof market>) {
+function defends(m: ReturnType<typeof market>, rules?: typeof DEFAULT_ENGINE_PARAMS.defend) {
   const atr = atrSeries(m.c);
   const hatr = atrSeries(m.h);
   const lower: LowerFrame = { c: m.h, atr: hatr, ss: structureSeries(m.h, hatr), buf: 0.5 };
-  return findDefends({ tf: "4h", c: m.c, atr, ss: structureSeries(m.c, atr), filterAt: () => 0, buf: 0.8, lower, oi: m.oi, from: 300 });
+  return findDefends({ tf: "4h", c: m.c, atr, ss: structureSeries(m.c, atr), filterAt: () => 0, buf: 0.8, lower, oi: m.oi, from: 300, rules });
 }
+
+test("defend settings: the parameter defaults are the rule as researched; other values change it", () => {
+  assert.deepEqual(engineParams().defend, { stallBars: 3, freshBars: 50, reachAtr: 0.25, minNearAtr: 0.5 });
+  assert.equal(validateParams({ "defend.stallBars": 2, "defend.minNearAtr": 1 }), null);
+  assert.ok(validateParams({ "defend.stallBars": 9 }));
+  const m = market(4 * 1200, 3);
+  const plain = defends(m);
+  assert.deepEqual(defends(m, DEFAULT_ENGINE_PARAMS.defend), plain);
+  assert.notDeepEqual(defends(m, { ...DEFAULT_ENGINE_PARAMS.defend, stallBars: 1 }), plain);
+});
 
 test("simulator: half off at 2R, slippage on stops, a limit entry price, and the mark price as the trigger", () => {
   const base = Array.from({ length: 30 }, (_, i) => bar(i, 100, 101, 99, 100));

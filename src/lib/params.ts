@@ -27,7 +27,7 @@ export interface ParamGroup {
 }
 
 export interface ParamModule {
-  id: "levels" | "td" | "indicators" | "trend" | "verdict" | "stats";
+  id: "levels" | "td" | "indicators" | "trend" | "verdict" | "plan" | "stats";
   title: string;
   hint: string;
   groups: ParamGroup[];
@@ -220,6 +220,23 @@ export const PARAM_MODULES: ParamModule[] = [
     ],
   },
   {
+    id: "plan",
+    title: "交易计划",
+    hint: "“趋势与计划”页的规则。守位做法的定义和研究报告（守位依据）是同一份代码；改了这里，要等下一份研究报告才有对应的历史数字，在那之前页面不显示这部分数字。",
+    groups: [
+      {
+        title: "守位做法",
+        hint: "价格来到完好的高低点（或创新高 / 新低）、扫过后收回或长影线拒绝，之后第一次收盘拐回时入场。研究里没有证明它比随机入场好，页面照实标注。",
+        params: [
+          n("defend.stallBars", "拐回的等待根数", 3, 1, 6, 1, "极点之后多少根 K 线内要出现第一次收盘拐回，才算一次守位。", "根"),
+          n("defend.freshBars", "新高 / 新低的回看根数", 50, 20, 200, 10, "附近没有完好的位时，极点要是最近这么多根里的最低（最高）价，才算新低（新高）。", "根"),
+          n("defend.reachAtr", "离位多近算到位", 0.25, 0, 1, 0.05, "极点离完好的位还差这么多倍 ATR 以内，也算回到了这个位。", "ATR"),
+          n("defend.minNearAtr", "近止损最小距离", 0.5, 0.2, 2, 0.1, "近止损（1 小时极点之外）离入场至少这么多倍入场周期的 ATR，太近会被正常波动扫掉。", "ATR"),
+        ],
+      },
+    ],
+  },
+  {
     id: "stats",
     title: "胜率统计",
     hint: "判断一个信号“对不对”时，看它出现后多少根 K 线的价格；以及给信号贴“证据较强”标签前要过的检验。",
@@ -298,6 +315,8 @@ export interface EngineParams {
   indicators: { enabled: Set<string>; rsiLow: number; rsiHigh: number; strongPct: number };
   trend: { adxFloor: number; adxSpan: number; diFull: number; mild: number; strong: number; weights: Record<string, number> };
   structure: { swingAtr: number };
+  /** defend-the-level plans (src/lib/ta/defend.ts) */
+  defend: { stallBars: number; freshBars: number; reachAtr: number; minNearAtr: number };
   verdict: { trend: number; momentum: number; position: number; timing: number; threshold: number; stopQuantile: number; familyVotes: boolean };
   horizon: Record<Timeframe, number>;
   stats: { minSamples: number; costPct: number; alpha: number };
@@ -339,6 +358,7 @@ export function engineParams(values: ParamValues = DEFAULT_PARAMS): EngineParams
       weights: Object.fromEntries(TREND_VOTERS.map((id) => [id, num(p, `trend.w.${id}`)])),
     },
     structure: { swingAtr: num(p, "structure.swingAtr") },
+    defend: { stallBars: num(p, "defend.stallBars"), freshBars: num(p, "defend.freshBars"), reachAtr: num(p, "defend.reachAtr"), minNearAtr: num(p, "defend.minNearAtr") },
     verdict: { trend: w.trend / sum, momentum: w.momentum / sum, position: w.position / sum, timing: w.timing / sum, threshold: num(p, "verdict.threshold"), stopQuantile: num(p, "verdict.stopQuantile"), familyVotes: p["verdict.familyVotes"] === true },
     horizon: Object.fromEntries(TFS.map((tf) => [tf, num(p, `stats.h.${tf}`)])) as Record<Timeframe, number>,
     stats: { minSamples: num(p, "stats.minSamples"), costPct: num(p, "stats.costPct"), alpha: num(p, "stats.alpha") },

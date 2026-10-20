@@ -50,6 +50,8 @@ export interface ResearchReport {
   rows: ResearchRow[];
   notes: string[];
   durationMs: number;
+  /** the rule settings the report measured, when the page depends on them (defend: EngineParams.defend) */
+  rules?: Record<string, number>;
 }
 
 /** bars before a signal may be counted: indicators need a warm-up, as on the live page */

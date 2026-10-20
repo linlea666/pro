@@ -9,6 +9,7 @@ process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "sl-archive-"));
 process.env.LOG_LEVEL = "error";
 const { getDb } = await import("../src/lib/server/db.ts");
 const { hourlyOpenInterest, syncOpenInterestArchive, unzipSingle } = await import("../src/lib/data/archive.ts");
+const { openInterestSeries } = await import("../src/lib/data/perp.ts");
 
 /** A one-file zip as the archive serves it: local header, deflated data, central directory. */
 function zip(name: string, text: string, descriptor = false): Uint8Array {
@@ -83,4 +84,10 @@ test("archive: walks back to the first day, skips days already stored, then only
   const again = await syncOpenInterestArchive({ coins: ["BTC"], pauseMs: 0, nowSec: NOW + DAY });
   assert.equal(again.complete, true);
   assert.deepEqual(requested.map((u) => u.slice(-14, -4)), ["2026-10-19"], "only the new day");
+
+  // read back for the plans: oldest first, within the range asked for
+  const s = openInterestSeries("BTC", ten + 5 * 3600, ten - 2 * 3600)!;
+  assert.deepEqual(s.t, Array.from({ length: 8 }, (_, k) => ten + (k - 2) * 3600));
+  assert.equal(s.oi[2], 1, "the live row");
+  assert.equal(openInterestSeries("ETH", NOW), null);
 });
