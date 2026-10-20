@@ -256,7 +256,8 @@ async function analyzeLogged(coin: string, tf: Timeframe, ep: EngineParams): Pro
     const a = await analyzeInner(coin, tf, ep);
     const ms = Date.now() - t0;
     // right after a start every cache is cold and the background jobs run at once: slowness then is expected
-    const slow = ms > 3000 && process.uptime() > 180 && !(globalThis as { __slJobBusy?: boolean }).__slJobBusy;
+    // at the top of each hour most caches expire together; on a 2-core server that alone takes ~3 s
+    const slow = ms > 6000 && process.uptime() > 180 && !(globalThis as { __slJobBusy?: boolean }).__slJobBusy;
     logger[slow ? "warn" : "debug"]("engine", `分析完成 ${coin} ${tf}${slow ? "（偏慢）" : ""}`, { durationMs: ms, bars: a.candles.length });
     return a;
   } catch (e) {

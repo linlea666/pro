@@ -52,6 +52,10 @@ service_restart
 
 if wait_healthy "$NEW_VER" 90; then
   prune_releases
+  # keep the newest 5 pre-update / pre-rollback database copies (daily automatic backups are pruned by the app)
+  for kind in pre-update pre-rollback; do
+    ls -1t "$SL_DATA"/backups/$kind-*.db 2>/dev/null | tail -n +6 | xargs -r rm -f
+  done
   info "${c_bold}更新成功${c_off}：$PREV_VER → $NEW_VER"
   exit 0
 fi

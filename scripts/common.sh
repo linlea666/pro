@@ -101,7 +101,11 @@ build_release() { # build_release <branch or tag>
   local mem_mb
   mem_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
   local heap=$((mem_mb > 4096 ? 3072 : mem_mb * 2 / 3))
-  if ! as_user bash -c "cd '$rel' && NEXT_TELEMETRY_DISABLED=1 NODE_OPTIONS=--max-old-space-size=$heap npm run build --silent" >&2; then
+  # the old version keeps serving during the build: on small servers build with one worker at low priority
+  local cpus=$(( $(nproc) <= 2 || mem_mb < 3000 ? 1 : $(nproc) - 1 ))
+  local low="nice -n 15"
+  command -v ionice >/dev/null && low="ionice -c3 $low"
+  if ! as_user bash -c "cd '$rel' && NEXT_TELEMETRY_DISABLED=1 SL_BUILD_CPUS=$cpus NODE_OPTIONS=--max-old-space-size=$heap $low npm run build --silent" >&2; then
     rm -rf "$rel"; die "构建失败，正在运行的版本不受影响"
   fi
   chmod +x "$rel/scripts/"*.sh

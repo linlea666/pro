@@ -43,6 +43,8 @@ echo "出口公网 IP：$(curl -fs --max-time 5 https://api.ipify.org 2>/dev/nul
 sec "2. 开机 / 关机记录"
 last -x 2>/dev/null | grep -E "reboot|shutdown|crash" | head -10
 journalctl --list-boots --no-pager 2>/dev/null | tail -5
+echo "--- 是什么触发了上一次关机（电源键 = 控制台停止/重启；用户命令 = 有人在服务器上执行了关机）"
+journalctl -b -1 --no-pager 2>/dev/null | grep -iE "logind|power key|powering off|system is (powering|rebooting)|shutdown scheduled|reboot|poweroff|sudo.*(shutdown|reboot|poweroff|halt)" | head -15 | mask_ip | cut -c1-220
 echo "--- 上一次开机期间的最后 40 行系统日志（看关机前发生了什么）"
 journalctl -b -1 -n 40 --no-pager 2>/dev/null | mask_ip | cut -c1-220
 echo "--- 近 7 天关机、断电、内存不足相关事件"
@@ -61,7 +63,7 @@ ls -lt "$SL_HOME/releases" 2>/dev/null | head -6
 echo "--- 配置（密钥已隐藏）"
 sed -E 's/^(MASTER_KEY|.*SECRET.*|.*PASS.*|.*TOKEN.*)=.*/\1=（已隐藏）/' "$SL_ENV" 2>/dev/null | grep -v '^#' | grep -v '^$'
 echo "--- 监听端口"
-ss -ltnp 2>/dev/null | awk 'NR==1 || /:(22|80|443|'"$PORT"')\b/' | sed -E 's/users:.*//'
+ss -ltnH 2>/dev/null | awk '{print $4}' | grep -E ":(22|80|443|$PORT)$" | sort -u
 echo "--- 防火墙"
 ufw status 2>/dev/null | head -12 || echo "未安装 ufw"
 
@@ -138,6 +140,7 @@ echo "SSH 配置：$(sshd -T 2>/dev/null | grep -E '^(port|permitrootlogin|passw
 AUTH=/var/log/auth.log
 if [ -f "$AUTH" ]; then
   echo "auth.log 里失败的 SSH 密码登录：$(grep -c 'Failed password' $AUTH) 次；尝试过的不同 IP：$(grep 'Failed password' $AUTH | grep -oE 'from [0-9.]+' | sort -u | wc -l) 个"
+  echo "用密码成功登录的次数：$(grep -c 'Accepted password' $AUTH)（其中 root：$(grep 'Accepted password for root' $AUTH | wc -l)）"
   echo "--- 成功的 SSH 登录（最近 10 次，IP 已打码）"
   grep -E 'Accepted (password|publickey)' $AUTH | tail -10 | mask_ip | cut -c1-200
 fi
