@@ -15,10 +15,10 @@ import { bhAdjust, cells, controlTrades, judge, makeSplit, trades, type Cells, t
  * traffic light itself, from the scorecard's replayed points.
  */
 
-export type ReportKind = "signals" | "light" | "levels";
+export type ReportKind = "signals" | "light" | "levels" | "plans";
 
 export interface ResearchRow {
-  family: "signal" | "indicator" | "light" | "level";
+  family: "signal" | "indicator" | "light" | "level" | "anchor" | "exit" | "entry" | "stop" | "behavior";
   key: string;
   name: string;
   side: "bull" | "bear";
@@ -31,6 +31,8 @@ export interface ResearchRow {
   verdict: Verdict;
   /** kind-specific numbers (levels: piercedPct, brokenPct) */
   extra?: Record<string, number | null>;
+  /** what this row is compared with, when it is not a random control */
+  control?: string;
 }
 
 export interface ResearchReport {

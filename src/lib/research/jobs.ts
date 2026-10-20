@@ -1,5 +1,6 @@
 import { currentParams } from "../server/params-store.ts";
 import { levelsReport } from "./levels.ts";
+import { plansReport } from "./plans.ts";
 import { lightReport, pruneReports, saveReport, signalsReport } from "./run.ts";
 
 /** Weekly: both reports on the current engine parameters, saved for the admin page. */
@@ -9,7 +10,8 @@ export async function runResearch() {
   const signals = await signalsReport(engine, { paramsVersion: version });
   const light = lightReport(engine, { paramsVersion: version });
   const levels = await levelsReport(engine, { paramsVersion: version });
-  const ids = [saveReport(signals), saveReport(light), saveReport(levels)];
+  const plans = await plansReport(engine, { paramsVersion: version });
+  const ids = [saveReport(signals), saveReport(light), saveReport(levels), saveReport(plans)];
   pruneReports();
   const count = (rows: { verdict: string }[], v: string) => rows.filter((r) => r.verdict === v).length;
   return {
@@ -17,6 +19,7 @@ export async function runResearch() {
     signals: { rows: signals.rows.length, better: count(signals.rows, "有优势"), worse: count(signals.rows, "比随机差") },
     light: { rows: light.rows.length, better: count(light.rows, "有优势"), worse: count(light.rows, "比随机差") },
     levels: { rows: levels.rows.length, better: count(levels.rows, "有优势"), worse: count(levels.rows, "比随机差") },
+    plans: { rows: plans.rows.length, better: count(plans.rows, "有优势"), worse: count(plans.rows, "比随机差") },
     durationMs: Date.now() - t0,
   };
 }

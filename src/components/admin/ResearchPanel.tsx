@@ -6,9 +6,13 @@ import type { ResearchReport, ResearchRow } from "@/lib/research/run";
 import { TF_LABEL } from "@/lib/types";
 import { btnCls, fmtTime } from "./ui";
 
-type Kind = "signals" | "light" | "levels";
+type Kind = "signals" | "light" | "levels" | "plans";
 type ListItem = { id: number; createdAt: number; kind: Kind; paramsVersion: number };
-const KIND_LABEL: Record<Kind, string> = { light: "信号灯", signals: "信号与指标", levels: "关键位" };
+const KIND_LABEL: Record<Kind, string> = { light: "信号灯", signals: "信号与指标", levels: "关键位", plans: "交易计划依据" };
+const PLAN_FAMILY: Record<string, string> = { anchor: "E10 价格锚定", exit: "E11 离场方式", entry: "E12 入场类型", stop: "E13 认错位", behavior: "E14 新手习惯" };
+/** a row compared with something other than chance gets plainer words */
+const verdictText = (v: string, control?: string) =>
+  !control || control.includes("随机") ? v : v === "有优势" ? "明显更好" : v === "比随机差" ? "明显更差" : v === "无可证明的优势" ? "差别不能确定" : v;
 
 const VERDICT_COLOR: Record<string, string> = {
   有优势: "var(--up)",
@@ -64,7 +68,12 @@ export function ResearchPanel() {
 
   const rows = useMemo(() => {
     if (!r) return [];
-    return r.rows.filter((x) => (tf === "all" || x.tf === tf) && (r.kind !== "signals" || x.family === family) && (!onlyFindings || x.verdict === "有优势" || x.verdict === "比随机差"));
+    return r.rows.filter(
+      (x) =>
+        (tf === "all" || x.tf === tf) &&
+        (r.kind === "signals" ? x.family === family : r.kind === "plans" ? !(family in PLAN_FAMILY) || x.family === family : true) &&
+        (!onlyFindings || x.verdict === "有优势" || x.verdict === "比随机差"),
+    );
   }, [r, tf, family, onlyFindings]);
 
   return (
@@ -81,13 +90,14 @@ export function ResearchPanel() {
       {msg && <p className={`rounded-lg px-3 py-2 text-[13px] ${msg.ok ? "bg-up-soft text-up" : "bg-down-soft text-down"}`}>{msg.text}</p>}
 
       <div className="flex flex-wrap gap-2 text-sm">
-        {(["light", "signals", "levels"] as const).map((k) => (
+        {(["light", "plans", "signals", "levels"] as const).map((k) => (
           <button
             key={k}
             className={`rounded-lg px-3 py-1.5 ${kind === k ? "bg-ink text-bg" : "border border-line text-ink-2"}`}
             onClick={() => {
               setKind(k);
               setId(null);
+              setFamily(k === "signals" ? "signal" : "all");
             }}
           >
             {KIND_LABEL[k]}
@@ -147,6 +157,14 @@ export function ResearchPanel() {
                 <option key={c.tf} value={c.tf}>{TF_LABEL[c.tf]}</option>
               ))}
             </select>
+            {r.kind === "plans" && (
+              <select className="rounded-lg border border-line bg-panel-2 px-2 py-1.5" value={family in PLAN_FAMILY ? family : "all"} onChange={(e) => setFamily(e.target.value)}>
+                <option value="all">全部问题</option>
+                {Object.entries(PLAN_FAMILY).map(([k, v]) => (
+                  <option key={k} value={k}>{v}</option>
+                ))}
+              </select>
+            )}
             {r.kind === "signals" && (
               <select className="rounded-lg border border-line bg-panel-2 px-2 py-1.5" value={family} onChange={(e) => setFamily(e.target.value)}>
                 <option value="signal">页面上的信号</option>
@@ -165,7 +183,7 @@ export function ResearchPanel() {
                   <th className="py-1.5 pr-3 font-normal">信号</th>
                   <th className="py-1.5 pr-3 font-normal">周期</th>
                   <th className="py-1.5 pr-3 font-normal">样本内笔数</th>
-                  <th className="py-1.5 pr-3 font-normal">命中 vs 随机</th>
+                  <th className="py-1.5 pr-3 font-normal">{r.kind === "plans" ? "命中 vs 对照" : "命中 vs 随机"}</th>
                   <th className="py-1.5 pr-3 font-normal">优势（样本内）</th>
                   <th className="py-1.5 pr-3 font-normal">样本外</th>
                   <th className="py-1.5 pr-3 font-normal">BTC</th>
@@ -175,14 +193,15 @@ export function ResearchPanel() {
                   {r.kind === "levels" && <th className="py-1.5 pr-3 font-normal">平均 R</th>}
                   {r.kind === "levels" && <th className="py-1.5 pr-3 font-normal">刺穿 / 失效</th>}
                   <th className="py-1.5 pr-3 font-normal">q 值</th>
-                  <th className="py-1.5 font-normal">结论</th>
+                  <th className="py-1.5 pr-3 font-normal">结论</th>
+                  {r.kind === "plans" && <th className="py-1.5 font-normal">对照</th>}
                 </tr>
               </thead>
               <tbody className="num">
                 {rows.map((x: ResearchRow) => (
                   <tr key={`${x.tf}:${x.key}`} className="border-t border-line">
                     <td className="py-1.5 pr-3">
-                      {x.family !== "level" && <span style={{ color: x.side === "bull" ? "var(--up)" : "var(--down)" }}>{x.side === "bull" ? "↑" : "↓"} </span>}
+                      {(x.family === "signal" || x.family === "indicator" || x.family === "light") && <span style={{ color: x.side === "bull" ? "var(--up)" : "var(--down)" }}>{x.side === "bull" ? "↑" : "↓"} </span>}
                       {x.name}
                     </td>
                     <td className="py-1.5 pr-3">{TF_LABEL[x.tf]}</td>
@@ -203,7 +222,8 @@ export function ResearchPanel() {
                       </td>
                     )}
                     <td className="py-1.5 pr-3">{x.q ?? "—"}</td>
-                    <td className="py-1.5" style={{ color: VERDICT_COLOR[x.verdict] }}>{x.verdict}</td>
+                    <td className="py-1.5 pr-3" style={{ color: VERDICT_COLOR[x.verdict] }}>{verdictText(x.verdict, x.control)}</td>
+                    {r.kind === "plans" && <td className="py-1.5 text-xs text-ink-3">{x.control}</td>}
                   </tr>
                 ))}
               </tbody>

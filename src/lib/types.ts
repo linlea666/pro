@@ -31,6 +31,9 @@ export const TF_LABEL: Record<Timeframe, string> = {
   "1w": "周线",
 };
 
+/** The next timeframe up: the direction filter for the one being traded or viewed. */
+export const HIGHER_TF: Partial<Record<Timeframe, Timeframe>> = { "5m": "15m", "15m": "1h", "1h": "4h", "4h": "1d", "1d": "1w" };
+
 /** How beginners should think about each timeframe. */
 export const TF_HORIZON: Record<Timeframe, string> = {
   "5m": "日内（几十分钟）",

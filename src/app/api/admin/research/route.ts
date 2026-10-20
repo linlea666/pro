@@ -13,7 +13,7 @@ export const GET = withRoute("admin.research.get", async (req: NextRequest) => {
   if (admin instanceof Response) return admin;
   const id = Number(req.nextUrl.searchParams.get("id")) || undefined;
   const k = req.nextUrl.searchParams.get("kind");
-  const kind: ReportKind = k === "light" || k === "levels" ? k : "signals";
+  const kind: ReportKind = k === "light" || k === "levels" || k === "plans" ? k : "signals";
   return NextResponse.json({ list: listReports(), report: getReport(id, kind) });
 });
 

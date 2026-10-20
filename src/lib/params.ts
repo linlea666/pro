@@ -165,6 +165,21 @@ export const PARAM_MODULES: ParamModule[] = [
         title: "投票权重",
         params: TREND_VOTERS.map((id) => n(`trend.w.${id}`, INDICATOR_LABEL[id], TREND_DEFAULT[id], 0, 3, 0.05, `${INDICATOR_LABEL[id]}在趋势投票中的权重`)),
       },
+      {
+        title: "市场结构",
+        params: [
+          n(
+            "structure.swingAtr",
+            "摆动点确认幅度",
+            2,
+            1,
+            4,
+            0.5,
+            "价格从高点回落（或从低点反弹）超过这么多倍 ATR，才确认一个摆动高点 / 低点。越大，结构越粗、变化越慢。",
+            "ATR",
+          ),
+        ],
+      },
     ],
   },
   {
@@ -282,6 +297,7 @@ export interface EngineParams {
   td: { setupLength: number; setupLookback: number; countdownLength: number; countdownLookback: number };
   indicators: { enabled: Set<string>; rsiLow: number; rsiHigh: number; strongPct: number };
   trend: { adxFloor: number; adxSpan: number; diFull: number; mild: number; strong: number; weights: Record<string, number> };
+  structure: { swingAtr: number };
   verdict: { trend: number; momentum: number; position: number; timing: number; threshold: number; stopQuantile: number; familyVotes: boolean };
   horizon: Record<Timeframe, number>;
   stats: { minSamples: number; costPct: number; alpha: number };
@@ -322,6 +338,7 @@ export function engineParams(values: ParamValues = DEFAULT_PARAMS): EngineParams
       strong: num(p, "trend.strong"),
       weights: Object.fromEntries(TREND_VOTERS.map((id) => [id, num(p, `trend.w.${id}`)])),
     },
+    structure: { swingAtr: num(p, "structure.swingAtr") },
     verdict: { trend: w.trend / sum, momentum: w.momentum / sum, position: w.position / sum, timing: w.timing / sum, threshold: num(p, "verdict.threshold"), stopQuantile: num(p, "verdict.stopQuantile"), familyVotes: p["verdict.familyVotes"] === true },
     horizon: Object.fromEntries(TFS.map((tf) => [tf, num(p, `stats.h.${tf}`)])) as Record<Timeframe, number>,
     stats: { minSamples: num(p, "stats.minSamples"), costPct: num(p, "stats.costPct"), alpha: num(p, "stats.alpha") },

@@ -1,7 +1,7 @@
 "use client";
 
 import type { LightSummary } from "@/lib/analysis";
-import { TF_HORIZON, TF_LABEL, type Timeframe } from "@/lib/types";
+import { HIGHER_TF, TF_HORIZON, TF_LABEL, type Timeframe } from "@/lib/types";
 import { fmtPct } from "./format";
 import { useReplay } from "./replay";
 
@@ -97,7 +97,7 @@ function summarize(kind: MtfKind, mtf: LightSummary[], current: Timeframe): stri
   }
   // the timeframe being viewed is the one that matches the holding time; the next one up only filters the direction
   const main = mtf.find((m) => m.tf === current);
-  const filter = mtf.find((m) => m.tf === HIGHER[current]);
+  const filter = mtf.find((m) => m.tf === HIGHER_TF[current]);
   const s = SUBJECT[kind];
   if (!main) return "";
   const word = (t: string) => (t === "up" ? "偏多" : t === "down" ? "偏空" : "方向不明");
@@ -114,9 +114,6 @@ function summarize(kind: MtfKind, mtf: LightSummary[], current: Timeframe): stri
     ? `${s}在${M}上偏多，但上一级${F}偏空：这是逆着大方向的反弹，只适合短线、仓位要小，等${F}转强更稳。${why}`
     : `${s}在${M}上偏空，但上一级${F}偏多：这更可能只是大方向里的回调，不宜追空，等${F}也转弱再说。${why}`;
 }
-
-/** The next timeframe up, used as the direction filter for the one being viewed. */
-const HIGHER: Partial<Record<Timeframe, Timeframe>> = { "5m": "15m", "15m": "1h", "1h": "4h", "4h": "1d", "1d": "1w" };
 
 export function MtfStrip({ kind, mtf, current, onTf, title = "多周期一览" }: { kind: MtfKind; mtf: LightSummary[] | null; current: Timeframe; onTf?: (t: Timeframe) => void; title?: string }) {
   const replay = useReplay();

@@ -22,6 +22,11 @@ export const NOISE_KS = [0.5, 1, 1.5, 2, 3, 4, 6];
 export const PROBE_QS = [50, 55, 60, 65, 70, 75, 80, 85, 90, 95];
 /** Used until a coin/timeframe has been calibrated: roughly the measured p80 on BTC/ETH. */
 export const DEFAULT_BUFFER_ATR = 0.8;
+/**
+ * The whole sweep-depth curve used until then: p50 and p80 as measured on BTC/ETH
+ * (E4: 0.35–0.48 and 0.67–0.84 ATR), the tail above p80 extended conservatively.
+ */
+const DEFAULT_PROBE: Record<string, number> = { "50": 0.42, "55": 0.47, "60": 0.53, "65": 0.6, "70": 0.67, "75": 0.73, "80": 0.8, "85": 0.9, "90": 1.0, "95": 1.2 };
 
 export interface Calibration {
   /** sweep depth (ATR) by quantile, keys "50" … "95" */
@@ -159,9 +164,9 @@ export function calibrate(c: Candle[], tf: Timeframe, horizon: number, step = 3)
 
 /** Sweep buffer (ATR) at a quantile between 50 and 95, interpolating the stored steps. */
 export function bufferAtr(cal: Calibration | null, q: number): number {
-  if (!cal) return DEFAULT_BUFFER_ATR;
+  const probe = cal?.probe ?? DEFAULT_PROBE;
   const lo = Math.max(50, Math.min(95, Math.floor(q / 5) * 5)), hi = Math.min(95, lo + 5);
-  const a = cal.probe[String(lo)] ?? DEFAULT_BUFFER_ATR, b = cal.probe[String(hi)] ?? a;
+  const a = probe[String(lo)] ?? DEFAULT_BUFFER_ATR, b = probe[String(hi)] ?? a;
   return lo === hi ? a : a + ((b - a) * (q - lo)) / 5;
 }
 
