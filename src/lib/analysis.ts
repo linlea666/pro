@@ -55,6 +55,18 @@ async function keyLevels(coin: string, tf: Timeframe, price: number, atr: number
   return clusterLevels(cands, price, Math.max(atr * lp.bandAtr, (price * lp.bandMinPct) / 100), 5, lp);
 }
 
+/**
+ * Levels are found on completed bars, but the list is read against the live price:
+ * a support broken inside the forming bar is shown as resistance above it, with its live distance.
+ */
+function relevel(all: Level[], live: number): { supports: Level[]; resistances: Level[] } {
+  const at = (l: Level, side: Level["side"]): Level => ({ ...l, side, distancePct: ((l.price - live) / live) * 100 });
+  return {
+    supports: all.filter((l) => l.price <= live).map((l) => at(l, "support")).sort((x, y) => y.price - x.price),
+    resistances: all.filter((l) => l.price > live).map((l) => at(l, "resistance")).sort((x, y) => x.price - y.price),
+  };
+}
+
 /** Human description of "N bars later" on a timeframe, e.g. 18 × 4h → "3 天". */
 export function horizonText(tf: Timeframe, bars: number): string {
   const sec = bars * TF_SECONDS[tf];
@@ -243,7 +255,9 @@ async function analyzeLogged(coin: string, tf: Timeframe, ep: EngineParams): Pro
   try {
     const a = await analyzeInner(coin, tf, ep);
     const ms = Date.now() - t0;
-    logger[ms > 3000 ? "warn" : "debug"]("engine", `分析完成 ${coin} ${tf}${ms > 3000 ? "（偏慢）" : ""}`, { durationMs: ms, bars: a.candles.length });
+    // right after a start every cache is cold and the background jobs run at once: slowness then is expected
+    const slow = ms > 3000 && process.uptime() > 180;
+    logger[slow ? "warn" : "debug"]("engine", `分析完成 ${coin} ${tf}${slow ? "（偏慢）" : ""}`, { durationMs: ms, bars: a.candles.length });
     return a;
   } catch (e) {
     logger.error("engine", `分析失败 ${coin} ${tf}`, { error: e, durationMs: Date.now() - t0 });
@@ -390,7 +404,7 @@ async function analyzeInner(coin: string, tf: Timeframe, ep: EngineParams = DEFA
     },
     td: { markers: tdMarkers(td, c, from), events: td.events.filter((e) => e.i >= from), current: td.current },
     trend: { series: clean(slice(trend.score)), current: trend.current, label: trend.label, adx: Math.round(trend.adx), explain: trend.explain, barsInState: trend.barsInState },
-    levels: { supports, resistances },
+    levels: formingBar ? relevel([...supports, ...resistances], formingBar.c) : { supports, resistances },
     fib,
     chan,
     stats,
