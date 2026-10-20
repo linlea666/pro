@@ -50,6 +50,7 @@ info "切换到新版本并重启"
 switch_to "$REL"
 service_restart
 
+info "等待新版本启动并通过健康检查（最多 90 秒，期间没有输出是正常的，请不要中断）…"
 if wait_healthy "$NEW_VER" 90; then
   prune_releases
   # keep the newest 5 pre-update / pre-rollback database copies (daily automatic backups are pruned by the app)
