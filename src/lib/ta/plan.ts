@@ -246,6 +246,8 @@ export interface PlanInput {
   levels: Level[];
   /** latest traded price (the bar still forming) */
   livePrice: number;
+  /** the bar still forming, when there is one: its wicks count when checking a triggered plan's stop */
+  forming?: Candle | null;
   costPct: number;
   funding: { rate: number; intervalH: number } | null;
 }
@@ -301,8 +303,11 @@ export function buildPlans(inp: PlanInput): { long: SidePlan; short: SidePlan; b
     const ev = recent.filter((e) => e.dir === dir && e.kind !== "pullback").pop();
     if (ev) {
       const risk = (c[ev.i].c - ev.stop) * dir;
-      // still valid: not stopped and not already run more than half the risk
-      if ((live - ev.stop) * dir > 0 && (live - c[ev.i].c) * dir < 0.5 * risk) {
+      // still valid: no bar since the entry reached the stop (wicks included, as the research counts them),
+      // and not already run more than half the risk
+      const bars = inp.forming ? [...c.slice(ev.i + 1), inp.forming] : c.slice(ev.i + 1);
+      const stopped = bars.some((x) => (dir > 0 ? x.l <= ev.stop : x.h >= ev.stop));
+      if (!stopped && (live - ev.stop) * dir > 0 && (live - c[ev.i].c) * dir < 0.5 * risk) {
         cands.push({
           kind: ev.kind,
           status: "active",

@@ -258,6 +258,7 @@ export async function computeTrendPlan(coin: string, fw: Framework, ep: EnginePa
     cal,
     levels: [...supports, ...resistances],
     livePrice: live,
+    forming: formingBar,
     costPct: ep.stats.costPct,
     funding,
   });

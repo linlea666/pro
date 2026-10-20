@@ -14,7 +14,8 @@ const { DEFAULT_ENGINE_PARAMS } = await import("../src/lib/params.ts");
 const { TF_SECONDS } = await import("../src/lib/types.ts");
 const { atrSeries } = await import("../src/lib/ta/risk.ts");
 const { structureSeries, swings } = await import("../src/lib/ta/structure.ts");
-const { buildPlans } = await import("../src/lib/ta/plan.ts");
+const { buildPlans, findEntries } = await import("../src/lib/ta/plan.ts");
+const { bufferAtr } = await import("../src/lib/ta/risk.ts");
 const { simulate } = await import("../src/lib/research/sim.ts");
 const { sequential } = await import("../src/lib/research/plans.ts");
 
@@ -105,6 +106,25 @@ test("plans: a waiting plan hangs its stop below a new low that is not a confirm
   assert.equal(plans.long.kind, "breakout");
   assert.equal(plans.long.invalidation?.anchor, lowest, "anchored on the newest low, not the older swing");
   assert.ok(plans.long.invalidation!.stop < lowest);
+});
+
+test("plans: a triggered plan whose stop a later wick reached is no longer shown as triggered", () => {
+  const base = path_([100, 110, 104, 114]);
+  const atr0 = atrSeries(base);
+  const ev = findEntries({ tf: "4h", c: base, atr: atr0, ss: structureSeries(base, atr0), filterAt: () => 0, buf: bufferAtr(null, 80), from: 20 }).find((e) => e.kind === "breakout" && e.dir === 1)!;
+  assert.ok(ev, "a breakout above 110");
+  const entry = base[ev.i].c;
+  const plansWith = (next: Candle, forming: Candle | null = null) => {
+    const c = [...base.slice(0, ev.i + 1), next];
+    const atr = atrSeries(c);
+    return buildPlans({ tf: "4h", filterTf: "1d", c, atr, ss: structureSeries(c, atr), sw: swings(c, atr), filterAt: () => 0, cal: null, levels: [], livePrice: (forming ?? next).c, forming, costPct: 0.15, funding: null }).long;
+  };
+  const quiet = bar(ev.i + 1, entry, entry + 0.2, entry - 0.3, entry - 0.1);
+  assert.equal(plansWith(quiet).status, "active", "nothing reached the stop");
+  assert.equal(plansWith(quiet).entryT, base[ev.i].t);
+  const swept = { ...quiet, l: ev.stop - 0.2 };
+  assert.notEqual(plansWith(swept).entryT, base[ev.i].t, "a closed bar wicked through the stop");
+  assert.notEqual(plansWith(quiet, { ...quiet, t: quiet.t + 3600, l: ev.stop - 0.1 }).entryT, base[ev.i].t, "the forming bar did");
 });
 
 test("research: one position at a time, so the trades of a rule never overlap", () => {
