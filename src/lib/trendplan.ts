@@ -112,6 +112,8 @@ export interface TrendPlan {
   forming: boolean;
   /** last 91 daily closes, for the correlation between held coins */
   daily: number[];
+  /** round-trip cost every result here has paid, % */
+  costPct: number;
   scorecard: PlanScorecard | null;
   /** research rows the lessons quote: anchoring, exits, beginner habits, stops */
   lessons: ScoreRow[];
@@ -208,8 +210,10 @@ const NO_VIEW: StructureView = { state: "range", breach: "none", label: "数据�
 
 function biasText(filterTf: Timeframe, dir: 1 | -1 | 0, view: StructureView): string {
   const F = TF_LABEL[filterTf];
-  if (dir > 0) return `${F}结构向上：做多是顺势，做空是逆势（逆势只给半仓）。价格“已经涨了很多”不是做空的理由。`;
-  if (dir < 0) return `${F}结构向下：做空是顺势，做多是逆势（逆势只给半仓）。价格“已经跌了很多”不是做多的理由。`;
+  // a range being left on a close counts as a direction too: say which
+  const how = view.state === "range" ? `在向${dir > 0 ? "上" : "下"}脱离区间` : `结构向${dir > 0 ? "上" : "下"}`;
+  if (dir > 0) return `${F}${how}：做多是顺势，做空是逆势（逆势只给半仓）。价格“已经涨了很多”不是做空的理由。`;
+  if (dir < 0) return `${F}${how}：做空是顺势，做多是逆势（逆势只给半仓）。价格“已经跌了很多”不是做多的理由。`;
   return `${F}没有明确方向（${view.label}）：多空都不算顺势，等${F}走出更高或更低的高低点再加大仓位。`;
 }
 
@@ -300,6 +304,7 @@ export async function computeTrendPlan(coin: string, fw: Framework, ep: EnginePa
     candles: formingBar ? [...E.c.slice(-CHART_BARS), formingBar] : E.c.slice(-CHART_BARS),
     forming: !!formingBar,
     daily: daily.slice(-91).map((x) => x.c),
+    costPct: ep.stats.costPct,
     scorecard: report ? scorecardOf(report, rows, F.tf) : null,
     lessons: LESSON_KEYS.map((k) => rows.get(k)).filter((x): x is ResearchRow => !!x).map(scoreRow),
   };

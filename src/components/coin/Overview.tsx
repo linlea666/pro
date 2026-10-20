@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { Analysis, LightSummary } from "@/lib/analysis";
+import type { TrendPlan } from "@/lib/trendplan";
 import { TF_HORIZON, TF_LABEL, type Timeframe } from "@/lib/types";
 import { PriceChart, type OverlayLine, type PriceLineSpec } from "../PriceChart";
 import { TrafficLight, lightMeta } from "../Light";
@@ -10,16 +11,19 @@ import { fmtPrice } from "./format";
 import { LevelsList, ReliabilityBadge, Section } from "./shared";
 import { MtfStrip } from "./MtfStrip";
 import { Explain } from "../Explain";
-import { PositionCalc } from "./PositionCalc";
 import { AiCard } from "./AiCard";
 import { ScorecardCard } from "./ScorecardCard";
 import { PerpCard } from "./PerpCard";
+import { TrendMap } from "./TrendMap";
+import { PlanScorecardCard } from "./TrendPlanTab";
 import type { Mode } from "./CoinView";
 
-export function Overview({ a, mtf, mode, onTf, onTab }: { a: Analysis; mtf: LightSummary[] | null; mode: Mode; onTf: (t: Timeframe) => void; onTab: (t: string) => void }) {
+export function Overview({ a, mtf, mode, plan, onTf, onTab }: { a: Analysis; mtf: LightSummary[] | null; mode: Mode; plan: TrendPlan | null; onTf: (t: Timeframe) => void; onTab: (t: string) => void }) {
   const v = a.verdict;
   const meta = lightMeta(v.light);
   const [hoverLevel, setHoverLevel] = useState<number | null>(null);
+  // the traffic light describes the moment; its details are one click away
+  const [details, setDetails] = useState(false);
 
   const lines = useMemo<OverlayLine[]>(
     () => [
@@ -41,23 +45,32 @@ export function Overview({ a, mtf, mode, onTf, onTab }: { a: Analysis; mtf: Ligh
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div className="min-w-0 space-y-4">
-        {/* verdict */}
+        {plan && <TrendMap p={plan} mode={mode} compact onOpen={() => onTab("plan")} />}
+
+        {/* the traffic light: a description of the moment, not a forecast */}
         <section className="card overflow-hidden">
-          <div className="flex gap-4 p-5" style={{ background: `linear-gradient(90deg, ${meta.soft}, transparent 70%)` }}>
-            <TrafficLight light={v.light} size={20} />
+          <div className="flex gap-4 p-4" style={{ background: `linear-gradient(90deg, ${meta.soft}, transparent 70%)` }}>
+            <TrafficLight light={v.light} size={plan ? 12 : 20} />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 text-xs text-ink-3">
-                <span>{TF_LABEL[a.tf]}结论 · 适合{TF_HORIZON[a.tf]}</span>
-                {a.forming && <span title="结论只用已收盘的 K 线计算，盘中不会来回跳">本根 K 线尚未收盘，结论基于上一根收盘</span>}
+                <span title="28 个指标投票合成的当前状态。成绩单显示它没有可证明的方向预测力，所以只用来描述现在，不用来预测。">
+                  综合状态 · {TF_LABEL[a.tf]} · 适合{TF_HORIZON[a.tf]}
+                </span>
+                {a.forming && <span title="结论只用已收盘的 K 线计算，盘中不会来回跳">本根 K 线尚未收盘，基于上一根收盘</span>}
                 <span className="rounded-full border border-line px-2 py-0.5" title="四个分项（趋势、动能、TD、位置）里，和结论同方向的有几个。这不是“准确率”。">分项一致度 {v.agreement}/4</span>
                 <span className="num rounded-full border border-line px-2 py-0.5" title="−100 极度偏空 … +100 极度偏多">综合分 {v.score > 0 ? "+" : ""}{v.score}</span>
+                <button className="ml-auto text-accent" onClick={() => setDetails((x) => !x)} aria-expanded={details}>
+                  {details ? "收起分项" : "看分项"}
+                </button>
               </div>
-              <h2 className="mt-1.5 text-xl font-semibold leading-snug" style={{ color: meta.color }}>
+              <h2 className={`mt-1 font-semibold leading-snug ${plan ? "text-base" : "text-xl"}`} style={{ color: meta.color }}>
                 {meta.icon} {v.lightText}
               </h2>
-              <p className="mt-1 text-[15px] leading-relaxed">{v.headline}</p>
+              <p className="mt-0.5 text-[14px] leading-relaxed">{v.headline}</p>
             </div>
           </div>
+          {details && (
+          <>
           <div className="grid gap-px border-t border-line bg-line sm:grid-cols-2">
             {v.components.map((c) => (
               <div key={c.key} className="bg-panel p-4">
@@ -86,6 +99,8 @@ export function Overview({ a, mtf, mode, onTf, onTab }: { a: Analysis; mtf: Ligh
               </p>
             )}
           </div>
+          </>
+          )}
         </section>
 
         {!a.replay && <AiCard coin={a.coin} tf={a.tf} />}
@@ -133,9 +148,9 @@ export function Overview({ a, mtf, mode, onTf, onTab }: { a: Analysis; mtf: Ligh
           <LevelsList supports={a.levels.supports} resistances={a.levels.resistances} price={a.price} mode={mode} onHover={setHoverLevel} />
         </Section>
 
-        <PositionCalc price={a.price} stopRef={v.stopRef} coin={a.coin} light={v.light} />
         {!a.replay && <PerpCard coin={a.coin} beginner={mode === "beginner"} />}
-        {!a.replay && <ScorecardCard coin={a.coin} tf={a.tf} horizonText={a.horizonText} />}
+        {plan && <PlanScorecardCard p={plan} />}
+        {!a.replay && mode === "pro" && <ScorecardCard coin={a.coin} tf={a.tf} horizonText={a.horizonText} />}
       </div>
     </div>
   );

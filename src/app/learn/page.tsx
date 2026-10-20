@@ -2,9 +2,10 @@ import { GLOSSARY, type Term } from "@/lib/glossary";
 
 export const metadata = { title: "新手学堂 — 信号灯" };
 
-const GROUPS: Term["group"][] = ["基础", "风控", "指标", "TD 序列", "缠论"];
+const GROUPS: Term["group"][] = ["基础", "结构与计划", "风控", "指标", "TD 序列", "缠论"];
 const GROUP_INTRO: Record<Term["group"], string> = {
   基础: "看懂 K 线图的最低门槛，先从这里开始。",
+  结构与计划: "现在是什么趋势、在什么位置、在哪里认错、怎么拿住：交易计划页用到的概念。",
   风控: "比找到好买点更重要：活下来，才有机会赚钱。",
   指标: "常见技术指标，知道它们在说什么就够了。",
   "TD 序列": "判断涨跌是否“累了”的计数方法。",

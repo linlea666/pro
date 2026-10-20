@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Analysis, LightSummary } from "@/lib/analysis";
+import type { Framework, TrendPlan } from "@/lib/trendplan";
 import { COINS, getCoin } from "@/lib/symbols";
-import { BEGINNER_TIMEFRAMES, TF_HORIZON, TF_LABEL, TIMEFRAMES, type Timeframe } from "@/lib/types";
+import { BEGINNER_TIMEFRAMES, TF_HORIZON, TF_LABEL, TF_SECONDS, TIMEFRAMES, type Timeframe } from "@/lib/types";
 import { ago, fmtPct, fmtPrice, signColor } from "./format";
 import { Overview } from "./Overview";
 import { TdTab } from "./TdTab";
@@ -13,12 +15,16 @@ import { LevelsTab } from "./LevelsTab";
 import { TrendTab } from "./TrendTab";
 import { FibTab } from "./FibTab";
 import { ChanTab } from "./ChanTab";
+import { TrendPlanTab } from "./TrendPlanTab";
+import { LessonsTab } from "./LessonsTab";
 import { ReplayContext, type ReplayState } from "./replay";
 import { ReplayBar } from "./ReplayBar";
 import { track } from "../track";
 
 const TABS = [
-  { id: "overview", label: "总览", hint: "一句话结论" },
+  { id: "overview", label: "总览", hint: "趋势地图" },
+  { id: "plan", label: "趋势与计划", hint: "在哪认错、怎么拿住" },
+  { id: "learn", label: "新手学堂", hint: "用真实数字讲" },
   { id: "td", label: "TD 序列", hint: "涨跌是否累了" },
   { id: "indicators", label: "指标共振", hint: "多指标投票" },
   { id: "levels", label: "支撑阻力", hint: "关键价位" },
@@ -27,6 +33,8 @@ const TABS = [
   { id: "chan", label: "缠论", hint: "笔与中枢" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
+/** what beginners see; the module tabs live in pro mode */
+const BEGINNER_TABS: TabId[] = ["overview", "plan", "learn"];
 
 const SOURCE_NOTE: Record<string, string> = {
   "binance-futures": "Binance 永续合约（USDT 本位）公开行情",
@@ -58,6 +66,11 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
   const [asOf, setAsOf] = useState<number | null>(initialAsOf);
   const [picking, setPicking] = useState(false);
   const live = useRef<Analysis | null>(null);
+  const router = useRouter();
+  // trend map and trading plans: independent of the chart's timeframe
+  const [fw, setFw] = useState<Framework>("4h");
+  const [plan, setPlan] = useState<TrendPlan | null>(null);
+  const [planError, setPlanError] = useState<string | null>(null);
 
   useEffect(() => {
     try {
@@ -101,6 +114,49 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
   useEffect(() => {
     if (data && !data.replay && tab === "overview") track("view_verdict", `verdict:${data.coin}:${data.tf}`);
   }, [data, tab]);
+
+  // a replay rewinds the plan to the end of the bar picked on whichever chart
+  const planEnd = asOf ? asOf + TF_SECONDS[tf] : null;
+  useEffect(() => {
+    let alive = true;
+    const get = () =>
+      fetch(`/api/plan?coin=${coinId}&fw=${fw}${asOf ? `&asOf=${asOf}&tf=${tf}` : ""}`)
+        .then((r) => r.json())
+        .then((b) => {
+          if (!alive) return;
+          if (b.error) throw new Error(b.error);
+          setPlan(b);
+          setPlanError(null);
+        })
+        .catch((e) => alive && setPlanError((e as Error).message || "加载失败"));
+    get();
+    if (asOf)
+      return () => {
+        alive = false;
+      };
+    const id = setInterval(get, 60_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [coinId, fw, asOf, tf]);
+  const planFresh = plan && plan.coin === coinId && plan.framework === fw && (planEnd ? plan.replay?.end === planEnd : !plan.replay) ? plan : null;
+
+  useEffect(() => {
+    if (planFresh && !planFresh.replay && tab === "plan") track("view_plan", `plan:${planFresh.coin}:${planFresh.framework}`);
+  }, [planFresh, tab]);
+
+  /** Rewind to the close of bar `at` of timeframe `t` and show its plan (on another coin's page if needed). */
+  const replayAt = useCallback(
+    (t: Timeframe, at: number, coin = coinId) => {
+      if (coin !== coinId) return router.push(`/coin/${coin}?tf=${t}&tab=plan&asOf=${at}`);
+      setPicking(false);
+      setTf(t);
+      setAsOf(at);
+      setTab("plan");
+    },
+    [coinId, router],
+  );
 
   // replay points belong to one timeframe's bars
   const changeTf = useCallback((t: Timeframe) => {
@@ -209,7 +265,7 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
       {/* tabs */}
       <div className="-mx-4 overflow-x-auto border-b border-line px-4">
         <div className="flex gap-1">
-          {TABS.map((t) => (
+          {TABS.filter((t) => mode === "pro" || BEGINNER_TABS.includes(t.id) || t.id === tab).map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
@@ -223,17 +279,36 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
         </div>
       </div>
 
-      {error && !fresh && (
+      {(tab === "plan" || tab === "learn") && (
+        <ReplayContext.Provider value={replay}>
+          {tab === "plan" &&
+            (planFresh ? (
+              <TrendPlanTab p={planFresh} mode={mode} fw={fw} onFw={setFw} onPick={replayAt} />
+            ) : planError ? (
+              <div className="card p-6 text-center text-sm text-ink-2">{planError}</div>
+            ) : (
+              <Skeleton />
+            ))}
+          {tab === "learn" && <LessonsTab p={planFresh} coin={coinId} onReplay={replayAt} />}
+          {planFresh && (
+            <p className="mt-4 text-right text-[11px] text-ink-3">
+              数据来源 {SOURCE_NOTE[planFresh.source] ?? SOURCE_NOTE.local} · 更新于 {ago(planFresh.updatedAt)}
+              {!asOf && " · 每分钟自动刷新"}
+            </p>
+          )}
+        </ReplayContext.Provider>
+      )}
+      {tab !== "plan" && tab !== "learn" && error && !fresh && (
         <div className="card p-6 text-center text-sm text-ink-2">
           {error}
           <button onClick={() => load()} className="ml-3 rounded-lg border border-line px-3 py-1 text-ink">重试</button>
         </div>
       )}
-      {!fresh && !error && <Skeleton />}
-      {fresh && (
+      {tab !== "plan" && tab !== "learn" && !fresh && !error && <Skeleton />}
+      {tab !== "plan" && tab !== "learn" && fresh && (
         <ReplayContext.Provider value={replay}>
         <div className={loading ? "opacity-60 transition" : "transition"}>
-          {tab === "overview" && <Overview a={data} mtf={mtf} mode={mode} onTf={changeTf} onTab={(t) => setTab(t as TabId)} />}
+          {tab === "overview" && <Overview a={data} mtf={mtf} mode={mode} plan={planFresh} onTf={changeTf} onTab={(t) => setTab(t as TabId)} />}
           {tab === "td" && <TdTab a={data} mtf={mtf} mode={mode} onTf={changeTf} />}
           {tab === "indicators" && <IndicatorsTab a={data} mtf={mtf} mode={mode} onTf={changeTf} />}
           {tab === "levels" && <LevelsTab a={data} mtf={mtf} mode={mode} onTf={changeTf} />}
