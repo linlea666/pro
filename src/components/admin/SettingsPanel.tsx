@@ -1,9 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { OpinionZonesForm } from "./OpinionZonesForm";
 import { btnCls, btnGhost, inputCls } from "./ui";
 
-type Settings = Record<string, { value: number | boolean; default: number | boolean }>;
+/** number / boolean settings are edited in the form below; string ones (JSON) have their own editors */
+type SettingValue = number | boolean | string;
+type Settings = Record<string, { value: SettingValue; default: SettingValue }>;
+
+/** the number / boolean settings only: the main form never re-posts a JSON setting saved by its own editor */
+const scalars = (b: Settings) => Object.fromEntries(Object.entries(b).filter(([, v]) => typeof v.value !== "string").map(([k, v]) => [k, v.value as number | boolean]));
 
 type Field = { key: string; label: string; hint: string; unit?: string; kind: "number" | "bool" };
 
@@ -30,7 +36,7 @@ export function SettingsPanel() {
       .then((r) => r.json())
       .then((b: Settings) => {
         setS(b);
-        setDraft(Object.fromEntries(Object.entries(b).map(([k, v]) => [k, v.value])));
+        setDraft(scalars(b));
       });
   }, []);
 
@@ -88,6 +94,7 @@ export function SettingsPanel() {
         )}
       </section>
 
+      {s && <OpinionZonesForm value={String(s["spot.opinionZones"]?.value ?? "")} fallback={String(s["spot.opinionZones"]?.default ?? "")} onSaved={(b) => setS(b as Settings)} />}
       <MailForm />
       <PasswordForm />
     </div>
@@ -212,7 +219,7 @@ function FieldRow({ f, s, draft, setDraft }: { f: Field; s: Settings; draft: Rec
       <div className="text-xs text-ink-3">
         {f.hint} · 默认 {String(s[f.key].default)}
         {draft[f.key] !== s[f.key].default && (
-          <button className="ml-2 text-accent" onClick={() => setDraft({ ...draft, [f.key]: s[f.key].default })}>
+          <button className="ml-2 text-accent" onClick={() => setDraft({ ...draft, [f.key]: s[f.key].default as number })}>
             恢复默认
           </button>
         )}
