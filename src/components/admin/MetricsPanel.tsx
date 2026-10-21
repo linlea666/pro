@@ -7,7 +7,7 @@ import { Tile } from "./ui";
 
 type Metrics = { events: number; since: number | null; dau: number; wau: number; mau: number; weeks: WeekRow[]; retention: RetentionRow[] };
 
-const FEATURES: EventName[] = ["view_verdict", "view_plan", "view_watch", "defense_done", "open_explain", "click_ai", "use_calc", "check_position", "use_replay"];
+const FEATURES: EventName[] = ["view_verdict", "view_plan", "view_watch", "view_pa", "defense_done", "open_explain", "click_ai", "use_calc", "check_position", "use_replay"];
 const share = (n: number | undefined, of: number) => (of ? `${Math.round(((n ?? 0) / of) * 100)}%` : "—");
 const day = (ms: number) => new Date(ms).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
 

@@ -9,6 +9,7 @@ export const EVENT_NAMES = {
   use_replay: "使用时光机",
   view_plan: "查看交易计划",
   view_watch: "看实时盯盘",
+  view_pa: "看裸 K",
   check_position: "使用持仓体检",
   defense_done: "完成防守位任务",
   practice_done: "完成练习",

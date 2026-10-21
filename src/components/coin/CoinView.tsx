@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Analysis, LightSummary } from "@/lib/analysis";
 import type { Framework, TrendPlan } from "@/lib/trendplan";
 import type { WatchView } from "@/lib/watch";
+import type { PaTf, PaView } from "@/lib/pa";
 import { COINS, getCoin } from "@/lib/symbols";
 import { BEGINNER_TIMEFRAMES, TF_HORIZON, TF_LABEL, TF_SECONDS, TIMEFRAMES, type Timeframe } from "@/lib/types";
 import { ago, fmtPct, fmtPrice, signColor } from "./format";
@@ -19,6 +20,7 @@ import { ChanTab } from "./ChanTab";
 import { TrendPlanTab } from "./TrendPlanTab";
 import { LessonsTab } from "./LessonsTab";
 import { WatchTab } from "./WatchTab";
+import { PriceActionTab } from "./PriceActionTab";
 import { ReplayContext, type ReplayState } from "./replay";
 import { ReplayBar } from "./ReplayBar";
 import { track } from "../track";
@@ -34,12 +36,15 @@ const TABS = [
   { id: "trend", label: "趋势强度", hint: "方向和力度" },
   { id: "fib", label: "斐波那契", hint: "回调到哪了" },
   { id: "chan", label: "缠论", hint: "笔与中枢" },
+  { id: "pa", label: "裸 K", hint: "趋势、位置、K 线确认" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
 /** what beginners see; the module tabs live in pro mode */
-const BEGINNER_TABS: TabId[] = ["overview", "plan", "watch", "learn"];
+const BEGINNER_TABS: TabId[] = ["overview", "plan", "watch", "pa", "learn"];
 /** tabs that load their own data rather than the chart timeframe's analysis */
-const OWN_DATA: TabId[] = ["plan", "learn", "watch"];
+const OWN_DATA: TabId[] = ["plan", "learn", "watch", "pa"];
+const PA_TFS: PaTf[] = ["15m", "1h", "4h", "1d"];
+const PA_PREF = "sl-pa-tf";
 
 const SOURCE_NOTE: Record<string, string> = {
   "binance-futures": "Binance 永续合约（USDT 本位）公开行情",
@@ -79,8 +84,16 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
   // the key-level watch (15-minute bars), loaded only while its tab is open
   const [watch, setWatch] = useState<{ key: string; v: WatchView } | null>(null);
   const [watchError, setWatchError] = useState<{ key: string; msg: string } | null>(null);
+  // the naked-K page: its own timeframe (remembered in this browser), loaded only while its tab is open
+  const [pf, setPfState] = useState<PaTf>("4h");
+  const [pa, setPa] = useState<{ key: string; v: PaView } | null>(null);
+  const [paError, setPaError] = useState<{ key: string; msg: string } | null>(null);
 
   useEffect(() => {
+    try {
+      const p = localStorage.getItem(PA_PREF) as PaTf | null;
+      if (p && PA_TFS.includes(p)) setPfState(p);
+    } catch {}
     try {
       const m = localStorage.getItem("sl-mode");
       if (m === "pro" || m === "beginner") setMode(m);
@@ -194,6 +207,52 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
     if (watchFresh && !watchFresh.replay && tab === "watch") track("view_watch", `watch:${watchFresh.coin}`);
   }, [watchFresh, tab]);
 
+  // the naked-K page: refreshed every minute while its tab is open and the page is in front; a replay never changes
+  const paKey = `${coinId}:${pf}:${asOf ? `${asOf}:${tf}` : "live"}`;
+  const paOpen = tab === "pa";
+  const paTf = asOf ? tf : null;
+  useEffect(() => {
+    if (!paOpen) return;
+    let alive = true;
+    const key = `${coinId}:${pf}:${asOf ? `${asOf}:${paTf}` : "live"}`;
+    const get = () =>
+      fetch(`/api/pa?coin=${coinId}&pf=${pf}${asOf ? `&asOf=${asOf}&tf=${paTf}` : ""}`)
+        .then((r) => r.json())
+        .then((b) => {
+          if (!alive) return;
+          if (b.error) throw new Error(b.error);
+          setPa({ key, v: b });
+          setPaError(null);
+        })
+        .catch((e) => alive && setPaError({ key, msg: (e as Error).message || "加载失败" }));
+    get();
+    if (asOf)
+      return () => {
+        alive = false;
+      };
+    const visible = () => document.visibilityState === "visible";
+    const id = setInterval(() => visible() && get(), 60_000);
+    const onVis = () => visible() && get();
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      alive = false;
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [paOpen, coinId, pf, asOf, paTf]);
+  const paFresh = pa?.key === paKey ? pa.v : null;
+  const paErr = paError?.key === paKey ? paError.msg : null;
+  const changePf = useCallback((p: PaTf) => {
+    setPfState(p);
+    try {
+      localStorage.setItem(PA_PREF, p);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (paFresh && !paFresh.replay && tab === "pa") track("view_pa", `pa:${paFresh.coin}`);
+  }, [paFresh, tab]);
+
   /** Rewind to the close of bar `at` of timeframe `t` and show it on tab `to` (on another coin's page if needed). */
   const replayAt = useCallback(
     (t: Timeframe, at: number, coin = coinId, to: TabId = "plan") => {
@@ -206,6 +265,7 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
     [coinId, router],
   );
   const watchPick = useCallback((t: Timeframe, at: number) => replayAt(t, at, coinId, "watch"), [replayAt, coinId]);
+  const paPick = useCallback((t: Timeframe, at: number) => replayAt(t, at, coinId, "pa"), [replayAt, coinId]);
 
   // replay points belong to one timeframe's bars
   const changeTf = useCallback((t: Timeframe) => {
@@ -314,7 +374,7 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
       {/* tabs */}
       <div className="-mx-4 overflow-x-auto border-b border-line px-4">
         <div className="flex gap-1">
-          {TABS.filter((t) => mode === "pro" || BEGINNER_TABS.includes(t.id) || t.id === tab).map((t) => (
+          {(mode === "pro" ? [...TABS] : [...BEGINNER_TABS.map((id) => TABS.find((t) => t.id === id)!), ...TABS.filter((t) => t.id === tab && !BEGINNER_TABS.includes(t.id))]).map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
@@ -357,13 +417,27 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
             ) : (
               <Skeleton />
             ))}
+          {tab === "pa" &&
+            (paFresh ? (
+              <PriceActionTab v={paFresh} mode={mode} pf={pf} onPf={changePf} onPick={paPick} />
+            ) : paErr ? (
+              <div className="card p-6 text-center text-sm text-ink-2">{paErr}</div>
+            ) : (
+              <Skeleton />
+            ))}
+          {tab === "pa" && paFresh && (
+            <p className="mt-4 text-right text-[11px] text-ink-3">
+              数据来源 {SOURCE_NOTE[paFresh.source] ?? SOURCE_NOTE.local} · 更新于 {ago(paFresh.updatedAt)}
+              {!asOf && " · 页面在前台时每分钟刷新"}
+            </p>
+          )}
           {tab === "watch" && watchFresh && (
             <p className="mt-4 text-right text-[11px] text-ink-3">
               数据来源 {SOURCE_NOTE[watchFresh.source] ?? SOURCE_NOTE.local} · 更新于 {ago(watchFresh.updatedAt)}
               {!asOf && " · 页面在前台时每 15 秒刷新"}
             </p>
           )}
-          {tab !== "watch" && planFresh && (
+          {tab !== "watch" && tab !== "pa" && planFresh && (
             <p className="mt-4 text-right text-[11px] text-ink-3">
               数据来源 {SOURCE_NOTE[planFresh.source] ?? SOURCE_NOTE.local} · 更新于 {ago(planFresh.updatedAt)}
               {!asOf && " · 每分钟自动刷新"}
