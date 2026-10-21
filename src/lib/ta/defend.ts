@@ -4,6 +4,7 @@ import { TF_SECONDS } from "../types.ts";
 import { fmt, protectiveExtreme, relVolume, stopOption, type DefendPlan, type StopOption } from "./plan.ts";
 import { intactPivots, PIVOT_K, type Calibration } from "./risk.ts";
 import type { StructureState } from "./structure.ts";
+import { turnAt } from "./watch.ts";
 
 /**
  * Defending a level: price comes to a level that has held (or to a broken one from the other
@@ -165,11 +166,7 @@ export function oiFlush(oi: OiSeries, from: number, end: number): boolean | null
  */
 function turned(lower: LowerFrame, times: number[], dir: 1 | -1, extremeT: number, end: number): boolean {
   const last = lastAtOrBefore(times, end - TF_SECONDS["1h"]);
-  for (let k = lastAtOrBefore(times, extremeT) + 1; k >= 0 && k <= last; k++) {
-    const s = lower.ss[k];
-    const sw = dir > 0 ? s.lastLow : s.lastHigh;
-    if (sw && sw.t > extremeT && sw.label === (dir > 0 ? "HL" : "LH") && s.beyond === dir) return true;
-  }
+  for (let k = lastAtOrBefore(times, extremeT) + 1; k >= 0 && k <= last; k++) if (turnAt(lower.ss[k], dir, extremeT)) return true;
   return false;
 }
 

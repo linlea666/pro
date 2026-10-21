@@ -1,4 +1,4 @@
-import { PRIMARY_SOURCE, readStored } from "../data/klines.ts";
+import { PRIMARY_SOURCE, readStored, type SourceId } from "../data/klines.ts";
 import type { EngineParams } from "../params.ts";
 import { getDb } from "../server/db.ts";
 import { COIN_IDS } from "../symbols.ts";
@@ -15,10 +15,10 @@ import { bhAdjust, cells, controlTrades, judge, makeSplit, trades, type Cells, t
  * traffic light itself, from the scorecard's replayed points.
  */
 
-export type ReportKind = "signals" | "light" | "levels" | "plans" | "defend";
+export type ReportKind = "signals" | "light" | "levels" | "plans" | "defend" | "watch";
 
 export interface ResearchRow {
-  family: "signal" | "indicator" | "light" | "level" | "level_mfe" | "anchor" | "exit" | "entry" | "stop" | "behavior" | "plan" | "defend" | "stop2";
+  family: "signal" | "indicator" | "light" | "level" | "level_mfe" | "anchor" | "exit" | "entry" | "stop" | "behavior" | "plan" | "defend" | "stop2" | "watch" | "watch_sign" | "move24";
   key: string;
   name: string;
   side: "bull" | "bear";
@@ -57,9 +57,10 @@ export interface ResearchReport {
 /** bars before a signal may be counted: indicators need a warm-up, as on the live page */
 const WARMUP = 300;
 
-export function loadHistory(coin: string, tf: Timeframe, nowSec = Date.now() / 1000): Candle[] {
+/** Stored closed bars of one series (the primary source unless another is named, e.g. "binance-spot"). */
+export function loadHistory(coin: string, tf: Timeframe, nowSec = Date.now() / 1000, source: SourceId = PRIMARY_SOURCE): Candle[] {
   const sec = TF_SECONDS[tf];
-  return readStored(coin, tf, PRIMARY_SOURCE, 1_000_000).filter((x) => x.t + sec <= nowSec);
+  return readStored(coin, tf, source, 1_000_000).filter((x) => x.t + sec <= nowSec);
 }
 
 const tick = () => new Promise((r) => setImmediate(r));

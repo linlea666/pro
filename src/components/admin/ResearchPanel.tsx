@@ -6,14 +6,15 @@ import type { ResearchReport, ResearchRow } from "@/lib/research/run";
 import { TF_LABEL } from "@/lib/types";
 import { btnCls, fmtTime } from "./ui";
 
-type Kind = "signals" | "light" | "levels" | "plans" | "defend";
+type Kind = "signals" | "light" | "levels" | "plans" | "defend" | "watch";
 type ListItem = { id: number; createdAt: number; kind: Kind; paramsVersion: number };
-const KIND_LABEL: Record<Kind, string> = { light: "信号灯", signals: "信号与指标", levels: "关键位", plans: "交易计划依据", defend: "守位依据" };
+const KIND_LABEL: Record<Kind, string> = { light: "信号灯", signals: "信号与指标", levels: "关键位", plans: "交易计划依据", defend: "守位依据", watch: "盯盘依据" };
 /** the questions inside a report, for its filter */
 const FAMILIES: Partial<Record<Kind, Record<string, string>>> = {
   plans: { plan: "计划成绩单", anchor: "E10 价格锚定", exit: "E11 离场方式", entry: "E12 入场类型", stop: "E13 认错位", behavior: "E14 新手习惯" },
   levels: { level: "E6 触位反向（2R 止盈）", level_mfe: "E16 守住之前能走多远" },
   defend: { defend: "E17 守位计划与止跌 / 止涨证据", stop2: "E18 近止损与远止损" },
+  watch: { watch: "E19 等转强 vs 碰到就进", watch_sign: "E19b 止跌迹象", move24: "E19c 24 小时大涨大跌" },
 };
 
 /** The numbers a row carries besides the edge, in a few words. */
@@ -23,6 +24,13 @@ function detail(x: ResearchRow): string {
   if (x.family === "level") return `均值 ${x.cells.is.meanR ?? "—"}R · 刺穿 ${v("piercedPct")} / 失效 ${v("brokenPct")}`;
   if (x.family === "level_mfe") return `止损前先到 2R ${v("reach2")}（随机 ${v("reach2Ctl")}）· 最远中位 ${v("mfeMedR", "R")} · 2R 平半 ${v("scaleR", "R")}`;
   const parts: string[] = [];
+  if (e.triggerPct != null) parts.push(`${v("triggerPct")} 的事件触发`);
+  if (e.halfwayPct != null) parts.push(`接到半山腰 ${v("halfwayPct")}${e.halfwayA != null ? `（碰到就进 ${v("halfwayA")}）` : ""}`);
+  if (e.halfwayDiff != null) parts.push(`差 ${v("halfwayDiff", " 个百分点")}，p ${v("halfwayP", "")}，校正后 q ${v("halfwayQ", "")}，${e.halfwayConsistent ? "BTC / ETH、前后两半、样本外方向一致" : "各段方向不一致"}`);
+  if (e.quickStopPct != null) parts.push(`24 小时内被扫 ${v("quickStopPct")}${e.quickStopA != null ? `（碰到就进 ${v("quickStopA")}）` : ""}`);
+  if (e.missedPct != null) parts.push(`错过 ${v("missedPct")}`);
+  if (e.events != null && e.eventsOos != null) parts.push(`样本内 ${e.events} 个事件（样本外 ${e.eventsOos}）`);
+  if (e.volRatio != null) parts.push(`${e.events ?? "—"} 次，之后 72 小时波动是平时的 ${v("volRatio", " 倍")}`);
   if (e.stopPct != null) parts.push(`被扫 ${v("stopPct")}（6 根内 ${v("quickStopPct")}）· 先到 2R ${v("reach2")}`);
   if (e.far_stopPct != null) parts.push(`远止损：被扫 ${v("far_stopPct")}（6 根内 ${v("far_quickStopPct")}）· 先到 2R ${v("far_reach2")}`);
   if (e.last_stopPct != null) parts.push(`按最新价：被扫 ${v("last_stopPct")}`);
@@ -113,7 +121,7 @@ export function ResearchPanel() {
       {msg && <p className={`rounded-lg px-3 py-2 text-[13px] ${msg.ok ? "bg-up-soft text-up" : "bg-down-soft text-down"}`}>{msg.text}</p>}
 
       <div className="flex flex-wrap gap-2 text-sm">
-        {(["light", "plans", "defend", "signals", "levels"] as const).map((k) => (
+        {(["light", "plans", "defend", "watch", "signals", "levels"] as const).map((k) => (
           <button
             key={k}
             className={`rounded-lg px-3 py-1.5 ${kind === k ? "bg-ink text-bg" : "border border-line text-ink-2"}`}
@@ -206,17 +214,17 @@ export function ResearchPanel() {
                   <th className="py-1.5 pr-3 font-normal">信号</th>
                   <th className="py-1.5 pr-3 font-normal">周期</th>
                   <th className="py-1.5 pr-3 font-normal">样本内笔数</th>
-                  <th className="py-1.5 pr-3 font-normal">{r.kind === "plans" || r.kind === "defend" ? "命中 vs 对照" : "命中 vs 随机"}</th>
+                  <th className="py-1.5 pr-3 font-normal">{r.kind === "plans" || r.kind === "defend" || r.kind === "watch" ? "命中 vs 对照" : "命中 vs 随机"}</th>
                   <th className="py-1.5 pr-3 font-normal">优势（样本内）</th>
                   <th className="py-1.5 pr-3 font-normal">样本外</th>
                   <th className="py-1.5 pr-3 font-normal">BTC</th>
                   <th className="py-1.5 pr-3 font-normal">ETH</th>
                   <th className="py-1.5 pr-3 font-normal">前半</th>
                   <th className="py-1.5 pr-3 font-normal">后半</th>
-                  {(r.kind === "levels" || r.kind === "defend") && <th className="py-1.5 pr-3 font-normal">细节</th>}
+                  {(r.kind === "levels" || r.kind === "defend" || r.kind === "watch") && <th className="py-1.5 pr-3 font-normal">细节</th>}
                   <th className="py-1.5 pr-3 font-normal">q 值</th>
                   <th className="py-1.5 pr-3 font-normal">结论</th>
-                  {(r.kind === "plans" || r.kind === "defend") && <th className="py-1.5 font-normal">对照</th>}
+                  {(r.kind === "plans" || r.kind === "defend" || r.kind === "watch") && <th className="py-1.5 font-normal">对照</th>}
                 </tr>
               </thead>
               <tbody className="num">
@@ -237,10 +245,10 @@ export function ResearchPanel() {
                     <td className="py-1.5 pr-3"><Edge g={x.cells.eth} /></td>
                     <td className="py-1.5 pr-3"><Edge g={x.cells.firstHalf} /></td>
                     <td className="py-1.5 pr-3"><Edge g={x.cells.secondHalf} /></td>
-                    {(r.kind === "levels" || r.kind === "defend") && <td className="py-1.5 pr-3 text-xs text-ink-2">{detail(x)}</td>}
+                    {(r.kind === "levels" || r.kind === "defend" || r.kind === "watch") && <td className="py-1.5 pr-3 text-xs text-ink-2">{detail(x)}</td>}
                     <td className="py-1.5 pr-3">{x.q ?? "—"}</td>
                     <td className="py-1.5 pr-3" style={{ color: VERDICT_COLOR[x.verdict] }}>{verdictText(x.verdict, x.control)}</td>
-                    {(r.kind === "plans" || r.kind === "defend") && <td className="py-1.5 text-xs text-ink-3">{x.control}</td>}
+                    {(r.kind === "plans" || r.kind === "defend" || r.kind === "watch") && <td className="py-1.5 text-xs text-ink-3">{x.control}</td>}
                   </tr>
                 ))}
               </tbody>

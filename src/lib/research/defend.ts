@@ -72,7 +72,7 @@ interface CoinData {
  * Funding crowded against `dir` at time `at`: the last settlement is in the bottom fifth of the 90 days
  * before (shorts paying, for a long) or the top fifth (longs paying, for a short).
  */
-function fundingFuel(f: { t: number[]; rate: number[] }, dir: 1 | -1, at: number): boolean | null {
+export function fundingFuel(f: { t: number[]; rate: number[] }, dir: 1 | -1, at: number): boolean | null {
   const k = lastAtOrBefore(f.t, at);
   if (k < 0 || at - f.t[k] > 12 * 3600) return null;
   const from = lastAtOrBefore(f.t, at - 90 * 86400) + 1;

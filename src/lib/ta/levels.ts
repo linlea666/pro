@@ -135,12 +135,14 @@ const weekKey = (d: Date) => {
   return monday.toISOString().slice(0, 10);
 };
 
+const dayKey = (d: Date) => d.toISOString().slice(0, 10);
+
 /**
- * High and low of the last complete week (month) before `endSec`, from daily bars (UTC calendar): the period
+ * High and low of the last complete day (week, month) before `endSec`, from daily bars (UTC calendar): the period
  * containing `endSec` is left out whatever the bars hold, so nothing after `endSec` is read.
  */
-export function prevPeriodHL(daily: Candle[], endSec: number, period: "week" | "month"): { h: number; l: number } | null {
-  const key = period === "week" ? weekKey : monthKey;
+export function prevPeriodHL(daily: Candle[], endSec: number, period: "day" | "week" | "month"): { h: number; l: number } | null {
+  const key = period === "day" ? dayKey : period === "week" ? weekKey : monthKey;
   const now = key(new Date(endSec * 1000));
   let cur: { k: string; h: number; l: number } | null = null;
   for (const x of daily) {

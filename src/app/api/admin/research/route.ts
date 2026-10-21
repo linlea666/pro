@@ -7,13 +7,13 @@ import { getReport, listReports, type ReportKind } from "@/lib/research/run";
 
 export const dynamic = "force-dynamic";
 
-/** Reports list plus one report: `?id=` or the latest of `?kind=` (signals | light | levels | plans | defend). */
+/** Reports list plus one report: `?id=` or the latest of `?kind=` (signals | light | levels | plans | defend | watch). */
 export const GET = withRoute("admin.research.get", async (req: NextRequest) => {
   const admin = await requireAdmin();
   if (admin instanceof Response) return admin;
   const id = Number(req.nextUrl.searchParams.get("id")) || undefined;
   const k = req.nextUrl.searchParams.get("kind");
-  const kind: ReportKind = k === "light" || k === "levels" || k === "plans" || k === "defend" ? k : "signals";
+  const kind: ReportKind = k === "light" || k === "levels" || k === "plans" || k === "defend" || k === "watch" ? k : "signals";
   return NextResponse.json({ list: listReports(), report: getReport(id, kind) });
 });
 
