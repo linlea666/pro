@@ -49,6 +49,7 @@ case "$cmd" in
   compare) require_root; as_service nice -n 10 node --no-warnings --experimental-strip-types "$CUR/scripts/cli.ts" compare "$@" ;;
   plan) require_root; cli "$CUR" plan "$@" ;;
   watch) require_root; cli "$CUR" watch "$@" ;;
+  spot) require_root; cli "$CUR" spot "$@" ;;
   help|*)
     cat <<HELP
 信号灯管理命令：
@@ -62,7 +63,7 @@ case "$cmd" in
   signallight restore <文件>     从备份恢复数据库
   signallight admin             创建管理员或重置密码
   signallight config            编辑配置文件
-  signallight history [--sync]  本地 K 线历史覆盖情况；--sync 立即补齐 K 线、主动买入量、标记价格和持仓量归档（平时后台会慢慢自动补）
+  signallight history [--sync]  本地 K 线历史覆盖情况；--sync 立即补齐 K 线、主动买入量、标记价格、持仓量归档和现货估值数据（平时后台会慢慢自动补）
   signallight research [--kind signals|light|levels|plans|defend|watch|patterns] [--all]
                                 立即生成研究报告并打印结论（平时每周自动生成，后台“研究报告”页可看）；--kind 只生成一种（patterns：裸 K 形态）
   signallight compare --set 参数=值 [--tf 1h] [--step 3]
@@ -71,6 +72,7 @@ case "$cmd" in
                                 趋势地图和多空计划；--at 回放某根 K 线（北京时间开盘时刻）收盘时的计划和之后的结果
   signallight watch [--coin BTC] [--at "2026-10-15 21:00"]
                                 盯盘：价格到关键高低点时是别接、观察还是已转强；--at 回放那一刻（北京时间）所在 15 分钟 K 线收盘时
+  signallight spot [--sync]     现货囤币：BTC 估值尺子（200 周均线、MVRV、Mayer 倍数、恐惧贪婪）、观点区间折成价格、历史上的几段；--sync 先下载新数据（平时后台每 6 小时自动下载）
   signallight diagnose          生成体检报告（只读；密钥和访问者 IP 已隐藏，可发给开发者分析）
   signallight version           查看当前版本
 HELP

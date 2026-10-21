@@ -21,6 +21,8 @@
  *   watch [--coin BTC] [--at "2026-10-15 21:00"]
  *                                 the key-level watch now, or at the close of the 15-minute bar containing --at
  *                                 (Beijing time unless a zone is given): both sides' state, the levels, the signs
+ *   spot [--sync]                 BTC spot valuation for the 现货囤币 page: the rulers now, the opinion zones as prices,
+ *                                 the past episodes of each zone; --sync downloads the new days first
  */
 import fs from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -139,6 +141,9 @@ async function main() {
           console.log(`持仓量归档：请求 ${r.requests} 次，补 ${r.days} 天（${r.rows} 小时）${r.error ? `，出错：${r.error}` : ""}`);
           if (r.complete || r.error || !r.requests) break;
         }
+        const { syncSpotDaily } = await import("../src/lib/data/spot.ts");
+        const sp = await syncSpotDaily();
+        console.log(`现货估值数据：Coin Metrics ${sp.cmDays} 天，恐惧贪婪 ${sp.fngDays} 天，最新 ${sp.lastDay ?? "—"}${sp.error ? `，出错：${sp.error}` : ""}`);
       }
       const day = (t: number | null) => (t == null ? "-" : new Date(t * 1000).toISOString().slice(0, 10));
       console.log("周期  币种   根数     最早        最新        目标        状态");
@@ -345,8 +350,61 @@ async function main() {
       console.log(`\n研究：${v.research?.text ?? v.researchNote ?? "—"}`);
       break;
     }
+    case "spot": {
+      const { fngPoints, spotFreshness, spotSeries, syncSpotDaily } = await import("../src/lib/data/spot.ts");
+      const v = await import("../src/lib/spot/valuation.ts");
+      const { parseOpinionZones } = await import("../src/lib/spot/opinion.ts");
+      const { getSetting } = await import("../src/lib/server/settings.ts");
+      if (rest.includes("--sync")) {
+        const r = await syncSpotDaily();
+        console.log(`下载：Coin Metrics ${r.cmDays} 天，恐惧贪婪 ${r.fngDays} 天，最新 ${r.lastDay ?? "—"}${r.error ? `，出错：${r.error}` : ""}\n`);
+      }
+      const s = spotSeries("BTC");
+      if (!s) throw new Error("还没有现货估值数据：先运行 spot --sync（服务在运行时后台每 6 小时自动下载）");
+      const f = spotFreshness("BTC");
+      const r = v.rulers(s);
+      const n = v.spotNow(s, r);
+      const fp = (x: number | null | undefined) => (x == null ? "—" : x >= 1000 ? Math.round(x).toLocaleString("en-US") : String(Math.round(x * 100) / 100));
+      const pc = (x: number | null | undefined) => (x == null ? "—" : `${Math.round(x * 100)}%`);
+      const sg = (x: number | null | undefined) => (x == null ? "—" : `${x > 0 ? "+" : ""}${x}%`);
+      const tn = (x: number) => String(Math.round((x / 1e12) * 100) / 100);
+      const cap = (x: number) => `${tn(x)} 万亿美元`;
+      const zoneOf = (z: import("../src/lib/spot/valuation.ts").ZoneLabel | null) => (z ? `（${z}）` : "（历史不足 2 年，没有分位）");
+      const line = (k: import("../src/lib/spot/valuation.ts").LowLineKey) => {
+        const l = n.lowLines.find((x) => x.key === k)!;
+        const last = l.inZone ? "现在就在低位" : l.lastDay ? `上次在低位 ${l.lastStart} 至 ${l.lastDay}（${l.daysSince} 天前）` : "从没进过低位";
+        return `${l.label}：价格 ${fp(l.price)}（离现价 ${sg(l.distPct)}），${last}`;
+      };
+      console.log(`BTC 现货估值：${n.day} 日线收盘（UTC，Coin Metrics；共 ${f.days} 天）`);
+      console.log(`价格 ${fp(n.price)}；52 周最高 ${fp(n.high52w.price)}（${n.high52w.day}），离最高 ${sg(n.high52w.distPct)}`);
+      console.log(`\n200 周均线 ${fp(n.wma.wma200)}，价格是它的 ${fp(n.wma.value)} 倍，历史分位 ${pc(n.wma.pct)}${zoneOf(n.wma.zone)}`);
+      console.log(`  ${line("wma")}`);
+      console.log(`MVRV ${fp(n.mvrv.value)}，全网平均成本（已实现价格）${fp(n.mvrv.realizedPrice)}，历史分位 ${pc(n.mvrv.pct)}${zoneOf(n.mvrv.zone)}`);
+      console.log(`  ${line("mvrv1")}`);
+      console.log(`Mayer 倍数 ${fp(n.mayer.value)}，200 日均线 ${fp(n.mayer.ma200)}，历史分位 ${pc(n.mayer.pct)}${zoneOf(n.mayer.zone)}`);
+      console.log(`  ${line("mayer08")}`);
+      console.log(`总市值 ${n.marketCap ? cap(n.marketCap) : "—"}，流通 ${fp(n.supply)} 枚`);
+      const g = v.fngBlock(fngPoints("BTC"));
+      console.log(g ? `恐惧贪婪 ${g.value}（${g.label}，${g.day}），7 天前 ${g.ago7 ?? "—"}，30 天前 ${g.ago30 ?? "—"}，历史分位 ${pc(g.pct)}` : "恐惧贪婪：还没有数据");
+      console.log(`预备金信号（跌破 200 周均线或 MVRV < 1）：${n.reserve ? "现在已触发" : "现在没有触发"}`);
+      const op = parseOpinionZones(getSetting("spot.opinionZones")).value;
+      console.log(`\n观点区间（${op.source}，${op.date}；是别人的观点，不是计算结果），按现在的流通量折成价格：`);
+      for (const z of n.supply ? v.capZonePrices(n.supply, op.zones) : [])
+        console.log(z.from === z.to ? `  ${z.label}：市值 ${cap(z.from)} → 价格 ${fp(z.priceFrom)}` : `  ${z.label}：市值 ${tn(z.from)}–${cap(z.to)} → 价格 ${fp(z.priceFrom)}–${fp(z.priceTo)}`);
+      console.log(`\n历史上的几段（相隔 ${v.SPOT_RULES.episodeGapDays} 天以上算新的一段；对照 = 这一段开始前后各 2 年里每天买入；倍数按几何平均）：`);
+      for (const z of v.EPISODE_ZONES) {
+        const e = v.episodes(s, z.key, r);
+        console.log(`\n${z.name}（${z.low ? "低位" : "高位"}，${e.from} 起可算，共 ${e.totalDays} 天，${e.rows.length} 段）`);
+        for (const x of e.rows) {
+          const hz = x.horizons.map((h) => (h.mult == null ? "—" : `${h.mult.toFixed(2)}x/${h.base!.toFixed(2)}x`)).join("  ");
+          console.log(`  ${x.start}–${x.end}（${x.days} 天）进入价 ${fp(x.entry)}，之后 2 年内最深 ${sg(x.drawdownPct)}（${x.lowDay}），${x.recoverDays == null ? "至今没回到进入价" : `${x.recoverDays} 天回到进入价`} | 1/2/4 年 本段/同期 ${hz}`);
+        }
+        for (const m of e.summary) if (m.n) console.log(`  ${m.days / 365} 年：${m.n} 段里 ${m.better} 段好于同期，平均倍数比 ${m.ratio!.toFixed(2)}；${m.verdict}`);
+      }
+      break;
+    }
     default:
-      console.log("用法：cli.ts migrate | admin [--user 名称] [--password 密码] | backup | restore 文件 | info | history [--sync] | research [--kind …] | compare --set … | plan [--coin BTC] [--at 时间] | watch [--coin BTC] [--at 时间]");
+      console.log("用法：cli.ts migrate | admin [--user 名称] [--password 密码] | backup | restore 文件 | info | history [--sync] | research [--kind …] | compare --set … | plan [--coin BTC] [--at 时间] | watch [--coin BTC] [--at 时间] | spot [--sync]");
       process.exitCode = cmd ? 1 : 0;
   }
 }

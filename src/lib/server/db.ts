@@ -195,6 +195,20 @@ const MIGRATIONS: string[] = [
     listed_at INTEGER
   );
   `,
+  // 12: daily spot valuation inputs for the long-term accumulation page: price, supply and MVRV from
+  // Coin Metrics, the crypto-wide Fear & Greed index from alternative.me (stored on the BTC rows); day is UTC
+  `
+  CREATE TABLE spot_daily (
+    asset TEXT NOT NULL,
+    day TEXT NOT NULL,
+    price REAL,
+    supply REAL,
+    mvrv REAL,
+    fng INTEGER,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (asset, day)
+  ) WITHOUT ROWID;
+  `,
 ];
 
 let db: Database.Database | null = null;

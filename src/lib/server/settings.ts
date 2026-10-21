@@ -1,4 +1,5 @@
 import { getDb } from "./db.ts";
+import { DEFAULT_OPINION_ZONES } from "../spot/opinion.ts";
 
 /** Key/value settings with code defaults; the database only stores overrides. */
 export const SETTING_DEFAULTS = {
@@ -10,6 +11,8 @@ export const SETTING_DEFAULTS = {
   "precompute.enabled": true,
   "rate.publicPerMin": 60,
   "rate.replayPerMin": 20,
+  /** market-cap zones someone published (JSON string of { source, date, zones }); see spot/opinion.ts */
+  "spot.opinionZones": JSON.stringify(DEFAULT_OPINION_ZONES) as string,
 } as const;
 
 export type SettingKey = keyof typeof SETTING_DEFAULTS;

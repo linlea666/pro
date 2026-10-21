@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/server/guard";
 import { logger } from "@/lib/server/log";
 import { withRoute } from "@/lib/server/route";
+import { validateOpinionZones } from "@/lib/spot/opinion";
 import { SETTING_DEFAULTS, getSetting, setSetting, type SettingKey } from "@/lib/server/settings";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +17,8 @@ const RULES: Record<SettingKey, (v: unknown) => string | null> = {
   "backup.keepDaily": (v) => (Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 60 ? null : "备份保留份数需在 1–60 之间"),
   "rate.publicPerMin": (v) => (Number.isInteger(v) && (v as number) >= 10 && (v as number) <= 1000 ? null : "公开接口限流需在 10–1000 次/分钟之间"),
   "rate.replayPerMin": (v) => (Number.isInteger(v) && (v as number) >= 2 && (v as number) <= 300 ? null : "回放限流需在 2–300 次/分钟之间"),
+  // stored as a JSON string: { source, date, zones: [{ label, from, to }] } with market caps in USD
+  "spot.opinionZones": (v) => (typeof v !== "string" ? "观点区间要以 JSON 字符串保存" : validateOpinionZones(v)),
 };
 
 const all = () => Object.fromEntries((Object.keys(SETTING_DEFAULTS) as SettingKey[]).map((k) => [k, { value: getSetting(k), default: SETTING_DEFAULTS[k] }]));

@@ -142,6 +142,14 @@ async function tick() {
       else if (r.funding || r.openInterest) logger.debug("datasource", "资金费率 / 持仓量已更新", r);
       done("perp");
     }
+    // daily spot valuation inputs (Coin Metrics price / supply / MVRV, Fear & Greed) for the 现货囤币 page
+    if (due("spotDaily", 6 * HOUR)) {
+      const { syncSpotDaily } = await import("../data/spot.ts");
+      const r = await syncSpotDaily();
+      // failures are logged and alerted inside
+      if (!r.error && (r.cmDays || r.fngDays)) logger[r.cmDays > 10 ? "info" : "debug"]("datasource", "现货估值数据已更新", { ...r });
+      done("spotDaily");
+    }
     // stop-loss calibration: weekly, and right away on a fresh install
     const calibEmpty = !getDb().prepare("SELECT 1 FROM risk_calib LIMIT 1").get();
     if (calibEmpty || due("riskCalib", 7 * DAY)) {
