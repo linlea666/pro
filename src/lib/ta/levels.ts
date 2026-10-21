@@ -144,15 +144,18 @@ const dayKey = (d: Date) => d.toISOString().slice(0, 10);
 export function prevPeriodHL(daily: Candle[], endSec: number, period: "day" | "week" | "month"): { h: number; l: number } | null {
   const key = period === "day" ? dayKey : period === "week" ? weekKey : monthKey;
   const now = key(new Date(endSec * 1000));
+  // the bars are in time order: the last complete period is the last run of one key before `now`, so walk back
   let cur: { k: string; h: number; l: number } | null = null;
-  for (const x of daily) {
-    if (x.t >= endSec) break;
+  for (let i = daily.length - 1; i >= 0; i--) {
+    const x = daily[i];
+    if (x.t >= endSec) continue;
     const k = key(new Date(x.t * 1000));
     if (k === now) continue;
-    if (cur && cur.k === k) {
+    if (!cur) cur = { k, h: x.h, l: x.l };
+    else if (cur.k === k) {
       cur.h = Math.max(cur.h, x.h);
       cur.l = Math.min(cur.l, x.l);
-    } else cur = { k, h: x.h, l: x.l };
+    } else break;
   }
   return cur ? { h: cur.h, l: cur.l } : null;
 }

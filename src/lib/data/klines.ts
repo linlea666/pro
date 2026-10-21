@@ -157,7 +157,8 @@ async function fromOkxSwap(coin: string, tf: Timeframe, limit: number): Promise<
  */
 export const KEEP_DAYS: Record<Timeframe, number | null> = {
   "5m": 30,
-  "15m": 365,
+  // the watch research (E19) holds out the last 12 months: three years leave two in-sample
+  "15m": 1095,
   "1h": 730,
   "4h": 1826,
   "1d": null,

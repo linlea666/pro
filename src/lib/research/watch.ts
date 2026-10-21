@@ -128,8 +128,11 @@ function twoProp(x1: number, n1: number, x2: number, n2: number): number | null 
   return Math.round(2 * (1 - normCdf(Math.abs(z))) * 10000) / 10000;
 }
 
-/** One coin: the events, the four entries on each, the random control and the signs at the C entries. */
-function runCoin(coin: string, ci: number, ep: EngineParams, nowSec: number): CoinOut | null {
+/**
+ * One coin: the events, the four entries on each, the random control and the signs at the C entries.
+ * Yields between the steps so the server keeps answering while the weekly report runs.
+ */
+async function runCoin(coin: string, ci: number, ep: EngineParams, nowSec: number, tick: () => Promise<unknown>): Promise<CoinOut | null> {
   const c = loadHistory(coin, "15m", nowSec);
   if (c.length < MIN_BARS) return null;
   const h = loadHistory(coin, "1h", nowSec);
@@ -164,6 +167,7 @@ function runCoin(coin: string, ci: number, ep: EngineParams, nowSec: number): Co
   const ctxSwings: Swing[] = swings(h, hatr, mult).map((s) => ({ ...s, i: lowerBound(times, h[s.i].t), confirmedAt: at15(h[s.confirmedAt].t) }));
   const ctx: SimContext = { c, atr, swings: ctxSwings, buf, costPct: ep.stats.costPct, maxBars: MAX_BARS };
   const w: WatchInput = { c, atr, ss, h, hss, hIdx, levels: levelSource(c, d1, atr1, idx1, c4, atr4, idx4) };
+  await tick();
 
   // ---- events: the first touch of a key level price came down (up) to; one per direction per window (3 days)
   let start = Math.max(WARMUP, FROM_BARS + 1);
@@ -178,6 +182,7 @@ function runCoin(coin: string, ci: number, ep: EngineParams, nowSec: number): Co
     const went = best >= MISSED_ATR * atr[k];
     return { ...e, trig, missed: { C: !trig.C && went, C1: !trig.C1 && went } };
   });
+  await tick();
 
   // E19b: the seven signs at the C entries (null: the data is missing)
   const sd: SignData = { c, times, ss, rsi, spot, spotTimes, oi, hss, hIdx, funding: (dir, at) => fundingFuel(funding, dir, at) };
@@ -223,7 +228,7 @@ function runCoin(coin: string, ci: number, ep: EngineParams, nowSec: number): Co
   const random: Record<Policy, Trade[]> = { A: [], B: [], C: [], C1: [] };
   const signs: CoinOut["signs"] = [];
   const hi = c.length - (MAX_BARS + 1);
-  POLICIES.forEach((p, pi) => {
+  for (const [pi, p] of POLICIES.entries()) {
     const r = rng(1900 + ci * 10 + pi);
     for (const dir of [1, -1] as const) {
       let free = -1;
@@ -247,7 +252,8 @@ function runCoin(coin: string, ci: number, ep: EngineParams, nowSec: number): Co
         if (p === "C") signs.push({ trade, v: signsAt(sd, g.extremeI, g.i, g.extreme, dir) });
       });
     }
-  });
+    await tick();
+  }
   return { coin, events: out, random, signs, bars: c.length, from: c[start].t, to: c[c.length - 1].t };
 }
 
@@ -335,7 +341,7 @@ export async function watchReport(ep: EngineParams, opts: { paramsVersion: numbe
   const title = "盯盘：等转强 vs 碰到就进（接飞刀）";
   const data: CoinOut[] = [];
   for (const [ci, coin] of coins.entries()) {
-    const d = runCoin(coin, ci, ep, nowSec);
+    const d = await runCoin(coin, ci, ep, nowSec, tick);
     if (d) data.push(d);
     await tick();
   }

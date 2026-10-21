@@ -154,6 +154,29 @@ test("previous day: the last complete UTC day, at 00:00 too", () => {
   assert.deepEqual(prevPeriodHL(daily, day + D, "day"), { h: 110, l: 90 });
 });
 
+test("previous day / week / month: walking back gives the forward scan's answer, gaps included", () => {
+  const D = 86400;
+  const start = Date.parse("2024-12-20T00:00:00Z") / 1000;
+  const daily: Candle[] = [];
+  for (let k = 0; k < 500; k++) if (k % 37 !== 5 && k % 53 !== 9) daily.push({ t: start + k * D, o: 100, h: 110 + ((k * 7) % 13), l: 90 - ((k * 5) % 11), c: 100, v: 1 });
+  const key = { day: (s: number) => new Date(s * 1000).toISOString().slice(0, 10), month: (s: number) => new Date(s * 1000).toISOString().slice(0, 7) };
+  const week = (s: number) => Math.floor((s / D + 3) / 7); // weeks starting Monday (1970-01-01 was a Thursday)
+  const forward = (end: number, k: (s: number) => string | number) => {
+    let cur: { k: string | number; h: number; l: number } | null = null;
+    for (const x of daily) {
+      if (x.t >= end || k(x.t) === k(end)) continue;
+      if (cur && cur.k === k(x.t)) cur = { k: cur.k, h: Math.max(cur.h, x.h), l: Math.min(cur.l, x.l) };
+      else cur = { k: k(x.t), h: x.h, l: x.l };
+    }
+    return cur && { h: cur.h, l: cur.l };
+  };
+  for (let end = start; end < start + 520 * D; end += 0.37 * D) {
+    assert.deepEqual(prevPeriodHL(daily, end, "day"), forward(end, key.day), `day at ${end}`);
+    assert.deepEqual(prevPeriodHL(daily, end, "week"), forward(end, week), `week at ${end}`);
+    assert.deepEqual(prevPeriodHL(daily, end, "month"), forward(end, key.month), `month at ${end}`);
+  }
+});
+
 test("watch report: the four entries, the paired comparisons, the signs and the 24-hour moves", async () => {
   const { store } = await import("../src/lib/data/klines.ts");
   const { watchReport } = await import("../src/lib/research/watch.ts");
