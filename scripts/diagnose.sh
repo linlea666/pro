@@ -2,14 +2,17 @@
 # 信号灯服务器体检报告（只读，不修改任何东西）。
 #   sudo signallight diagnose
 #   或：curl -fsSL https://raw.githubusercontent.com/linlea666/pro/main/scripts/diagnose.sh | sudo bash
-# 报告保存在 /var/lib/signallight/diagnose-<时间>.txt。密钥、密码和访问者 IP 会被隐藏或打码，
-# 可以直接把文件发给开发者分析。
+# 报告保存在 /var/lib/signallight/diagnose-<时间>.txt。密钥、密码、邮箱和访问者 IP 会被隐藏或打码，
+# 可以直接把文件发给开发者（或上传给 Claude）分析。
+#   内容：机器与开关机、资源、服务与版本记录、本机接口测试、数据库与本地 K 线、数据源成功率与耗时、
+#   日志量与错误、后台任务与预计算、K 线历史补齐进度、各研究报告的结论和生成时间、安全、备份。
 set -uo pipefail
 
 SL_HOME="${SL_HOME:-/opt/signallight}"
 SL_DATA="${SL_DATA:-/var/lib/signallight}"
 SL_ENV="${SL_ETC:-/etc/signallight}/signallight.env"
 DB="$SL_DATA/signallight.db"
+CUR="$SL_HOME/current"
 [ "$(id -u)" -eq 0 ] || { echo "请使用 root 运行（在命令前加 sudo）" >&2; exit 1; }
 
 PORT=$(grep -E '^PORT=' "$SL_ENV" 2>/dev/null | tail -1 | cut -d= -f2-); PORT=${PORT:-3000}
@@ -23,6 +26,12 @@ q() { sqlite3 -header -column "$DB" "$1" 2>&1 | head -"${2:-40}"; }
 # hide IPv4 addresses except the first two octets (visitor privacy); keep loopback/private ranges readable
 mask_ip() { sed -E 's/\b([0-9]{1,3}\.[0-9]{1,3})\.[0-9]{1,3}\.[0-9]{1,3}\b/\1.x.x/g'; }
 json() { python3 -c "$1" 2>&1; }
+# the whole report passes through this: e-mail addresses, API keys and bearer tokens never reach the file
+scrub() { sed -E -e 's/[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)+[A-Za-z]{2,}/（邮箱已隐藏）/g' \
+  -e 's/(sk-|sk_)[A-Za-z0-9_-]{8,}/\1（已隐藏）/g' -e 's/([Bb]earer )[A-Za-z0-9._~+\/=-]{8,}/\1（已隐藏）/g'; }
+# the CLI of the running release, as the service user (read-only subcommands only)
+slcli() { runuser -u signallight -- env HOME="$SL_DATA/.home" bash -c 'set -a; . "$0"; set +a; exec "$@"' "$SL_ENV" \
+  timeout 300 nice -n 10 node --no-warnings --experimental-strip-types "$CUR/scripts/cli.ts" "$@" 2>&1; }
 
 {
 echo "信号灯体检报告  生成时间 $(date '+%F %T %Z')"
@@ -59,7 +68,10 @@ ps -eo pid,user,rss,pcpu,etime,comm --sort=-rss | head -8
 sec "4. 服务"
 systemctl --no-pager status signallight 2>&1 | head -12
 echo "当前版本：$(cat "$SL_HOME/current/.version" 2>/dev/null)  → $(readlink -f "$SL_HOME/current")"
-ls -lt "$SL_HOME/releases" 2>/dev/null | head -6
+echo "--- 服务器上保留的版本（最新在前；部署时间 / 版本号）"
+for r in $(ls -1dt "$SL_HOME"/releases/*/ 2>/dev/null | head -6); do
+  echo "  $(date -r "$r" '+%F %T')  $(cat "$r/.version" 2>/dev/null || echo ?)  $(basename "$r")"
+done
 echo "--- 配置（密钥已隐藏）"
 sed -E 's/^(MASTER_KEY|.*SECRET.*|.*PASS.*|.*TOKEN.*)=.*/\1=（已隐藏）/' "$SL_ENV" 2>/dev/null | grep -v '^#' | grep -v '^$'
 echo "--- 监听端口"
@@ -68,7 +80,7 @@ echo "--- 防火墙"
 ufw status 2>/dev/null | head -12 || echo "未安装 ufw"
 
 sec "5. 本机访问测试"
-for p in / /coin/BTC "/api/analysis?coin=BTC&tf=4h" "/api/mtf?coin=BTC" "/api/overview" /admin/login; do
+for p in / /coin/BTC /watch "/api/analysis?coin=BTC&tf=4h" "/api/mtf?coin=BTC" "/api/overview" "/api/plan?coin=BTC&fw=4h" "/api/watch?coin=BTC" "/api/watch" "/api/pa?coin=BTC&pf=4h" /admin/login; do
   curl -s -o /dev/null --max-time 30 -w "%{http_code}  %{time_total}s  $p\n" "$BASE$p"
 done
 echo "--- 健康检查"
@@ -95,8 +107,9 @@ ls -lh "$DB"* 2>/dev/null
 q "PRAGMA user_version;"
 q "SELECT 'candles' t, COUNT(*) n FROM candles UNION ALL SELECT 'funding_rates', COUNT(*) FROM funding_rates UNION ALL SELECT 'open_interest', COUNT(*) FROM open_interest UNION ALL SELECT 'logs', COUNT(*) FROM logs UNION ALL SELECT 'scorecard_points', COUNT(*) FROM scorecard_points
    UNION ALL SELECT 'risk_calib', COUNT(*) FROM risk_calib UNION ALL SELECT 'ai_cache', COUNT(*) FROM ai_cache UNION ALL SELECT 'params_versions', COUNT(*) FROM params_versions
-   UNION ALL SELECT 'admins', COUNT(*) FROM admins UNION ALL SELECT 'sessions', COUNT(*) FROM sessions;"
-echo "--- 本地 K 线覆盖（每个来源和周期：币种数、总根数、最早、各币中最晚的起点、最新；主来源 binance-futures 的目标 5m 30 天 / 15m 1 年 / 1h 2 年 / 4h 5 年 / 日线周线全部，其他来源只留约 2500 根）"
+   UNION ALL SELECT 'admins', COUNT(*) FROM admins UNION ALL SELECT 'sessions', COUNT(*) FROM sessions
+   UNION ALL SELECT 'events', COUNT(*) FROM events UNION ALL SELECT 'research_reports', COUNT(*) FROM research_reports;"
+echo "--- 本地 K 线覆盖（每个来源和周期：币种数、总根数、最早、各币中最晚的起点、最新；主来源 binance-futures 的目标 5m 30 天 / 15m 3 年 / 1h 2 年 / 4h 5 年 / 日线周线全部，其他来源只留约 2500 根）"
 q "SELECT source, tf, COUNT(*) coins, SUM(n) bars, datetime(MIN(f),'unixepoch') first, datetime(MAX(f),'unixepoch') latest_first, datetime(MAX(l),'unixepoch') last
    FROM (SELECT coin, tf, source, COUNT(*) n, MIN(t) f, MAX(t) l FROM candles GROUP BY coin, tf, source) GROUP BY source, tf ORDER BY source, MIN(f);" 60
 echo "--- 资金费率与持仓量（每个币：条数、最早、最新）"
@@ -114,7 +127,15 @@ q "SELECT username, datetime(created_at/1000,'unixepoch') created, datetime(last
 q "SELECT * FROM ai_usage ORDER BY day DESC LIMIT 7;"
 echo "--- 运行状态记录"
 q "SELECT key, value FROM settings WHERE key LIKE 'state.%' AND key NOT LIKE '%knownIps%' AND key NOT LIKE 'state.klineHistory.%';"
-q "SELECT key, value FROM settings WHERE key NOT LIKE 'state.%' AND key != 'ai.config';"
+q "SELECT key, value FROM settings WHERE key NOT LIKE 'state.%' AND key NOT IN ('ai.config', 'mail.config');"
+sqlite3 "$DB" "SELECT value FROM settings WHERE key='mail.config'" 2>/dev/null | json '
+import json,sys
+t=sys.stdin.read().strip()
+if not t: print("邮件配置：未保存过"); sys.exit()
+c=json.loads(t)
+print("邮件配置（只列是否填写）：服务器", c.get("host") or "未填", "端口", c.get("port"), c.get("security"),
+      "| 账号", "已填" if c.get("user") else "未填", "| 授权码", "已填" if c.get("passEnc") else "未填",
+      "| 收件人", len(c.get("to") or []), "个 | 告警", "开" if c.get("alertsEnabled") else "关")'
 sqlite3 "$DB" "SELECT value FROM settings WHERE key='ai.config'" 2>/dev/null | json '
 import json,sys
 t=sys.stdin.read().strip()
@@ -123,6 +144,25 @@ c=json.loads(t); c.pop("apiKeyEnc",None); c.pop("prompt",None)
 print("AI 配置（密钥和提示词已省略）：", json.dumps(c, ensure_ascii=False))'
 
 sec "7. 应用日志"
+echo "--- 日志量（近 24 小时，按小时；本地时间）"
+sqlite3 -separator ' | ' "$DB" "SELECT strftime('%m-%d %H:00', ts/1000, 'unixepoch', 'localtime') hour, COUNT(*) n, SUM(level='warn') warn, SUM(level='error') error FROM logs WHERE ts >= $SINCE1 GROUP BY 1 ORDER BY 1;" 2>&1
+echo "--- 数据源成功率与耗时（来自每小时汇总；近 24 小时 / 近 7 天）"
+sqlite3 -separator $'\t' "$DB" "SELECT ts, ctx FROM logs WHERE msg='数据源小时汇总' AND ts >= $SINCE7;" 2>/dev/null | python3 -c '
+import json,sys,time
+now=time.time()*1000; agg={}
+for line in sys.stdin:
+    ts,_,ctx=line.rstrip("\n").partition("\t")
+    try: src=json.loads(ctx)["sources"]
+    except Exception: continue
+    for name,s in src.items():
+        for w in ("24h","7d"):
+            if w=="24h" and int(ts)<now-86400000: continue
+            a=agg.setdefault((name,w),[0,0,0])
+            a[0]+=s.get("ok",0); a[1]+=s.get("fail",0); a[2]+=s.get("totalMs",0)
+if not agg: print("（没有每小时汇总记录）")
+for (name,w),(ok,fail,ms) in sorted(agg.items()):
+    n=ok+fail
+    print("  %-18s %-4s 请求 %6d  失败 %5d  成功率 %5s%%  平均 %5d ms" % (name,w,n,fail,round(ok*100/n,1) if n else "-",ms/n if n else 0))' 2>&1
 echo "--- 近 24 小时 / 7 天，按级别和类别"
 q "SELECT level, category, SUM(ts >= $SINCE1) last24h, COUNT(*) last7d FROM logs WHERE ts >= $SINCE7 GROUP BY 1,2 ORDER BY 4 DESC;"
 echo "--- 近 7 天的错误和警告（同类合并，最多 30 种）"
@@ -141,7 +181,13 @@ sqlite3 -separator ' | ' "$DB" "SELECT datetime(ts/1000,'unixepoch','localtime')
 echo "--- systemd 日志里的异常（近 7 天）"
 journalctl -u signallight --since "-7 days" --no-pager 2>/dev/null | grep -E "\[error\]|Error|exception|ELIFECYCLE|Failed|killed" | mask_ip | tail -15 | cut -c1-240
 
-sec "8. 安全"
+sec "8. K 线历史补齐进度"
+slcli history | head -120
+
+sec "9. 研究报告（每种最新一份：生成时间、参数版本、各结论行数和主要行）"
+slcli reports | head -400
+
+sec "10. 安全"
 echo "SSH 配置：$(sshd -T 2>/dev/null | grep -E '^(port|permitrootlogin|passwordauthentication|pubkeyauthentication) ' | tr '\n' ' ')"
 AUTH=/var/log/auth.log
 if [ -f "$AUTH" ]; then
@@ -157,15 +203,16 @@ echo "--- 系统自动更新"
 tail -5 /var/log/unattended-upgrades/unattended-upgrades.log 2>/dev/null
 echo "可升级的软件包：$(apt list --upgradable 2>/dev/null | grep -c upgradable)"
 
-sec "9. 备份"
+sec "11. 备份"
 ls -lht "$SL_DATA/backups" 2>/dev/null | head -8
 du -sh "$SL_DATA"/{backups,archives} 2>/dev/null
 
 echo
 echo "报告结束"
-} 2>&1 | tee "$OUT"
+} 2>&1 | scrub | tee "$OUT"
 
 chmod 600 "$OUT"
 echo
 echo "报告已保存：$OUT（$(wc -l <"$OUT") 行）"
-echo "可以把整个文件内容复制发给开发者，或者下载后作为附件发送。"
+echo "上传给 Claude：在电脑上运行 scp root@服务器IP:$OUT .  下载后作为附件发送；"
+echo "或者 sudo cat $OUT 把全部内容复制粘贴到对话里。"

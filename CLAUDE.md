@@ -85,7 +85,7 @@
 - 在服务器上用 `sudo signallight update | status | diagnose | rollback | logs | backup`。
 - `update` 的规则：默认更新到最新的 `v*` 正式标签（会跳过 -rc 等预发布标签）；仓库里还没有标签时更新到 main；`--branch main` 强制跟随 main。小服务器上构建时会自动降低优先级，只用 1 个编译进程。
 - **云端 Claude 会话推不了 git 标签**，发布标签要由用户在 GitHub 的 Releases 页面创建。
-- 服务器出问题时，让用户运行 `sudo signallight diagnose`，把生成的报告发来分析。云端会话无法 SSH 到服务器。
+- 服务器出问题时，或想定期检查问题、不足和研究报告时，让用户运行 `sudo signallight diagnose`，把生成的报告（`/var/lib/signallight/diagnose-<时间>.txt`）发来分析。报告只读，含开关机、资源、版本记录、本机接口耗时、本地 K 线、数据源成功率与耗时（读每小时汇总日志）、日志量与错误、后台任务、K 线历史补齐进度（`cli history`）、每种研究报告最新一份（`cli reports`）、安全、备份；邮箱、API Key、令牌、邮件授权码和访问者 IP 都会隐藏。云端会话无法 SSH 到服务器。
 
 ## 当前进度（2026-10-21）
 - **新会话接着做：先读 `docs/NEXT_STEPS.md`**（E20 研究的完整规格、工作方式、怎样用 `scripts/research-data/build.ts` 从公开归档建本地研究库）。

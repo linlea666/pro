@@ -11,6 +11,7 @@
  *                                 taker volume, mark prices and the open-interest archive)
  *   research [--kind signals|light|levels|plans|defend|watch|patterns] [--all]
  *                                 generate the research reports, save them and print the findings (--all: every row)
+ *   reports [--all]               print the newest saved report of each kind (read-only; diagnose uses it)
  *   compare --set KEY=VALUE [--set ...] [--tf 1h] [--coin BTC] [--step 2]
  *                                 replay the traffic light with the current and the changed parameters on the
  *                                 same past moments and print both records against the random control
@@ -26,6 +27,7 @@ import { randomBytes } from "node:crypto";
 import { dbPath, getDb, migrate, SCHEMA_VERSION } from "../src/lib/server/db.ts";
 import { adminCount, upsertAdmin, validatePassword } from "../src/lib/server/auth.ts";
 import { backupNow } from "../src/lib/server/jobs.ts";
+import type { ResearchReport } from "../src/lib/research/run.ts";
 
 const [cmd, ...rest] = process.argv.slice(2);
 const opt = (name: string) => {
@@ -37,6 +39,44 @@ function genPassword() {
   // letters + digits, always passes validatePassword
   const base = randomBytes(12).toString("base64").replace(/[^A-Za-z0-9]/g, "").slice(0, 12);
   return `${base}${(randomBytes(1)[0] % 90) + 10}a`;
+}
+
+/** One research report as the `research` command prints it: coverage, then a row per finding (all: every row). */
+function printReport(r: ResearchReport, id: number, all: boolean) {
+  const f = (g: { edgeR: number | null; n: number }) => (g.edgeR == null ? "    —" : `${g.edgeR >= 0 ? "+" : ""}${g.edgeR.toFixed(2)}`.padStart(5));
+  console.log(`\n${r.title}（报告 #${id}，用时 ${Math.round(r.durationMs / 1000)} 秒，样本外从 ${new Date(r.holdoutFrom * 1000).toISOString().slice(0, 10)} 起）`);
+  for (const c of r.coverage) console.log(`  ${c.tf}：${c.coins} 个币，${c.bars}${r.kind === "light" ? " 个时点" : " 根/币"}，${new Date((c.from ?? 0) * 1000).toISOString().slice(0, 10)} 至 ${new Date((c.to ?? 0) * 1000).toISOString().slice(0, 10)}`);
+  console.log("  周期 信号                      笔数  样本内 样本外   BTC   ETH  前半  后半  q值     结论");
+  for (const x of r.rows) {
+    if (!all && x.verdict !== "有优势" && x.verdict !== "比随机差" && !["light", "level", "level_mfe", "exit", "entry", "behavior", "anchor", "stop", "defend", "stop2", "watch", "watch_sign", "move24", "pa"].includes(x.family)) continue;
+    const c = x.cells;
+    const e = x.extra ?? {};
+    const watch = () => {
+      const p: string[] = [];
+      if (e.triggerPct != null) p.push(`触发 ${e.triggerPct}%`);
+      if (e.halfwayPct != null) p.push(`接到半山腰 ${e.halfwayPct}%${e.halfwayA != null ? `（碰到就进 ${e.halfwayA}%，差 ${e.halfwayDiff} 个百分点，p ${e.halfwayP ?? "—"}，q ${e.halfwayQ ?? "—"}${e.halfwayConsistent ? "，方向一致" : "，方向不一"}）` : ""}`);
+      if (e.quickStopPct != null) p.push(`24 小时内被扫 ${e.quickStopPct}%${e.quickStopA != null ? `（碰到就进 ${e.quickStopA}%）` : ""}`);
+      if (e.missedPct != null) p.push(`错过 ${e.missedPct}%`);
+      if (e.volRatio != null) p.push(`${e.events} 次，之后波动是平时的 ${e.volRatio} 倍`);
+      if (e.unknown) p.push(`${e.unknown} 笔数据缺失未计`);
+      return p.length ? `  ${p.join("  ")}  均值 ${c.is.meanR}R` : "";
+    };
+    const pa = () =>
+      `  ${e.setups != null ? `${e.setups} 个形态、触发 ${e.triggerPct ?? "—"}%  ` : ""}${e.trades} 笔  先到 2R ${e.reach2 ?? "—"}%  6 根内被扫 ${e.quickStopPct ?? "—"}%  风险中位 ${e.riskAtrMed ?? "—"} 倍 ATR  均值 ${c.is.meanR}R`;
+    const lv =
+      x.family === "pa"
+        ? pa()
+        : x.family === "watch" || x.family === "watch_sign" || x.family === "move24"
+        ? watch()
+        : x.family === "level"
+        ? `  刺穿 ${e.piercedPct}% 失效 ${e.brokenPct}%  均值 ${c.is.meanR}R`
+        : x.family === "level_mfe"
+          ? `  止损前先到 2R ${e.reach2}%（随机 ${e.reach2Ctl}%） 最远中位 ${e.mfeMedR}R  均值 ${c.is.meanR}R`
+          : e.stopPct != null
+            ? `  被扫 ${e.stopPct}%（${e.quickStopPct}% 在 6 根内） 先到 2R ${e.reach2}%  均值 ${c.is.meanR}R`
+            : "";
+    console.log(`  ${x.tf.padEnd(4)} ${x.name.padEnd(22)} ${String(c.is.n).padStart(5)} ${f(c.is)}  ${f(c.oos)} ${f(c.btc)} ${f(c.eth)} ${f(c.firstHalf)} ${f(c.secondHalf)}  ${String(x.q ?? "—").padEnd(6)}  ${x.verdict}${lv}${x.control ? `（对照：${x.control}）` : ""}`);
+  }
 }
 
 async function main() {
@@ -149,44 +189,30 @@ async function main() {
       if (!kind || kind === "defend") reports.push(await defendReport(engine, { paramsVersion: version }));
       if (!kind || kind === "watch") reports.push(await watchReport(engine, { paramsVersion: version }));
       if (!kind || kind === "patterns") reports.push(await patternsReport(engine, { paramsVersion: version }));
-      const f = (g: { edgeR: number | null; n: number }) => (g.edgeR == null ? "    —" : `${g.edgeR >= 0 ? "+" : ""}${g.edgeR.toFixed(2)}`.padStart(5));
-      for (const r of reports) {
-        const id = saveReport(r);
-        console.log(`\n${r.title}（报告 #${id}，用时 ${Math.round(r.durationMs / 1000)} 秒，样本外从 ${new Date(r.holdoutFrom * 1000).toISOString().slice(0, 10)} 起）`);
-        for (const c of r.coverage) console.log(`  ${c.tf}：${c.coins} 个币，${c.bars}${r.kind === "light" ? " 个时点" : " 根/币"}，${new Date((c.from ?? 0) * 1000).toISOString().slice(0, 10)} 至 ${new Date((c.to ?? 0) * 1000).toISOString().slice(0, 10)}`);
-        console.log("  周期 信号                      笔数  样本内 样本外   BTC   ETH  前半  后半  q值     结论");
-        for (const x of r.rows) {
-          if (!rest.includes("--all") && x.verdict !== "有优势" && x.verdict !== "比随机差" && !["light", "level", "level_mfe", "exit", "entry", "behavior", "anchor", "stop", "defend", "stop2", "watch", "watch_sign", "move24", "pa"].includes(x.family)) continue;
-          const c = x.cells;
-          const e = x.extra ?? {};
-          const watch = () => {
-            const p: string[] = [];
-            if (e.triggerPct != null) p.push(`触发 ${e.triggerPct}%`);
-            if (e.halfwayPct != null) p.push(`接到半山腰 ${e.halfwayPct}%${e.halfwayA != null ? `（碰到就进 ${e.halfwayA}%，差 ${e.halfwayDiff} 个百分点，p ${e.halfwayP ?? "—"}，q ${e.halfwayQ ?? "—"}${e.halfwayConsistent ? "，方向一致" : "，方向不一"}）` : ""}`);
-            if (e.quickStopPct != null) p.push(`24 小时内被扫 ${e.quickStopPct}%${e.quickStopA != null ? `（碰到就进 ${e.quickStopA}%）` : ""}`);
-            if (e.missedPct != null) p.push(`错过 ${e.missedPct}%`);
-            if (e.volRatio != null) p.push(`${e.events} 次，之后波动是平时的 ${e.volRatio} 倍`);
-            if (e.unknown) p.push(`${e.unknown} 笔数据缺失未计`);
-            return p.length ? `  ${p.join("  ")}  均值 ${c.is.meanR}R` : "";
-          };
-          const pa = () =>
-            `  ${e.setups != null ? `${e.setups} 个形态、触发 ${e.triggerPct ?? "—"}%  ` : ""}${e.trades} 笔  先到 2R ${e.reach2 ?? "—"}%  6 根内被扫 ${e.quickStopPct ?? "—"}%  风险中位 ${e.riskAtrMed ?? "—"} 倍 ATR  均值 ${c.is.meanR}R`;
-          const lv =
-            x.family === "pa"
-              ? pa()
-              : x.family === "watch" || x.family === "watch_sign" || x.family === "move24"
-              ? watch()
-              : x.family === "level"
-              ? `  刺穿 ${e.piercedPct}% 失效 ${e.brokenPct}%  均值 ${c.is.meanR}R`
-              : x.family === "level_mfe"
-                ? `  止损前先到 2R ${e.reach2}%（随机 ${e.reach2Ctl}%） 最远中位 ${e.mfeMedR}R  均值 ${c.is.meanR}R`
-                : e.stopPct != null
-                  ? `  被扫 ${e.stopPct}%（${e.quickStopPct}% 在 6 根内） 先到 2R ${e.reach2}%  均值 ${c.is.meanR}R`
-                  : "";
-          console.log(`  ${x.tf.padEnd(4)} ${x.name.padEnd(22)} ${String(c.is.n).padStart(5)} ${f(c.is)}  ${f(c.oos)} ${f(c.btc)} ${f(c.eth)} ${f(c.firstHalf)} ${f(c.secondHalf)}  ${String(x.q ?? "—").padEnd(6)}  ${x.verdict}${lv}${x.control ? `（对照：${x.control}）` : ""}`);
-        }
-      }
+      for (const r of reports) printReport(r, saveReport(r), rest.includes("--all"));
       console.log("\n优势单位 R（1R = 入场时 1 倍 ATR），已扣成本，对比同期随机对照。");
+      break;
+    }
+    case "reports": {
+      // read-only: the newest saved report of each kind (used by diagnose)
+      const { getReport } = await import("../src/lib/research/run.ts");
+      const { currentParams } = await import("../src/lib/server/params-store.ts");
+      const { version } = currentParams();
+      const kinds = ["light", "signals", "levels", "plans", "defend", "watch", "patterns"] as const;
+      for (const kind of kinds) {
+        const r = getReport(undefined, kind);
+        if (!r) {
+          console.log(`\n${kind}：还没有生成过`);
+          continue;
+        }
+        const count: Record<string, number> = {};
+        for (const x of r.rows) count[x.verdict] = (count[x.verdict] ?? 0) + 1;
+        const age = Math.round((Date.now() - r.createdAt) / 86400_000);
+        console.log(`\n—— ${kind}：生成于 ${new Date(r.createdAt).toISOString().slice(0, 16).replace("T", " ")} UTC（${age} 天前），参数版本 ${r.paramsVersion}${r.paramsVersion === version ? "" : `（当前 ${version}，不一致）`}，数据源 ${r.source}，${r.rows.length} 行：${Object.entries(count).map(([k, n]) => `${k} ${n}`).join("，")}`);
+        if (r.rules) console.log(`  规则：${JSON.stringify(r.rules)}`);
+        printReport(r, r.id, rest.includes("--all"));
+        for (const n of r.notes) console.log(`  注：${n}`);
+      }
       break;
     }
     case "compare": {
