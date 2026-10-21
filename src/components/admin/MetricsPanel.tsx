@@ -7,7 +7,7 @@ import { Tile } from "./ui";
 
 type Metrics = { events: number; since: number | null; dau: number; wau: number; mau: number; weeks: WeekRow[]; retention: RetentionRow[] };
 
-const FEATURES: EventName[] = ["view_verdict", "view_plan", "defense_done", "open_explain", "click_ai", "use_calc", "check_position", "use_replay"];
+const FEATURES: EventName[] = ["view_verdict", "view_plan", "view_watch", "defense_done", "open_explain", "click_ai", "use_calc", "check_position", "use_replay"];
 const share = (n: number | undefined, of: number) => (of ? `${Math.round(((n ?? 0) / of) * 100)}%` : "—");
 const day = (ms: number) => new Date(ms).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
 
@@ -81,7 +81,7 @@ export function MetricsPanel() {
           </section>
 
           <p className="text-xs leading-relaxed text-ink-3">
-            “完成防守位任务”= 在“趋势与计划”页用计划给出的止损（远或近）算了仓位，即 PRD 的“防守位页使用率”。“首次理解关键结论比例”需要首访小测，尚未实现。数据及时性、计算延迟和失败率见“运行概览”。
+            “完成防守位任务”= 在“趋势与计划”页用计划给出的止损（远或近）、或在“实时盯盘”页用转强后的止损算了仓位，即 PRD 的“防守位页使用率”。“首次理解关键结论比例”需要首访小测，尚未实现。数据及时性、计算延迟和失败率见“运行概览”。
           </p>
         </>
       )}

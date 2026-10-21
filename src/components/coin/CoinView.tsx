@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Analysis, LightSummary } from "@/lib/analysis";
 import type { Framework, TrendPlan } from "@/lib/trendplan";
+import type { WatchView } from "@/lib/watch";
 import { COINS, getCoin } from "@/lib/symbols";
 import { BEGINNER_TIMEFRAMES, TF_HORIZON, TF_LABEL, TF_SECONDS, TIMEFRAMES, type Timeframe } from "@/lib/types";
 import { ago, fmtPct, fmtPrice, signColor } from "./format";
@@ -17,6 +18,7 @@ import { FibTab } from "./FibTab";
 import { ChanTab } from "./ChanTab";
 import { TrendPlanTab } from "./TrendPlanTab";
 import { LessonsTab } from "./LessonsTab";
+import { WatchTab } from "./WatchTab";
 import { ReplayContext, type ReplayState } from "./replay";
 import { ReplayBar } from "./ReplayBar";
 import { track } from "../track";
@@ -24,6 +26,7 @@ import { track } from "../track";
 const TABS = [
   { id: "overview", label: "总览", hint: "趋势地图" },
   { id: "plan", label: "趋势与计划", hint: "在哪认错、怎么拿住" },
+  { id: "watch", label: "实时盯盘", hint: "关键位上别接飞刀" },
   { id: "learn", label: "新手学堂", hint: "用真实数字讲" },
   { id: "td", label: "TD 序列", hint: "涨跌是否累了" },
   { id: "indicators", label: "指标共振", hint: "多指标投票" },
@@ -34,7 +37,9 @@ const TABS = [
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
 /** what beginners see; the module tabs live in pro mode */
-const BEGINNER_TABS: TabId[] = ["overview", "plan", "learn"];
+const BEGINNER_TABS: TabId[] = ["overview", "plan", "watch", "learn"];
+/** tabs that load their own data rather than the chart timeframe's analysis */
+const OWN_DATA: TabId[] = ["plan", "learn", "watch"];
 
 const SOURCE_NOTE: Record<string, string> = {
   "binance-futures": "Binance 永续合约（USDT 本位）公开行情",
@@ -71,6 +76,9 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
   const [fw, setFw] = useState<Framework>("4h");
   const [plan, setPlan] = useState<TrendPlan | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
+  // the key-level watch (15-minute bars), loaded only while its tab is open
+  const [watch, setWatch] = useState<{ key: string; v: WatchView } | null>(null);
+  const [watchError, setWatchError] = useState<{ key: string; msg: string } | null>(null);
 
   useEffect(() => {
     try {
@@ -146,17 +154,58 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
     if (planFresh && !planFresh.replay && tab === "plan") track("view_plan", `plan:${planFresh.coin}:${planFresh.framework}`);
   }, [planFresh, tab]);
 
-  /** Rewind to the close of bar `at` of timeframe `t` and show its plan (on another coin's page if needed). */
+  // the watch: polled every 15 seconds while its tab is open and the page is in front; a replay never changes
+  const watchTf = asOf ? tf : null;
+  const watchKey = `${coinId}:${asOf ? `${asOf}:${tf}` : "live"}`;
+  const watchOpen = tab === "watch";
+  useEffect(() => {
+    if (!watchOpen) return;
+    let alive = true;
+    const key = `${coinId}:${asOf ? `${asOf}:${watchTf}` : "live"}`;
+    const get = () =>
+      fetch(`/api/watch?coin=${coinId}${asOf ? `&asOf=${asOf}&tf=${watchTf}` : ""}`)
+        .then((r) => r.json())
+        .then((b) => {
+          if (!alive) return;
+          if (b.error) throw new Error(b.error);
+          setWatch({ key, v: b });
+          setWatchError(null);
+        })
+        .catch((e) => alive && setWatchError({ key, msg: (e as Error).message || "加载失败" }));
+    get();
+    if (asOf)
+      return () => {
+        alive = false;
+      };
+    const visible = () => document.visibilityState === "visible";
+    const id = setInterval(() => visible() && get(), 15_000);
+    const onVis = () => visible() && get();
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      alive = false;
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [watchOpen, coinId, asOf, watchTf]);
+  const watchFresh = watch?.key === watchKey ? watch.v : null;
+  const watchErr = watchError?.key === watchKey ? watchError.msg : null;
+
+  useEffect(() => {
+    if (watchFresh && !watchFresh.replay && tab === "watch") track("view_watch", `watch:${watchFresh.coin}`);
+  }, [watchFresh, tab]);
+
+  /** Rewind to the close of bar `at` of timeframe `t` and show it on tab `to` (on another coin's page if needed). */
   const replayAt = useCallback(
-    (t: Timeframe, at: number, coin = coinId) => {
-      if (coin !== coinId) return router.push(`/coin/${coin}?tf=${t}&tab=plan&asOf=${at}`);
+    (t: Timeframe, at: number, coin = coinId, to: TabId = "plan") => {
+      if (coin !== coinId) return router.push(`/coin/${coin}?tf=${t}&tab=${to}&asOf=${at}`);
       setPicking(false);
       setTf(t);
       setAsOf(at);
-      setTab("plan");
+      setTab(to);
     },
     [coinId, router],
   );
+  const watchPick = useCallback((t: Timeframe, at: number) => replayAt(t, at, coinId, "watch"), [replayAt, coinId]);
 
   // replay points belong to one timeframe's bars
   const changeTf = useCallback((t: Timeframe) => {
@@ -279,7 +328,7 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
         </div>
       </div>
 
-      {(tab === "plan" || tab === "learn") && (
+      {OWN_DATA.includes(tab) && (
         <ReplayContext.Provider value={replay}>
           {tab === "plan" &&
             (planFresh ? (
@@ -293,14 +342,28 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
             <LessonsTab
               p={planFresh}
               coin={coinId}
-              onReplay={(t, at, c) => {
-                // the cases are 4-hour moments: replay them in the rhythm they were written for
+              onReplay={(t, at, c, to) => {
+                // the cases were written for the 4-hour rhythm: replay them in it
                 setFw("4h");
-                replayAt(t, at, c);
+                replayAt(t, at, c, to);
               }}
             />
           )}
-          {planFresh && (
+          {tab === "watch" &&
+            (watchFresh ? (
+              <WatchTab v={watchFresh} mode={mode} onPick={watchPick} />
+            ) : watchErr ? (
+              <div className="card p-6 text-center text-sm text-ink-2">{watchErr}</div>
+            ) : (
+              <Skeleton />
+            ))}
+          {tab === "watch" && watchFresh && (
+            <p className="mt-4 text-right text-[11px] text-ink-3">
+              数据来源 {SOURCE_NOTE[watchFresh.source] ?? SOURCE_NOTE.local} · 更新于 {ago(watchFresh.updatedAt)}
+              {!asOf && " · 页面在前台时每 15 秒刷新"}
+            </p>
+          )}
+          {tab !== "watch" && planFresh && (
             <p className="mt-4 text-right text-[11px] text-ink-3">
               数据来源 {SOURCE_NOTE[planFresh.source] ?? SOURCE_NOTE.local} · 更新于 {ago(planFresh.updatedAt)}
               {!asOf && " · 每分钟自动刷新"}
@@ -308,14 +371,14 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
           )}
         </ReplayContext.Provider>
       )}
-      {tab !== "plan" && tab !== "learn" && error && !fresh && (
+      {!OWN_DATA.includes(tab) && error && !fresh && (
         <div className="card p-6 text-center text-sm text-ink-2">
           {error}
           <button onClick={() => load()} className="ml-3 rounded-lg border border-line px-3 py-1 text-ink">重试</button>
         </div>
       )}
-      {tab !== "plan" && tab !== "learn" && !fresh && !error && <Skeleton />}
-      {tab !== "plan" && tab !== "learn" && fresh && (
+      {!OWN_DATA.includes(tab) && !fresh && !error && <Skeleton />}
+      {!OWN_DATA.includes(tab) && fresh && (
         <ReplayContext.Provider value={replay}>
         <div className={loading ? "opacity-60 transition" : "transition"}>
           {tab === "overview" && <Overview a={data} mtf={mtf} mode={mode} plan={planFresh} onTf={changeTf} onTab={(t) => setTab(t as TabId)} />}

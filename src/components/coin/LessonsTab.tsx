@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import type { ScoreRow, TrendPlan } from "@/lib/trendplan";
+import type { WatchView } from "@/lib/watch";
 import { TF_LABEL, type Timeframe } from "@/lib/types";
 import { Term } from "../Term";
 import { fmtPrice } from "./format";
@@ -16,15 +17,18 @@ import { Section } from "./shared";
 
 interface Case {
   title: string;
-  /** open time of the 4-hour bar to replay, Unix seconds (UTC) */
+  /** open time of the bar to replay (of `tf`, 4 hours unless given), Unix seconds (UTC) */
   at: number;
+  tf?: Timeframe;
+  /** the tab the replay opens on (the plan unless given) */
+  tab?: "plan" | "watch";
   story: string;
   lesson: string;
 }
 
 const H4 = (iso: string) => Date.parse(iso) / 1000;
 
-/** BTC moments from 2026 (4-hour bars, UTC open times). */
+/** BTC moments from 2026 (UTC open times: 4-hour bars on the plan, 15-minute bars on the watch). */
 const CASES: Case[] = [
   {
     title: "9/23 在 87,000 附近做空，止损贴着前高",
@@ -56,9 +60,25 @@ const CASES: Case[] = [
     story: "价格跌破之前没被收盘跌破的 4 小时低点 80,345，最低到约 80,190 后收回，随后一根 4 小时 K 线收盘拐上。",
     lesson: "回放这一刻：做多计划卡下面会多出一栏“守位做法”，给出远、近两档止损（按风险算仓位，两档亏的钱一样），并标出这种做法在历史上的表现。之后怎么走，看回放结果。",
   },
+  {
+    title: "10/8 碰到上周低点 82,500：转强以后又跌破",
+    at: H4("2026-10-08T07:15:00Z"),
+    tf: "15m",
+    tab: "watch",
+    story: "价格碰到上周低点 82,500 后几次创新低，最低 82,150。",
+    lesson: "回放这一刻：15 分钟走出更高的低点、收盘站上反弹高点，页面显示“已转强”，止损在 82,150 之外。之后怎么走，看回放结果；转强以后再创新低，页面会回到“别接”，并记为第几次尝试。",
+  },
+  {
+    title: "10/15 跌破 80,345：一直在创新低",
+    at: H4("2026-10-15T13:45:00Z"),
+    tf: "15m",
+    tab: "watch",
+    story: "价格先后碰到前一日低点、上周低点 80,345 和 4 小时摆动低点 80,096，最低 79,732。",
+    lesson: "回放这一刻：页面一直是“别接”。等转强的代价是有时会错过一段——回放会显示之后发生了什么。",
+  },
 ];
 
-export function LessonsTab({ p, coin, onReplay }: { p: TrendPlan | null; coin: string; onReplay: (tf: Timeframe, at: number, coin: string) => void }) {
+export function LessonsTab({ p, coin, onReplay }: { p: TrendPlan | null; coin: string; onReplay: (tf: Timeframe, at: number, coin: string, tab?: "plan" | "watch") => void }) {
   const row = (k: string) => p?.lessons.find((r) => r.key === k) ?? null;
   const dRow = (k: string) => p?.defendLessons.find((r) => r.key === k) ?? null;
   const nf = p?.nearFar.plans ?? null;
@@ -77,6 +97,18 @@ export function LessonsTab({ p, coin, onReplay }: { p: TrendPlan | null; coin: s
     };
   }, [peerCoin]);
   const corr = p && peer ? returnCorrelation(p.daily, peer.daily) : null;
+  // what the research says about waiting at key levels (the live watch carries it)
+  const [watchText, setWatchText] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch(`/api/watch?coin=${coin}`)
+      .then((r) => r.json())
+      .then((b: WatchView & { error?: string }) => alive && !b.error && setWatchText(b.research?.text ?? null))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [coin]);
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
@@ -181,16 +213,47 @@ export function LessonsTab({ p, coin, onReplay }: { p: TrendPlan | null; coin: s
         </div>
       </Section>
 
-      <Section title="7. 回放真实案例：当时页面会怎么说" className="lg:col-span-2">
-        <p className="mb-3 text-[13px] leading-relaxed text-ink-3">点“回放”会把 BTC 的页面倒回那一刻（4 小时 K 线收盘时），只用当时已经有的数据给出趋势地图和计划，并显示之后真实发生了什么。</p>
+      <Section title="7. 碰到关键位别急着接" className="lg:col-span-2">
+        <div className="space-y-2 text-[14px] leading-relaxed text-ink-2">
+          <p>
+            价格跌到上周低点、前一日低点这类关键位时，很多人会想“到支撑了，接一下”。可下跌途中的每一个低点都可能只是半山腰，这就是<Term k="接飞刀">接飞刀</Term>。“实时盯盘”页用三个词描述碰到关键位之后的样子：
+          </p>
+          <ul className="space-y-1.5 rounded-lg bg-panel-2 px-3 py-2 text-[13px]">
+            <li>
+              <b className="text-ink">⛔ 别接</b>：碰到以后还在创新低，或者收盘已经落到位的下方。这时买进去，就是在下跌途中猜底。
+            </li>
+            <li>
+              <b className="text-ink">👀 观察</b>：停下来了，暂时没有再创新低（有时是扫过后收回），但 15 分钟还没转强。
+            </li>
+            <li>
+              <b className="text-ink">↗ 已转强</b>：在最新的低点之后，15 分钟先走出更高的低点、再收盘站上最近的反弹高点（<Term k="转强">15 分钟转强</Term>）。转强以后又创新低，页面回到“别接”，并记为第几次尝试。
+            </li>
+            <li className="text-ink-3">做空反过来：碰到关键高点后“别急着空”，等 15 分钟转弱。</li>
+          </ul>
+          <p>
+            止损为什么放在<b className="text-ink">最新的</b>低点之外？“这里跌不下去了”这个判断，被推翻的地方就是最新的那个低点：再跌破它，说明这次转强作废。止损放在它之外再留一段扫损缓冲（和计划页的认错位一样，来自影线刺穿深度的统计），然后按止损距离算仓位，每笔亏的钱不变。
+          </p>
+          {watchText ? (
+            <p className="rounded-lg border border-line px-3 py-2 text-[13px]">
+              <b className="text-ink">研究怎么说</b>：{watchText}
+            </p>
+          ) : (
+            <p className="text-[12px] text-ink-3">研究数字会在服务器生成研究报告后显示。</p>
+          )}
+          <p className="text-[13px] text-ink-3">转强不是“跌够了”的信号，只是一条纪律：等它出现再进，止损放在最新的低点之外。下面最后两个案例可以回放到“实时盯盘”页看。</p>
+        </div>
+      </Section>
+
+      <Section title="8. 回放真实案例：当时页面会怎么说" className="lg:col-span-2">
+        <p className="mb-3 text-[13px] leading-relaxed text-ink-3">点“回放”会把 BTC 的页面倒回那一刻（那根 K 线收盘时），只用当时已经有的数据给出趋势地图和计划（最后两个案例打开“实时盯盘”，看 15 分钟 K 线），并显示之后真实发生了什么。</p>
         <div className="grid gap-3 md:grid-cols-2">
           {CASES.map((c) => (
             <article key={c.title} className="rounded-lg bg-panel-2 p-3 text-[13px] leading-relaxed">
               <h3 className="font-semibold">{c.title}</h3>
               <p className="mt-1 text-ink-2">{c.story}</p>
               <p className="mt-1 text-ink-2">{c.lesson}</p>
-              <button className="mt-2 text-xs text-accent" onClick={() => onReplay("4h", c.at, "BTC")}>
-                回放这一刻 →
+              <button className="mt-2 text-xs text-accent" onClick={() => onReplay(c.tf ?? "4h", c.at, "BTC", c.tab ?? "plan")}>
+                {c.tab === "watch" ? "在实时盯盘页回放这一刻 →" : "回放这一刻 →"}
               </button>
             </article>
           ))}

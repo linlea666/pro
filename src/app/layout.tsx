@@ -42,6 +42,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <nav className="flex items-center gap-0.5 whitespace-nowrap text-[13px] sm:gap-1 sm:text-sm">
               <Link href="/" className="rounded-lg px-2 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink"><span className="hidden sm:inline">今日</span>看盘</Link>
               <Link href="/coin/BTC" className="rounded-lg px-2 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink">分析<span className="hidden sm:inline">工作台</span></Link>
+              <Link href="/watch" className="rounded-lg px-2 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink"><span className="hidden sm:inline">实时</span>盯盘</Link>
               <Link href="/learn" className="rounded-lg px-2 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink"><span className="hidden sm:inline">新手</span>学堂</Link>
             </nav>
             <div className="ml-auto">

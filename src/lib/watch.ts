@@ -57,6 +57,8 @@ export interface Move24 {
   pctRank: number | null;
   /** after the biggest 24-hour drops (rallies), the next 72 hours moved this many times the usual (research) */
   volRatio: number | null;
+  /** what the same research row says about direction (worded from its verdict); null without a report */
+  dirNote: string | null;
   /** the biggest daily drops in the stored history, at least 3 days apart: the bar's open time and the change, % */
   topDrops: { t: number; pct: number }[];
 }
@@ -86,6 +88,8 @@ export interface WatchView {
   price: number;
   closedPrice: number;
   forming: boolean;
+  /** the last CHART_BARS closed 15-minute bars, plus the bar still forming when live (for the chart) */
+  candles: Candle[];
   atr1h: number;
   /** sweep buffer behind the extreme, hour ATR (calibrated: measured on this coin) */
   buf: number;
@@ -106,6 +110,8 @@ export interface WatchView {
 }
 
 const TFS: Timeframe[] = ["15m", "1h", "4h", "1d"];
+/** closed 15-minute bars sent for the chart */
+const CHART_BARS = 150;
 const r2 = (x: number) => Math.round(x * 100) / 100;
 
 /** Prices as people read them: thousands separated, small coins with enough digits. */
@@ -283,7 +289,23 @@ function move24Of(coin: string, h: Candle[], end: number, rows: Map<string, Rese
   const base = moveBase(coin, end);
   const rank = chg != null && base.abs.length ? Math.round((lowerBound(base.abs, Math.abs(chg)) / base.abs.length) * 1000) / 10 : null;
   const row = chg == null ? undefined : rows.get(chg < 0 ? "move24:drop:long" : "move24:rise:short");
-  return { changePct: chg == null ? null : r2(chg * 100), pctRank: rank, volRatio: row?.extra?.volRatio ?? null, topDrops: base.topDrops };
+  return { changePct: chg == null ? null : r2(chg * 100), pctRank: rank, volRatio: row?.extra?.volRatio ?? null, dirNote: chg == null ? null : moveDirNote(row, chg < 0 ? 1 : -1), topDrops: base.topDrops };
+}
+
+/** The direction half of a move24 row: holding against the move (long after a drop, short after a rally) for 72 hours against random holds. */
+function moveDirNote(r: ResearchRow | undefined, dir: 1 | -1): string | null {
+  if (!r) return null;
+  const what = `${dir > 0 ? "大跌之后做多" : "大涨之后做空"}持有 3 天`;
+  switch (r.verdict) {
+    case "有优势":
+      return `${what}，比平时随机持有好，统计上站得住`;
+    case "比随机差":
+      return `${what}，比平时随机持有差，统计上站得住`;
+    case "样本不足":
+      return "之后的方向样本还不够，下不了结论";
+    default:
+      return "之后往哪走没有可证明的规律";
+  }
 }
 
 /** Mirror of levelState in the plan page: coming from the side the close was on `look` bars ago, closes beyond. */
@@ -415,6 +437,7 @@ export async function computeWatch(coin: string, ep: EngineParams = DEFAULT_ENGI
     price: formingBar ? formingBar.c : close,
     closedPrice: close,
     forming: !!formingBar,
+    candles: formingBar ? [...c.slice(-CHART_BARS), formingBar] : c.slice(-CHART_BARS),
     atr1h: r2(a),
     buf: Math.round(buf * 1000) / 1000,
     calibrated: !!cal,
