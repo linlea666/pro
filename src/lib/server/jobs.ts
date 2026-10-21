@@ -76,6 +76,12 @@ async function tick() {
       const { precomputeStats } = await import("./precompute.ts");
       const pre = precomputeStats();
       if (pre.runs) logger.info("engine", "预计算状态", { ...pre });
+      // passes run every minute: none finished in 30 minutes means it is stalled (10-21 it sat for hours unnoticed)
+      if (pre.lastRunAt && getSetting("precompute.enabled") && Date.now() - pre.lastRunAt > 30 * 60_000) {
+        const ctx = { 上次完成: new Date(pre.lastRunAt).toISOString(), 当前: pre.current ?? "无", 开始于: pre.currentSince ? new Date(pre.currentSince).toISOString() : "无" };
+        logger.error("engine", "预计算 30 分钟没有完成一轮", ctx);
+        raiseAlert("job", "预计算 30 分钟没有完成一轮", ctx);
+      }
       const mem = process.memoryUsage();
       logger.info("system", "进程状态", { rssMB: Math.round(mem.rss / 1048576), heapMB: Math.round(mem.heapUsed / 1048576), uptimeMin: Math.round(process.uptime() / 60), dbMB: dbSizeMB() });
       const cap = getSetting("log.maxDbMB");

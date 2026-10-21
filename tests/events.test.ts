@@ -47,3 +47,17 @@ test("events: only known names; active visitors, retention and feature use by di
 
   assert.equal(pruneEvents(NOW), 1, "older than 400 days");
 });
+
+test("events: the visitor ID is built without crypto.randomUUID (missing on plain HTTP) and passes the server check", async () => {
+  const { newVisitorId, VISITOR_ID } = await import("../src/lib/event-names.ts");
+  // a crypto object as an insecure page has it: getRandomValues only
+  const insecure = { getRandomValues: (a: Uint8Array) => globalThis.crypto.getRandomValues(a) } as unknown as Pick<Crypto, "getRandomValues">;
+  const ids = new Set<string>();
+  for (let i = 0; i < 50; i++) {
+    const id = newVisitorId(insecure);
+    assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.ok(VISITOR_ID.test(id));
+    ids.add(id);
+  }
+  assert.equal(ids.size, 50);
+});

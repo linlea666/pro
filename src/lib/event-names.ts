@@ -16,3 +16,18 @@ export const EVENT_NAMES = {
 } as const;
 
 export type EventName = keyof typeof EVENT_NAMES;
+
+/** What the server accepts as a visitor ID. */
+export const VISITOR_ID = /^[A-Za-z0-9-]{16,40}$/;
+
+/**
+ * A random visitor ID (UUID v4 form). `crypto.randomUUID` exists only on HTTPS or localhost,
+ * and the site is served over plain HTTP, so it is built from `getRandomValues`, which works everywhere.
+ */
+export function newVisitorId(c: Pick<Crypto, "getRandomValues"> = globalThis.crypto): string {
+  const b = c.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}

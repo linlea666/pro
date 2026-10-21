@@ -1,6 +1,6 @@
 "use client";
 
-import type { EventName } from "@/lib/event-names";
+import { newVisitorId, type EventName } from "@/lib/event-names";
 
 /**
  * Anonymous product events. The visitor ID is random and lives only in this
@@ -15,7 +15,7 @@ function visitorId(): string | null {
   try {
     let id = localStorage.getItem(KEY);
     if (!id) {
-      id = crypto.randomUUID();
+      id = newVisitorId();
       localStorage.setItem(KEY, id);
       send(id, "first_visit");
     }

@@ -67,7 +67,9 @@ export function closedThrough(k: KlineResult, nowMs = Date.now()): number {
   return Math.floor(Math.min(nowMs, k.fetchedAt) / 1000);
 }
 
-type Entry = { at: number; value?: KlineResult; pending?: Promise<KlineResult> };
+type Entry = { at: number; value?: KlineResult; pending?: Promise<KlineResult>; since?: number };
+/** a load still pending after this long is treated as stuck (every request has a 10-second timeout) */
+const STUCK_MS = 3 * 60_000;
 const cache = new Map<string, Entry>();
 
 export async function getJson(source: string, url: string, timeoutMs = 10_000): Promise<unknown> {
@@ -340,16 +342,21 @@ export async function getKlines(coin: string, tf: Timeframe, limit = 2000): Prom
   const now = Date.now();
   const hit = cache.get(key);
   if (hit?.value && now - hit.at < TTL_MS[tf]) return hit.value;
-  if (hit?.pending) return hit.pending;
+  if (hit?.pending) {
+    if (now - (hit.since ?? 0) < STUCK_MS) return hit.pending;
+    logger.warn("datasource", `K 线读取超过 ${STUCK_MS / 60_000} 分钟没有完成，重新读取：${coin} ${tf}`);
+  }
 
   const pending = load(coin, tf, limit);
 
-  cache.set(key, { at: hit?.at ?? 0, value: hit?.value, pending });
+  cache.set(key, { at: hit?.at ?? 0, value: hit?.value, pending, since: now });
   try {
     const value = await pending;
-    cache.set(key, { at: Date.now(), value });
+    if (cache.get(key)?.pending === pending) cache.set(key, { at: Date.now(), value });
     return value;
   } catch (e) {
+    // superseded by a fresh load after getting stuck: leave that one's entry alone
+    if (cache.get(key)?.pending !== pending) throw e;
     // Serve stale data rather than nothing if both sources are down.
     if (hit?.value) {
       logger.error("datasource", `所有数据源都失败，返回旧缓存：${coin} ${tf}`, { error: (e as Error).message, staleSec: Math.round((Date.now() - hit.at) / 1000) });

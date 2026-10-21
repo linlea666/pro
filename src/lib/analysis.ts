@@ -219,7 +219,9 @@ function tdMarkers(td: TdState, c: Candle[], from: number): TdMarker[] {
 }
 
 // Results are cached for as long as the underlying candles are.
-const cache = new Map<string, { at: number; value?: Analysis; pending?: Promise<Analysis> }>();
+const cache = new Map<string, { at: number; value?: Analysis; pending?: Promise<Analysis>; since?: number }>();
+/** a computation still pending after this long is treated as stuck: the next caller starts a fresh one instead of waiting on it */
+export const STUCK_MS = 3 * 60_000;
 
 export async function analyze(coin: string, tf: Timeframe): Promise<Analysis> {
   // the parameter version is part of the key, so saving new parameters takes effect at once
@@ -227,17 +229,23 @@ export async function analyze(coin: string, tf: Timeframe): Promise<Analysis> {
   const key = `${coin}:${tf}:${params.version}`;
   const hit = cache.get(key);
   if (hit?.value && Date.now() - hit.at < ttlFor(tf)) return hit.value;
-  if (hit?.pending) return hit.pending;
+  if (hit?.pending) {
+    if (Date.now() - (hit.since ?? 0) < STUCK_MS) return hit.pending;
+    logger.warn("engine", `分析超过 ${STUCK_MS / 60_000} 分钟没有完成，重新计算：${coin} ${tf}`);
+  }
   for (const k of cache.keys()) if (!k.endsWith(`:${params.version}`)) cache.delete(k);
   const pending = analyzeLogged(coin, tf, params.engine);
-  cache.set(key, { at: hit?.at ?? 0, value: hit?.value, pending });
+  cache.set(key, { at: hit?.at ?? 0, value: hit?.value, pending, since: Date.now() });
   try {
     const value = await pending;
-    cache.set(key, { at: Date.now(), value });
+    // a stuck run that finishes late must not overwrite the fresh one that replaced it
+    if (cache.get(key)?.pending === pending) cache.set(key, { at: Date.now(), value });
     return value;
   } catch (e) {
-    if (hit?.value) cache.set(key, { at: hit.at, value: hit.value });
-    else cache.delete(key);
+    if (cache.get(key)?.pending === pending) {
+      if (hit?.value) cache.set(key, { at: hit.at, value: hit.value });
+      else cache.delete(key);
+    }
     throw e;
   }
 }

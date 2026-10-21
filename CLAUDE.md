@@ -13,7 +13,7 @@
   - 内部 import 用**相对路径并带 `.ts` 后缀**，比如 `../ta/risk.ts`；`@/` 别名只在 app / components 里用；
   - **不要使用 TS 的参数属性写法**（`constructor(private x)`），也不要用 enum。
 - 常用命令：
-  - `npm test`：单元测试，目前 101 个（全部不联网，CI 在 `.github/workflows/ci.yml` 里跑类型检查、测试和构建）；
+  - `npm test`：单元测试，目前 103 个（全部不联网，CI 在 `.github/workflows/ci.yml` 里跑类型检查、测试和构建）；
   - `npx tsc --noEmit`：类型检查；
   - `npx next build`：生产构建；
   - `npm run dev`：本地开发；
@@ -147,6 +147,7 @@
   - 页面因此：每种形态的结论句多为“历史上和同止损距离的随机入场差不多，没有可证明的优势”，并写明“形态不是信号：它的价值是买点和认错位都清楚、仓位好算，不是预测涨跌”。
 - **v1.5 裸 K 页的代码已完成（2026-10-21），还没部署**：没有新迁移。部署后运行 `sudo signallight research --kind patterns`，裸 K 页才有 4 小时 / 日线的研究数字（否则显示“裸 K 的研究数字会在服务器生成研究报告后显示”）；每周研究也会自动生成。
 - **借鉴竞品 tradingsignal.pro（2026-10-21，未部署，只改页面）**：币页页首在实时价旁显示当前页签所用周期的“最新收盘价、收盘时刻、下一根收盘时刻”（北京时间），专业模式再列各周期最新收盘（`LightSummary.close / closeAt`）；TD 页签的多周期一览换成“多周期 TD 计数”表（最新的 9、13 计数进度条 / 13 是否已失败 / 已取消、正在数的计数和下一根需要的收盘价、TDST 距离；`tdDetail.nine` 等）；去掉没有研究支撑的说法（TD 多周期共振“反转可能更大”、关键位“方法越多强度越高”和“买在支撑附近”、指标“同向时更可靠”）。调研文档：https://claude.ai/artifact/SDma9p4ZusKE77SGnRoDQU 。“历史共振点 + 之后的结果”留作以后。
+- **2026-10-21 服务器诊断后的修复（未部署）**：① 埋点从上线起一条没记——`crypto.randomUUID` 只在 HTTPS 下可用，改用 `newVisitorId`（`event-names.ts`，基于 `getRandomValues`）；② 预计算 10-21 14:30 停摆近 4 小时没告警——每个币限时 2 分钟（`withTimeout`，超时记错误并 `raiseAlert`），分析和 K 线缓存里超过 3 分钟没完成的计算不再复用，每小时检查 30 分钟没完成一轮就告警；`预计算状态` 日志多了 `current` / `currentSince` / `timeouts`，再卡能看到卡在哪个币。停摆的根因还没锁定（当时每周研究正在网站进程里跑）。诊断分析文档：https://claude.ai/artifact/MNLymuNTQaTvQEDyPRDYDg ，其余建议（研究改子进程、1 小时存 3 年、更新前备份压缩、诊断脚本打码）待用户决定。
 - 未完成 / 待定：
   - “按指标家族计票”（`verdict.familyVotes`）默认关，部署后用 `signallight compare --set verdict.familyVotes=true --step 1` 在永续数据上对比后再决定；
   - 门槛 2 里“埋点已收集满 4 周基线”需要上线后等 4 周；
