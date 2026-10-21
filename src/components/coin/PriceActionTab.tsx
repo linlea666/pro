@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { PaLevelRow, PaResearchItem, PaSetupView, PaTf, PaView } from "@/lib/pa";
+import type { PaChecklist, PaLevelRow, PaNextLevel, PaResearchItem, PaSetupView, PaTf, PaView } from "@/lib/pa";
 import { PA_RULES, PATTERN_NAME, TREND_NAME } from "@/lib/ta/patterns";
 import { MMR, sizePosition } from "@/lib/ta/plan";
 import { TF_SECONDS, type Timeframe } from "@/lib/types";
@@ -63,6 +63,7 @@ export function PriceActionTab({ v, mode, pf, onPf, onPick }: { v: PaView; mode:
           <ConfirmBody v={v} />
         </StepCard>
       </div>
+      <ChecklistCard v={v} />
       <p className="rounded-lg bg-panel-2 px-3 py-2 text-[13px] leading-relaxed text-ink">形态不是信号：它的价值是买点和认错位都清楚、仓位好算，不是预测涨跌。</p>
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
@@ -152,6 +153,61 @@ function ConfirmBody({ v }: { v: PaView }) {
       )}
       {clash && <p className="text-[12px] text-warn">注意：收盘已在{v.location.loc === "support" ? "支撑区" : "阻力区"}，{dirWord(x.dir)}离{v.location.loc === "support" ? "支撑" : "阻力"}不到 {PA_RULES.keyAtr} 倍 ATR。</p>}
       {list.length > 1 && <p className="mt-1 text-[12px] text-ink-3">另外还有 {list.length - 1} 个：{list.slice(1).map((y) => `${y.name}${dirWord(y.dir)}（${y.status === "entered" ? "已确认" : "等确认"}）`).join("、")}。</p>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- entry checklist (filled in by the server, not clickable)
+
+function ChecklistCard({ v }: { v: PaView }) {
+  const lists = v.checklists ?? [];
+  if (!lists.length) return null;
+  const setups = v.confirm ?? [];
+  const [first, ...rest] = lists;
+  return (
+    <Section
+      title={<>入场检查表 <span className="text-xs font-normal text-ink-3">（按页面数据自动判断）</span></>}
+      extra={<span className="num text-[13px] font-semibold">{first.score}/5</span>}
+    >
+      {setups[0] && <p className="mb-1 text-[12px] text-ink-3">{setups[0].name} · {dirWord(setups[0].dir)}</p>}
+      <ul className="space-y-1 text-[13px] leading-relaxed">
+        {first.items.map((it, k) => (
+          <li key={it.key} className="flex gap-2">
+            <span className={`w-4 shrink-0 text-center font-semibold ${it.ok ? "text-up" : "text-down"}`}>{it.ok ? "✓" : "✗"}</span>
+            <span className="min-w-0">
+              <span className="text-ink-3">{"①②③④⑤"[k]} </span>
+              {it.label}
+              <span className="text-ink-3">：{it.detail}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+      {v.nextLevels?.[0] && <NextLevelLine x={v.nextLevels[0]} />}
+      {rest.length > 0 && (
+        <ul className="mt-2 space-y-1 border-t border-line pt-2 text-[12px] leading-relaxed text-ink-2">
+          {rest.map((cl, k) => {
+            const x = setups[k + 1];
+            const miss = cl.items.filter((it) => !it.ok);
+            return (
+              <li key={`${cl.kind}${cl.dir}${k}`}>
+                <b className="num text-ink">{cl.score}/5</b> {x ? `${x.name} · ${dirWord(x.dir)}` : ""}
+                {miss.length > 0 && <span className="text-ink-3">（未满足：{miss.map((it) => `${it.label}——${it.detail}`).join("；")}）</span>}
+                {v.nextLevels?.[k + 1] && <span className="block text-ink-3">{v.nextLevels[k + 1].text}</span>}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <p className="mt-2 text-[12px] leading-relaxed text-ink-3">{first.footer}</p>
+    </Section>
+  );
+}
+
+function NextLevelLine({ x }: { x: PaNextLevel }) {
+  return (
+    <div className="mt-2 rounded-md bg-panel-2 px-2.5 py-1.5 text-[12px] leading-relaxed">
+      <div className="font-medium text-ink">离下一个关键位{x.r != null ? ` 约 ${x.r.toFixed(1)}R` : ""}（只作参考）</div>
+      <p className="text-ink-2">{x.text}</p>
     </div>
   );
 }

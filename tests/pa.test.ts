@@ -6,7 +6,7 @@ import path from "node:path";
 
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "sl-pa-"));
 process.env.LOG_LEVEL = "error";
-const { classifyLocation, nearbyLevels, paResearchOf, patternSentence, pickConfirm, rulesMatch, trendSentence } = await import("../src/lib/pa.ts");
+const { classifyLocation, entryChecklist, higherLabel, nearbyLevels, nextLevelR, paResearchOf, patternSentence, pickConfirm, rulesMatch, trendSentence } = await import("../src/lib/pa.ts");
 const { PA_RULES, PATTERNS } = await import("../src/lib/ta/patterns.ts");
 type PaSetupView = import("../src/lib/pa.ts").PaSetupView;
 type ResearchRow = import("../src/lib/research/run.ts").ResearchRow;
@@ -165,4 +165,84 @@ test("research sentences follow the verdicts and never claim more", () => {
   assert.match(patternSentence("retest", row("a", "比随机差", -0.3), row("t", "无可证明的优势")), /^历史上平均每笔比同止损距离的随机入场差 0\.30R，统计上站得住；顺势时：历史上和同止损距离的随机入场差不多/);
   assert.match(patternSentence("pin", row("a", "有优势", 0.25), row("t", "有优势", 0.4)), /好 0\.25R，达到了研究标准（不保证下一次）；在关键位、顺势时也一样/);
   for (const v of ["无可证明的优势", "样本不足", "比随机差"] as const) assert.doesNotMatch(patternSentence("inside", row("a", v), row("t", v)), /有效|管用|胜率高/);
+});
+
+// ---------------------------------------------------------------- entry checklist, next level in R
+
+const FOOT = "5/5 只说明按规则可以做，不说明会涨或会跌。";
+const researchWith = (textVerdict: ResearchRow["verdict"]) => {
+  const rows = PATTERNS.flatMap((k) => [row(`pa:4h:${k}:all`, "无可证明的优势"), row(`pa:4h:${k}:text`, textVerdict)]);
+  return paResearchOf(report(rows), "4h").view;
+};
+
+test("checklist: five items filled in from the setup and the higher frame", () => {
+  const up = higherLabel("1d", { state: "up", breach: "none" });
+  assert.equal(up.label, "日线上升");
+  const full = entryChecklist(setup({}), { higher: up, location: "support", research: null });
+  assert.deepEqual(full.items.map((x) => x.ok), [true, true, true, true, true]);
+  assert.equal(full.score, 5);
+  assert.equal(full.items[0].detail, "日线上升");
+  assert.equal(full.footer, FOOT, "no research for this timeframe: nothing appended");
+
+  // a short while waiting, against the higher frame
+  const w = entryChecklist(setup({ dir: -1, status: "waiting", entry: null, trigger: 81500, ok: false }), { higher: up, location: "resistance", research: null });
+  assert.deepEqual(w.items.map((x) => x.ok), [false, true, true, false, false]);
+  assert.equal(w.score, 2);
+  assert.match(w.items[0].detail, /逆大周期（日线上升）/);
+  assert.equal(w.items[3].detail, "等收盘低于 81,500");
+  assert.equal(entryChecklist(setup({ status: "waiting", trigger: 101 }), { higher: up, location: "mid", research: null }).items[3].detail, "等收盘高于 101");
+
+  const range = entryChecklist(setup({}), { higher: higherLabel("4h", { state: "range", breach: "none" }), location: "support", research: null });
+  assert.equal(range.items[0].ok, false);
+  assert.match(range.items[0].detail, /^大周期区间/);
+  assert.equal(entryChecklist(setup({}), { higher: null, location: "support", research: null }).items[0].detail, "大周期数据不足");
+});
+
+test("checklist without a setup: ① direction only, ② the location, ③–⑤ not met", () => {
+  const down = higherLabel("1w", { state: "down", breach: "none" });
+  const a = entryChecklist(null, { higher: down, location: "support", research: null });
+  assert.equal(a.items[0].label, "大周期方向明确");
+  assert.deepEqual(a.items.map((x) => x.ok), [true, true, false, false, false]);
+  assert.equal(a.items[1].detail, "在支撑区");
+  assert.equal(a.items[2].detail, "还没有确认形态");
+  assert.equal(a.score, 2);
+  const b = entryChecklist(null, { higher: higherLabel("1d", { state: "range", breach: "none" }), location: "mid", research: null });
+  assert.equal(b.score, 0);
+  assert.equal(b.items[1].detail, "在中间位置");
+  assert.equal(entryChecklist(null, { higher: down, location: "resistance", research: null }).items[1].detail, "在阻力区");
+});
+
+test("checklist footer: what the textbook rows say, never more", () => {
+  const ctx = (v: ResearchRow["verdict"]) => ({ higher: null, location: "support" as const, research: researchWith(v) });
+  assert.equal(entryChecklist(setup({}), ctx("无可证明的优势")).footer, FOOT + "历史上在关键位、顺势时也没有比随机入场更好。");
+  assert.equal(entryChecklist(setup({}), ctx("比随机差")).footer, FOOT + "历史上在关键位、顺势时也没有比随机入场更好。");
+  assert.equal(entryChecklist(setup({}), ctx("样本不足")).footer, FOOT + "历史样本太少，还不能下结论。");
+  assert.equal(entryChecklist(setup({}), ctx("有优势")).footer, FOOT);
+  assert.equal(entryChecklist(null, ctx("无可证明的优势")).footer, FOOT + "历史上在关键位、顺势时也没有比随机入场更好。", "no setup: every pattern's textbook row");
+  assert.equal(entryChecklist(null, { higher: null, location: "mid", research: paResearchOf(null, "15m").view }).footer, FOOT, "15m: no research, nothing appended");
+});
+
+test("next level: nearest level beyond the entry in the trade's direction, in R", () => {
+  const close = 100, atr = 2;
+  const levels = nearbyLevels([lv(97, "前一日低点"), lv(95, "上周低点"), lv(104, "上周高点"), lv(108, "上月高点")], close, atr);
+  // long entered at 101.5, stop 98.2: risk 3.3; resistance 104 → 2.5 / 3.3 = 0.76 → 0.8R
+  const a = nextLevelR(setup({}), levels);
+  assert.equal(a.level?.price, 104);
+  assert.equal(a.r, 0.8);
+  assert.equal(a.text, "离下一个阻力位 104（上周高点）约 0.8R，只作参考：按移动认错位离场，不设固定止盈。");
+  // waiting: measured from the trigger (101, risk 2.8 → 3 / 2.8 = 1.07 → 1.1R), with the research's 2R share
+  const w = nextLevelR(setup({ status: "waiting", entry: null }), levels, 31.5);
+  assert.equal(w.r, 1.1);
+  assert.match(w.text, /约 1\.1R.*历史上这种形态先到 2R 的约 32%。$/);
+  // short entered at 99 with stop 102: support 97 → 2 / 3 = 0.7R
+  const s = nextLevelR(setup({ dir: -1, entry: 99, trigger: 99.5, stop: 102 }), levels);
+  assert.equal(s.level?.price, 97);
+  assert.equal(s.r, 0.7);
+  assert.match(s.text, /^离下一个支撑位 97（前一日低点）约 0\.7R/);
+  // a resistance below the entry does not count; none found
+  assert.equal(nextLevelR(setup({ entry: 110, trigger: 109, stop: 106 }), levels).text, "上方 3 个关键位以内没有阻力位。");
+  const none = nextLevelR(setup({ dir: -1, entry: 94, trigger: 94.5, stop: 96 }), levels, 28);
+  assert.equal(none.level, null);
+  assert.equal(none.r, null);
+  assert.equal(none.text, "下方 3 个关键位以内没有支撑位。历史上这种形态先到 2R 的约 28%。");
 });

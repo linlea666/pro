@@ -24,7 +24,7 @@ import {
 } from "./ta/patterns.ts";
 import { alignHigher } from "./ta/plan.ts";
 import { atrSeries, bufferAtr, intactPivots, PIVOT_K } from "./ta/risk.ts";
-import { describeStructure, structureSeries, swings, type Breach, type TrendState } from "./ta/structure.ts";
+import { describeStructure, structureSeries, swings, type Breach, type StructureState, type TrendState } from "./ta/structure.ts";
 import { latestReport, scoreRow, type ScoreRow } from "./trendplan.ts";
 import { TF_SECONDS, type Candle, type Timeframe } from "./types.ts";
 
@@ -157,12 +157,141 @@ export interface PaView {
   /** every entered or waiting setup on the chart's bars, any location (pro mode, chart markers) */
   recent: PaSetupView[];
   research: PaResearch | null;
+  /** the next higher timeframe's structure at the last closed bar (15m, 1h → 4h; 4h → 1d; 1d → 1w); null: too few bars */
+  higher: PaHigherView | null;
+  /** the entry checklist: one per step-3 setup (same order as `confirm`), or one without a setup when there is none */
+  checklists: PaChecklist[];
+  /** the next key level beyond the entry, in R, per step-3 setup (same order as `confirm`) */
+  nextLevels: PaNextLevel[];
   /** why research numbers are missing, when they are */
   researchNote: string | null;
   replay: boolean;
 }
 
+export interface PaHigherView {
+  tf: Timeframe;
+  state: TrendState;
+  breach: Breach;
+  /** e.g. "日线上升" */
+  label: string;
+}
+
+export interface PaCheckItem {
+  key: "higher" | "key" | "pattern" | "closed" | "risk";
+  label: string;
+  ok: boolean;
+  /** what was found, e.g. "日线上升" or "等收盘高于 81,500" */
+  detail: string;
+}
+
+export interface PaChecklist {
+  /** the step-3 setup it is for (null: no setup yet) */
+  kind: PatternKind | null;
+  dir: 1 | -1 | null;
+  items: PaCheckItem[];
+  /** items ticked, of 5 */
+  score: number;
+  /** always says that 5/5 is not a forecast; adds what the research says when there is a report for this timeframe */
+  footer: string;
+}
+
+export interface PaNextLevel {
+  level: PaLevelRow | null;
+  /** |level − entry| / |entry − stop|, one decimal */
+  r: number | null;
+  text: string;
+}
+
 // ---------------------------------------------------------------- pure pieces (tested in tests/pa.test.ts)
+
+/** The higher frame's structure as a short label, e.g. "日线上升" or "周线区间". */
+export function higherLabel(tf: Timeframe, s: Pick<StructureState, "state" | "breach">): PaHigherView {
+  const word = s.state === "up" ? "上升" : s.state === "down" ? "下降" : "区间";
+  return { tf, state: s.state, breach: s.breach, label: `${TF_CN[tf]}${word}` };
+}
+
+const CHECK_FOOTER = "5/5 只说明按规则可以做，不说明会涨或会跌。";
+
+/** What the textbook rows say, appended to the checklist footer (nothing for 有优势, nor without research). */
+function checklistResearchLine(research: PaResearch | null, kind: PatternKind | null): string {
+  if (!research) return "";
+  const rows = (kind ? research.items.filter((x) => x.kind === kind) : research.items).map((x) => x.text).filter((x): x is ScoreRow => !!x);
+  if (!rows.length || rows.some((x) => x.verdict === "有优势")) return "";
+  if (rows.every((x) => x.verdict === "样本不足")) return "历史样本太少，还不能下结论。";
+  return "历史上在关键位、顺势时也没有比随机入场更好。";
+}
+
+/**
+ * The five-item entry checklist, filled in from the page's own data (the user does not tick anything):
+ * ① the higher frame points the trade's way, ② at a key level, ③ a pattern under the rules, ④ confirmed by a close,
+ * ⑤ a clear stop with the risk within PA_RULES. Without a setup, ① only asks that the higher frame has a direction
+ * and ② reads the location; ③–⑤ are not met.
+ */
+export function entryChecklist(
+  setup: PaSetupView | null,
+  ctx: { higher: PaHigherView | null; location: PaLocation; research: PaResearch | null },
+): PaChecklist {
+  const h = ctx.higher;
+  const items: PaCheckItem[] = [];
+  if (setup) {
+    const hd = h ? (h.state === "up" ? 1 : h.state === "down" ? -1 : 0) : null;
+    items.push({
+      key: "higher",
+      label: "大周期方向和交易同向",
+      ok: hd === setup.dir,
+      detail: hd == null ? "大周期数据不足" : hd === 0 ? `大周期区间（${TF_CN[h!.tf]}）` : hd === setup.dir ? h!.label : `逆大周期（${h!.label}）`,
+    });
+    items.push({ key: "key", label: "在关键位", ok: setup.loc === "key", detail: setup.loc === "key" ? "在关键位上" : "在中间位置" });
+    items.push({ key: "pattern", label: "出现符合规则的形态", ok: true, detail: `${setup.name}${setup.dir > 0 ? "做多" : "做空"}` });
+    const entered = setup.status === "entered";
+    items.push({
+      key: "closed",
+      label: "K 线已收盘确认",
+      ok: entered,
+      detail: entered ? `已收盘${setup.dir > 0 ? "站上" : "跌破"} ${fmtPrice(setup.trigger)}` : `等收盘${setup.dir > 0 ? "高于" : "低于"} ${fmtPrice(setup.trigger)}`,
+    });
+    items.push({
+      key: "risk",
+      label: `止损明确、风险在 ${PA_RULES.minRiskAtr}–${PA_RULES.maxRiskAtr} 倍 ATR`,
+      ok: setup.ok,
+      detail: `止损 ${fmtPrice(setup.stop)}，风险 ${setup.riskAtr.toFixed(1)} 倍 ATR${setup.ok ? "" : "，超出范围不做"}`,
+    });
+  } else {
+    const dirOk = !!h && h.state !== "range";
+    items.push({ key: "higher", label: "大周期方向明确", ok: dirOk, detail: !h ? "大周期数据不足" : dirOk ? h.label : `大周期区间（${TF_CN[h.tf]}）` });
+    const at = ctx.location !== "mid";
+    items.push({ key: "key", label: "在关键位", ok: at, detail: ctx.location === "support" ? "在支撑区" : ctx.location === "resistance" ? "在阻力区" : "在中间位置" });
+    items.push({ key: "pattern", label: "出现符合规则的形态", ok: false, detail: "还没有确认形态" });
+    items.push({ key: "closed", label: "K 线已收盘确认", ok: false, detail: "还没有确认形态" });
+    items.push({ key: "risk", label: `止损明确、风险在 ${PA_RULES.minRiskAtr}–${PA_RULES.maxRiskAtr} 倍 ATR`, ok: false, detail: "还没有确认形态" });
+  }
+  const extra = checklistResearchLine(ctx.research, setup?.kind ?? null);
+  return { kind: setup?.kind ?? null, dir: setup?.dir ?? null, items, score: items.filter((x) => x.ok).length, footer: extra ? `${CHECK_FOOTER}${extra}` : CHECK_FOOTER };
+}
+
+/**
+ * The nearest key level beyond the entry (the trigger while waiting) in the trade's direction — a resistance above
+ * for longs, a support below for shorts — in R of the setup's stop distance. Only a reference: the page exits by the
+ * trailing stop, not at a fixed target. `reach2` (research, %) adds how often this pattern reached 2R first.
+ */
+export function nextLevelR(setup: PaSetupView, levels: PaLevelRow[], reach2: number | null = null): PaNextLevel {
+  const long = setup.dir > 0;
+  const entry = setup.status === "entered" && setup.entry != null ? setup.entry : setup.trigger;
+  const risk = Math.abs(entry - setup.stop);
+  const level =
+    levels
+      .filter((x) => (long ? x.side === "resistance" && x.price > entry : x.side === "support" && x.price < entry))
+      .sort((a, b) => Math.abs(a.price - entry) - Math.abs(b.price - entry))[0] ?? null;
+  const tail = reach2 != null ? `历史上这种形态先到 2R 的约 ${Math.round(reach2)}%。` : "";
+  if (!level) return { level: null, r: null, text: `${long ? "上方" : "下方"} ${LEVELS_PER_SIDE} 个关键位以内没有${long ? "阻力位" : "支撑位"}。${tail}` };
+  const r = risk > 0 ? Math.round((Math.abs(level.price - entry) / risk) * 10) / 10 : null;
+  const word = long ? "阻力位" : "支撑位";
+  const text =
+    r == null
+      ? `下一个${word} ${fmtPrice(level.price)}（${level.name}），只作参考：按移动认错位离场，不设固定止盈。${tail}`
+      : `离下一个${word} ${fmtPrice(level.price)}（${level.name}）约 ${r.toFixed(1)}R，只作参考：按移动认错位离场，不设固定止盈。${tail}`;
+  return { level, r, text };
+}
 
 /** Step 1 in one sentence. */
 export function trendSentence(tf: Timeframe, state: TrendState, breach: Breach, label: string): string {
@@ -365,7 +494,18 @@ export async function computePa(coin: string, pf: PaTf, ep: EngineParams = DEFAU
   const recent = setups.map((x) => setupView(x, c, n, formingBar)).sort((x, y) => (x.eT ?? x.sT) - (y.eT ?? y.sT));
   const confirm = pickConfirm(recent);
 
+  // the next higher frame's structure at the last closed bar (closed bars only, as step 1)
+  const hf = higher[0];
+  let higherView: PaHigherView | null = null;
+  if (hf) {
+    const k = alignHigher(c, pf, hf.c, hf.tf)[n];
+    if (k >= 0) higherView = higherLabel(hf.tf, structureSeries(hf.c, hf.atr, mult)[k]);
+  }
+
   const research = paResearchOf(latestReport("patterns"), pf);
+  const ctx = { higher: higherView, location: location.loc, research: research.view };
+  const checklists = confirm ? confirm.map((x) => entryChecklist(x, ctx)) : [entryChecklist(null, ctx)];
+  const nextLevels = (confirm ?? []).map((x) => nextLevelR(x, levels, research.view?.items.find((it) => it.kind === x.kind)?.reach2 ?? null));
   return {
     coin,
     pf,
@@ -385,6 +525,9 @@ export async function computePa(coin: string, pf: PaTf, ep: EngineParams = DEFAU
     confirm,
     recent,
     research: research.view,
+    higher: higherView,
+    checklists,
+    nextLevels,
     researchNote: research.note,
     replay: !live,
   };
