@@ -2,13 +2,14 @@
 
 import { useMemo, useState } from "react";
 
-import { TF_LABEL } from "@/lib/types";
+import type { LightSummary } from "@/lib/analysis";
+import { TF_LABEL, TF_SECONDS, type Timeframe } from "@/lib/types";
 import { PriceChart, type MarkerSpec, type PriceLineSpec } from "../PriceChart";
 import { Term } from "../Term";
-import { fmtPct, fmtPrice } from "./format";
+import { fmtPct, fmtPrice, spanAgo } from "./format";
 import { Explainer, Section, StatsTable } from "./shared";
 import type { TabProps } from "./CoinView";
-import { MtfStrip } from "./MtfStrip";
+import { useReplay } from "./replay";
 
 const UP = "#199e70", DOWN = "#e66767";
 
@@ -82,7 +83,7 @@ export function TdTab({ a, mtf, mode, onTf }: TabProps) {
       </div>
 
       <div className="space-y-4">
-        <MtfStrip kind="td" mtf={mtf} current={a.tf} onTf={onTf} />
+        <TdMtfTable mtf={mtf} current={a.tf} onTf={onTf} />
         <Section title={`现在的状态 · ${TF_LABEL[a.tf]}`}>
           <p className="text-[13px] leading-relaxed">{nowText}</p>
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
@@ -120,6 +121,115 @@ export function TdTab({ a, mtf, mode, onTf }: TabProps) {
           <StatsTable stats={a.stats} horizonText={a.horizonText} coin={a.coin} tf={a.tf} only={["td_buy9", "td_buy13", "td_sell9", "td_sell13"]} />
         </Section>
       </div>
+    </div>
+  );
+}
+
+/** One block per timeframe: the latest 9 and its countdown, the setup being counted now, and TDST. Describes only. */
+function TdMtfTable({ mtf, current, onTf }: { mtf: LightSummary[] | null; current: Timeframe; onTf: (t: Timeframe) => void }) {
+  const replay = useReplay();
+  return (
+    <Section title="多周期 TD 计数">
+      {replay?.asOf ? (
+        <p className="text-xs leading-relaxed text-ink-3">回放模式下只计算当前周期在那个时刻的状态，多周期计数暂不显示。</p>
+      ) : !mtf ? (
+        <div className="h-40 animate-pulse rounded-lg bg-panel-2" />
+      ) : (
+        <>
+          <ul className="divide-y divide-line text-[13px]">
+            {mtf.map((m) => (
+              <TdRow key={m.tf} m={m} active={m.tf === current} onTf={onTf} />
+            ))}
+          </ul>
+          <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
+            时间按已收盘的 K 线算。这里只描述每个周期数到了哪里；几个周期同时数到 9 或 13 是否更灵，还没有研究数字，单个信号以前灵不灵见下方统计。点击周期可切换。
+          </p>
+        </>
+      )}
+    </Section>
+  );
+}
+
+function TdRow({ m, active, onTf }: { m: LightSummary; active: boolean; onTf: (t: Timeframe) => void }) {
+  const d = m.tdDetail;
+  const sec = TF_SECONDS[m.tf];
+  const n = d.nine;
+  const sideColor = (s: "buy" | "sell") => (s === "buy" ? "var(--up)" : "var(--down)");
+  const counting = d.setupSide && d.setupCount < d.setupLength;
+  const tdst = (p: number | null) => (p == null ? null : `${fmtPrice(p)}（${fmtPct(((p - m.close) / m.close) * 100, 1)}）`);
+  return (
+    <li className="py-2.5">
+      <div className="flex gap-3">
+        <button onClick={() => onTf(m.tf)} className={`w-12 shrink-0 text-left ${active ? "font-semibold text-ink" : "text-ink-2 hover:text-ink"}`}>
+          {TF_LABEL[m.tf]}
+        </button>
+        <div className="min-w-0 flex-1 space-y-1">
+          {n ? (
+            <>
+              <div>
+                <b style={{ color: sideColor(n.side) }}>
+                  {n.side === "buy" ? "↑ 买入 9" : "↓ 卖出 9"}
+                  {n.perfected ? "★" : ""}
+                </b>
+                <span className="text-ink-2">
+                  {" "}
+                  （{n.side === "buy" ? "连跌" : "连涨"}满 9 根）· {spanAgo(n.barsAgo * sec)}
+                </span>
+              </div>
+              {n.thirteen ? (
+                <div className="text-xs">
+                  <span style={{ color: n.thirteen.invalidated ? "var(--text-3)" : sideColor(n.side) }}>13 已出现 · {spanAgo(n.thirteen.barsAgo * sec)}</span>
+                  {n.thirteen.invalidated ? (
+                    <span className="text-ink-2">
+                      {" "}
+                      · 收盘已{n.side === "buy" ? "跌破" : "突破"}风险位 {fmtPrice(n.thirteen.riskLevel)}，这个 13 失败了
+                    </span>
+                  ) : (
+                    <span className="text-ink-3"> · 风险位 {fmtPrice(n.thirteen.riskLevel)} 还没被收盘越过</span>
+                  )}
+                </div>
+              ) : n.countdown != null ? (
+                <CountdownBar count={n.countdown} length={d.countdownLength} color={sideColor(n.side)} />
+              ) : (
+                <div className="text-xs text-ink-3">13 计数已取消（收盘越过 TDST，或出现了反向的 9）</div>
+              )}
+            </>
+          ) : (
+            <div className="text-ink-3">最近没有完整的 9</div>
+          )}
+          {counting && (
+            <div className="text-xs text-ink-2">
+              {d.setupSide === "buy" ? "连跌" : "连涨"}计数 <span className="num">{d.setupCount}/{d.setupLength}</span>
+              {d.nextCloseNeeded != null && (
+                <>
+                  {" "}
+                  · 下一根收盘{d.setupSide === "buy" ? "低于" : "高于"} <span className="num">{fmtPrice(d.nextCloseNeeded)}</span> 才继续
+                </>
+              )}
+            </div>
+          )}
+          {(d.tdstResistance != null || d.tdstSupport != null) && (
+            <div className="num text-[11px] text-ink-3">
+              {d.tdstResistance != null && <>TDST 阻力 {tdst(d.tdstResistance)}</>}
+              {d.tdstResistance != null && d.tdstSupport != null && " · "}
+              {d.tdstSupport != null && <>TDST 支撑 {tdst(d.tdstSupport)}</>}
+            </div>
+          )}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function CountdownBar({ count, length, color }: { count: number; length: number; color: string }) {
+  return (
+    <div className="flex items-center gap-2 text-xs text-ink-2">
+      <span className="flex gap-px">
+        {Array.from({ length }, (_, i) => (
+          <span key={i} className="h-2.5 w-1.5 rounded-[1px]" style={{ background: i < count ? color : "var(--panel-2)", border: "1px solid var(--border)" }} />
+        ))}
+      </span>
+      <span className="num">13 计数 {count}/{length}</span>
     </div>
   );
 }

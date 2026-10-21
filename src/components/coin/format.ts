@@ -19,3 +19,21 @@ export function ago(ms: number) {
   if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
   return `${Math.floor(s / 3600)} 小时前`;
 }
+
+/** Beijing time of a unix-seconds moment, e.g. "10-21 16:00". */
+export function fmtBjTime(sec: number) {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+      .formatToParts(new Date(sec * 1000))
+      .map((x) => [x.type, x.value]),
+  );
+  return `${p.month}-${p.day} ${p.hour}:${p.minute}`;
+}
+
+/** "3 小时前" for a span of seconds (bar counts × bar length). */
+export function spanAgo(sec: number) {
+  if (sec <= 0) return "刚收盘这根";
+  if (sec < 3600) return `${Math.round(sec / 60)} 分钟前`;
+  if (sec < 48 * 3600) return `${Math.round(sec / 3600)} 小时前`;
+  return `${Math.round(sec / 86400)} 天前`;
+}

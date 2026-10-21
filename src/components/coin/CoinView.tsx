@@ -9,7 +9,7 @@ import type { WatchView } from "@/lib/watch";
 import type { PaTf, PaView } from "@/lib/pa";
 import { COINS, getCoin } from "@/lib/symbols";
 import { BEGINNER_TIMEFRAMES, TF_HORIZON, TF_LABEL, TF_SECONDS, TIMEFRAMES, type Timeframe } from "@/lib/types";
-import { ago, fmtPct, fmtPrice, signColor } from "./format";
+import { ago, fmtBjTime, fmtPct, fmtPrice, signColor } from "./format";
 import { Overview } from "./Overview";
 import { TdTab } from "./TdTab";
 import { IndicatorsTab } from "./IndicatorsTab";
@@ -306,6 +306,19 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
     [picking, fresh, data],
   );
 
+  // the timeframe the open tab analyses, for the "latest close" line under the price
+  const closeTf: Timeframe = tab === "plan" ? fw : tab === "watch" ? "15m" : tab === "pa" ? pf : tf;
+  const closes = useMemo(() => {
+    if (asOf) {
+      // a replay: the close of the picked bar on the chart's timeframe
+      if (!fresh || !data) return null;
+      const last = data.candles[data.candles.length - 1];
+      return { main: { tf: data.tf, close: last.c, closeAt: last.t + TF_SECONDS[data.tf] }, all: [] };
+    }
+    const all = (mtf ?? []).map((m) => ({ tf: m.tf, close: m.close, closeAt: m.closeAt }));
+    return { main: all.find((m) => m.tf === closeTf) ?? null, all };
+  }, [asOf, fresh, data, mtf, closeTf]);
+
   return (
     <div className="space-y-4">
       {/* coin chips */}
@@ -337,6 +350,7 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
             </div>
           </div>
         )}
+        {closes?.main && <CloseLine c={closes.main} replay={!!asOf} />}
         <div className="ml-auto flex items-center gap-1 rounded-full border border-line p-1 text-sm">
           {(["beginner", "pro"] as Mode[]).map((m) => (
             <button key={m} onClick={() => changeMode(m)} className={`rounded-full px-3 py-1 ${mode === m ? "bg-ink text-bg" : "text-ink-2"}`}>
@@ -345,6 +359,17 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
           ))}
         </div>
       </div>
+
+      {mode === "pro" && closes && closes.all.length > 0 && (
+        <div className="num -mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-3">
+          <span>各周期最新收盘（北京时间）：</span>
+          {closes.all.map((m) => (
+            <span key={m.tf} className={m.tf === closeTf ? "text-ink" : undefined}>
+              {TF_LABEL[m.tf]} {fmtPrice(m.close)} · {fmtBjTime(m.closeAt)}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* timeframe */}
       <div className="flex flex-wrap items-center gap-2">
@@ -475,6 +500,25 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
         </div>
         </ReplayContext.Provider>
       )}
+    </div>
+  );
+}
+
+/** "4 小时最新收盘 83,151.8 · 10-21 16:00 收，下一根 20:00 收": everything on the page is computed on closed bars. */
+function CloseLine({ c, replay }: { c: { tf: Timeframe; close: number; closeAt: number }; replay: boolean }) {
+  const next = c.closeAt + TF_SECONDS[c.tf];
+  const pending = next * 1000 <= Date.now();
+  return (
+    <div className="num text-xs leading-relaxed text-ink-3" title="页面上的分析、计划和止损都按已收盘的 K 线计算；正在走的那根只用来画图和显示现价">
+      <div>
+        {replay ? "回放时刻" : TF_LABEL[c.tf]}
+        {replay ? ` · ${TF_LABEL[c.tf]}收盘 ` : "最新收盘 "}
+        <b className="text-ink">{fmtPrice(c.close)}</b>
+      </div>
+      <div>
+        {fmtBjTime(c.closeAt)} 收盘
+        {!replay && (pending ? " · 下一根已收盘，正在更新" : ` · 下一根 ${TF_SECONDS[c.tf] >= 86400 ? fmtBjTime(next) : fmtBjTime(next).slice(6)} 收盘`)}
+      </div>
     </div>
   );
 }

@@ -87,8 +87,8 @@ function summarize(kind: MtfKind, mtf: LightSummary[], current: Timeframe): stri
       const d = m.tdDetail;
       return (d.setupSide && d.setupCount >= d.setupLength - 2 && d.setupCount <= d.setupLength) || (d.countdown?.count ?? 0) >= d.countdownLength - 2;
     });
-    if (near.length >= 2) return `${near.map((m) => TF_LABEL[m.tf]).join("、")} 同时接近 9 或 13，多周期共振时反转的可能性更大，值得重点留意。`;
-    if (near.length === 1) return `只有 ${TF_LABEL[near[0].tf]} 接近 9 或 13，单一周期的信号可靠性有限。`;
+    if (near.length >= 2) return `${near.map((m) => TF_LABEL[m.tf]).join("、")} 同时接近 9 或 13。几个周期同时出现是否更灵，还没有研究数字，先当作描述。`;
+    if (near.length === 1) return `只有 ${TF_LABEL[near[0].tf]} 接近 9 或 13。`;
     return "各周期都没有接近 9 或 13，目前没有明显的时机信号。";
   }
   if (kind === "fib") {
