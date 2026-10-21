@@ -48,6 +48,11 @@ if curl -fs --max-time 2 "$md/instance-id" >/dev/null 2>&1; then
   st=$(curl -fs --max-time 2 "$md/instance/spot/termination-time" 2>/dev/null); echo "  抢占式实例回收时间：${st:-无（不是抢占式实例，或没有回收计划）}"
 fi
 echo "出口公网 IP：$(curl -fs --max-time 5 https://api.ipify.org 2>/dev/null || echo 获取失败)"
+echo "--- 现货囤币页要用的免费数据源（HTTP 状态码、耗时；000 = 连不上）"
+for u in "https://community-api.coinmetrics.io/v4/timeseries/asset-metrics?assets=btc&metrics=PriceUSD,SplyCur,CapMVRVCur&frequency=1d&page_size=1&paging_from=end" \
+         "https://api.alternative.me/fng/?limit=1"; do
+  curl -s -o /dev/null --max-time 15 -w "  %{http_code}  %{time_total}s  ${u%%\?*}\n" "$u"
+done
 
 sec "2. 开机 / 关机记录"
 last -x 2>/dev/null | grep -E "reboot|shutdown|crash" | head -10
