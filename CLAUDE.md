@@ -63,7 +63,7 @@
   - 每周自动生成（`research/jobs.ts`），后台“研究报告”页查看、可手动生成；`sudo signallight research` 在服务器上生成并打印结论；参数试算同时给出样本内 / 样本外。
   - 引擎改动的“先证明再上线”就用它：`compare.ts` 在同一批历史时点上用新旧参数各回放一次信号灯，对比两份成绩单；服务器上运行 `sudo signallight compare --set 参数=值 [--tf 1h] [--step 3]`。
 - 指标家族：`indicators.ts` 的 `FAMILIES`（按投票相关性聚类得到，26 个会投票的指标约等于 6 个独立意见）和 `familyVotes`。参数 `verdict.familyVotes`（默认关）打开后，动量资金分项按家族计票；指标页始终显示家族合并后的多空数。
-- `scripts/`：`install.sh`、`update.sh`、`rollback.sh`、`common.sh`、`signallight` 管理命令、`diagnose.sh`（体检报告）、`cli.ts`。
+- `scripts/`：`install.sh`、`update.sh`、`rollback.sh`、`common.sh`、`signallight` 管理命令、`diagnose.sh`（体检报告）、`cli.ts`；`research-data/build.ts` 从 Binance 公开归档建本地研究库（云端容器用）。
 - `research/`：离线实验 E1–E9（现货数据，已定不重跑），不参与构建，说明见 `research/README.md`。新的研究用 `src/lib/research/`。
 
 ## 工作约定
@@ -85,6 +85,7 @@
 - 服务器出问题时，让用户运行 `sudo signallight diagnose`，把生成的报告发来分析。云端会话无法 SSH 到服务器。
 
 ## 当前进度（2026-10-21）
+- **新会话接着做：先读 `docs/NEXT_STEPS.md`**（E20 研究的完整规格、工作方式、怎样用 `scripts/research-data/build.ts` 从公开归档建本地研究库）。
 - v1.1“诚实与止血”已上线，包括之后两轮修复，当前 main 为 1ccf354 之后的版本。服务器健康，近 7 天没有错误。
 - 待办：
   1. 用户在 GitHub Releases 建 `v1.1.1` 标签；
