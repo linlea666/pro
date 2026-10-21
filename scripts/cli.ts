@@ -9,7 +9,7 @@
  *   history [--sync] [--coin BTC] [--tf 1h]
  *                                 local candle history per coin/timeframe; --sync fills it now (candles,
  *                                 taker volume, mark prices and the open-interest archive)
- *   research [--kind signals|light|levels|plans|defend|watch] [--all]
+ *   research [--kind signals|light|levels|plans|defend|watch|patterns] [--all]
  *                                 generate the research reports, save them and print the findings (--all: every row)
  *   compare --set KEY=VALUE [--set ...] [--tf 1h] [--coin BTC] [--step 2]
  *                                 replay the traffic light with the current and the changed parameters on the
@@ -138,6 +138,7 @@ async function main() {
       const { plansReport } = await import("../src/lib/research/plans.ts");
       const { defendReport } = await import("../src/lib/research/defend.ts");
       const { watchReport } = await import("../src/lib/research/watch.ts");
+      const { patternsReport } = await import("../src/lib/research/patterns.ts");
       const { engine, version } = currentParams();
       const kind = opt("kind");
       const reports = [];
@@ -147,6 +148,7 @@ async function main() {
       if (!kind || kind === "plans") reports.push(await plansReport(engine, { paramsVersion: version }));
       if (!kind || kind === "defend") reports.push(await defendReport(engine, { paramsVersion: version }));
       if (!kind || kind === "watch") reports.push(await watchReport(engine, { paramsVersion: version }));
+      if (!kind || kind === "patterns") reports.push(await patternsReport(engine, { paramsVersion: version }));
       const f = (g: { edgeR: number | null; n: number }) => (g.edgeR == null ? "    —" : `${g.edgeR >= 0 ? "+" : ""}${g.edgeR.toFixed(2)}`.padStart(5));
       for (const r of reports) {
         const id = saveReport(r);
@@ -154,7 +156,7 @@ async function main() {
         for (const c of r.coverage) console.log(`  ${c.tf}：${c.coins} 个币，${c.bars}${r.kind === "light" ? " 个时点" : " 根/币"}，${new Date((c.from ?? 0) * 1000).toISOString().slice(0, 10)} 至 ${new Date((c.to ?? 0) * 1000).toISOString().slice(0, 10)}`);
         console.log("  周期 信号                      笔数  样本内 样本外   BTC   ETH  前半  后半  q值     结论");
         for (const x of r.rows) {
-          if (!rest.includes("--all") && x.verdict !== "有优势" && x.verdict !== "比随机差" && !["light", "level", "level_mfe", "exit", "entry", "behavior", "anchor", "stop", "defend", "stop2", "watch", "watch_sign", "move24"].includes(x.family)) continue;
+          if (!rest.includes("--all") && x.verdict !== "有优势" && x.verdict !== "比随机差" && !["light", "level", "level_mfe", "exit", "entry", "behavior", "anchor", "stop", "defend", "stop2", "watch", "watch_sign", "move24", "pa"].includes(x.family)) continue;
           const c = x.cells;
           const e = x.extra ?? {};
           const watch = () => {
@@ -167,8 +169,12 @@ async function main() {
             if (e.unknown) p.push(`${e.unknown} 笔数据缺失未计`);
             return p.length ? `  ${p.join("  ")}  均值 ${c.is.meanR}R` : "";
           };
+          const pa = () =>
+            `  ${e.setups != null ? `${e.setups} 个形态、触发 ${e.triggerPct ?? "—"}%  ` : ""}${e.trades} 笔  先到 2R ${e.reach2 ?? "—"}%  6 根内被扫 ${e.quickStopPct ?? "—"}%  风险中位 ${e.riskAtrMed ?? "—"} 倍 ATR  均值 ${c.is.meanR}R`;
           const lv =
-            x.family === "watch" || x.family === "watch_sign" || x.family === "move24"
+            x.family === "pa"
+              ? pa()
+              : x.family === "watch" || x.family === "watch_sign" || x.family === "move24"
               ? watch()
               : x.family === "level"
               ? `  刺穿 ${e.piercedPct}% 失效 ${e.brokenPct}%  均值 ${c.is.meanR}R`

@@ -1,14 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import type { Group } from "@/lib/research/engine";
 import type { ResearchReport, ResearchRow } from "@/lib/research/run";
 import { TF_LABEL } from "@/lib/types";
 import { btnCls, fmtTime } from "./ui";
 
-type Kind = "signals" | "light" | "levels" | "plans" | "defend" | "watch";
+type Kind = "signals" | "light" | "levels" | "plans" | "defend" | "watch" | "patterns";
 type ListItem = { id: number; createdAt: number; kind: Kind; paramsVersion: number };
-const KIND_LABEL: Record<Kind, string> = { light: "信号灯", signals: "信号与指标", levels: "关键位", plans: "交易计划依据", defend: "守位依据", watch: "盯盘依据" };
+const KIND_LABEL: Record<Kind, string> = { light: "信号灯", signals: "信号与指标", levels: "关键位", plans: "交易计划依据", defend: "守位依据", watch: "盯盘依据", patterns: "裸 K 依据" };
 /** the questions inside a report, for its filter */
 const FAMILIES: Partial<Record<Kind, Record<string, string>>> = {
   plans: { plan: "计划成绩单", anchor: "E10 价格锚定", exit: "E11 离场方式", entry: "E12 入场类型", stop: "E13 认错位", behavior: "E14 新手习惯" },
@@ -16,12 +16,19 @@ const FAMILIES: Partial<Record<Kind, Record<string, string>>> = {
   defend: { defend: "E17 守位计划与止跌 / 止涨证据", stop2: "E18 近止损与远止损" },
   watch: { watch: "E19 等转强 vs 碰到就进", watch_sign: "E19b 止跌迹象", move24: "E19c 24 小时大涨大跌" },
 };
+/** report kinds whose rows carry a detail column and a named control */
+const DETAILED: Kind[] = ["levels", "defend", "watch", "patterns"];
+const CONTROLLED: Kind[] = ["plans", "defend", "watch", "patterns"];
 
 /** The numbers a row carries besides the edge, in a few words. */
 function detail(x: ResearchRow): string {
   const e = x.extra ?? {};
   const v = (k: string, unit = "%") => (e[k] == null ? "—" : `${e[k]}${unit}`);
   if (x.family === "level") return `均值 ${x.cells.is.meanR ?? "—"}R · 刺穿 ${v("piercedPct")} / 失效 ${v("brokenPct")}`;
+  if (x.family === "pa") {
+    const head = e.setups != null ? `${e.setups} 个形态，${v("triggerPct")} 被确认 · ` : "";
+    return `${head}${e.trades ?? "—"} 笔 · 先到 2R ${v("reach2")} · 6 根内被扫 ${v("quickStopPct")} · 风险中位 ${v("riskAtrMed", " 倍 ATR")}`;
+  }
   if (x.family === "level_mfe") return `止损前先到 2R ${v("reach2")}（随机 ${v("reach2Ctl")}）· 最远中位 ${v("mfeMedR", "R")} · 2R 平半 ${v("scaleR", "R")}`;
   const parts: string[] = [];
   if (e.triggerPct != null) parts.push(`${v("triggerPct")} 的事件触发`);
@@ -121,7 +128,7 @@ export function ResearchPanel() {
       {msg && <p className={`rounded-lg px-3 py-2 text-[13px] ${msg.ok ? "bg-up-soft text-up" : "bg-down-soft text-down"}`}>{msg.text}</p>}
 
       <div className="flex flex-wrap gap-2 text-sm">
-        {(["light", "plans", "defend", "watch", "signals", "levels"] as const).map((k) => (
+        {(["light", "plans", "defend", "watch", "patterns", "signals", "levels"] as const).map((k) => (
           <button
             key={k}
             className={`rounded-lg px-3 py-1.5 ${kind === k ? "bg-ink text-bg" : "border border-line text-ink-2"}`}
@@ -214,42 +221,49 @@ export function ResearchPanel() {
                   <th className="py-1.5 pr-3 font-normal">信号</th>
                   <th className="py-1.5 pr-3 font-normal">周期</th>
                   <th className="py-1.5 pr-3 font-normal">样本内笔数</th>
-                  <th className="py-1.5 pr-3 font-normal">{r.kind === "plans" || r.kind === "defend" || r.kind === "watch" ? "命中 vs 对照" : "命中 vs 随机"}</th>
+                  <th className="py-1.5 pr-3 font-normal">{CONTROLLED.includes(r.kind) ? "命中 vs 对照" : "命中 vs 随机"}</th>
                   <th className="py-1.5 pr-3 font-normal">优势（样本内）</th>
                   <th className="py-1.5 pr-3 font-normal">样本外</th>
                   <th className="py-1.5 pr-3 font-normal">BTC</th>
                   <th className="py-1.5 pr-3 font-normal">ETH</th>
                   <th className="py-1.5 pr-3 font-normal">前半</th>
                   <th className="py-1.5 pr-3 font-normal">后半</th>
-                  {(r.kind === "levels" || r.kind === "defend" || r.kind === "watch") && <th className="py-1.5 pr-3 font-normal">细节</th>}
+                  {DETAILED.includes(r.kind) && <th className="py-1.5 pr-3 font-normal">细节</th>}
                   <th className="py-1.5 pr-3 font-normal">q 值</th>
                   <th className="py-1.5 pr-3 font-normal">结论</th>
-                  {(r.kind === "plans" || r.kind === "defend" || r.kind === "watch") && <th className="py-1.5 font-normal">对照</th>}
+                  {CONTROLLED.includes(r.kind) && <th className="py-1.5 font-normal">对照</th>}
                 </tr>
               </thead>
               <tbody className="num">
-                {rows.map((x: ResearchRow) => (
-                  <tr key={`${x.tf}:${x.key}`} className="border-t border-line">
-                    <td className="py-1.5 pr-3">
-                      {(x.family === "signal" || x.family === "indicator" || x.family === "light") && <span style={{ color: x.side === "bull" ? "var(--up)" : "var(--down)" }}>{x.side === "bull" ? "↑" : "↓"} </span>}
-                      {x.name}
-                    </td>
-                    <td className="py-1.5 pr-3">{TF_LABEL[x.tf]}</td>
-                    <td className="py-1.5 pr-3">{x.cells.is.n}</td>
-                    <td className="py-1.5 pr-3">
-                      {x.cells.is.hit ?? "—"}% <span className="text-ink-3">/ {x.cells.is.baseHit ?? "—"}%</span>
-                    </td>
-                    <td className="py-1.5 pr-3"><Edge g={x.cells.is} strong /></td>
-                    <td className="py-1.5 pr-3"><Edge g={x.cells.oos} /> <span className="text-[11px] text-ink-3">({x.cells.oos.n})</span></td>
-                    <td className="py-1.5 pr-3"><Edge g={x.cells.btc} /></td>
-                    <td className="py-1.5 pr-3"><Edge g={x.cells.eth} /></td>
-                    <td className="py-1.5 pr-3"><Edge g={x.cells.firstHalf} /></td>
-                    <td className="py-1.5 pr-3"><Edge g={x.cells.secondHalf} /></td>
-                    {(r.kind === "levels" || r.kind === "defend" || r.kind === "watch") && <td className="py-1.5 pr-3 text-xs text-ink-2">{detail(x)}</td>}
-                    <td className="py-1.5 pr-3">{x.q ?? "—"}</td>
-                    <td className="py-1.5 pr-3" style={{ color: VERDICT_COLOR[x.verdict] }}>{verdictText(x.verdict, x.control)}</td>
-                    {(r.kind === "plans" || r.kind === "defend" || r.kind === "watch") && <td className="py-1.5 text-xs text-ink-3">{x.control}</td>}
-                  </tr>
+                {rows.map((x: ResearchRow, k) => (
+                  <Fragment key={`${x.tf}:${x.key}`}>
+                    {r.kind === "patterns" && x.tf !== rows[k - 1]?.tf && (
+                      <tr className="border-t border-line">
+                        <td colSpan={15} className="pb-1 pt-3 text-xs font-semibold text-ink-2">{TF_LABEL[x.tf]}</td>
+                      </tr>
+                    )}
+                    <tr className="border-t border-line">
+                      <td className="py-1.5 pr-3">
+                        {(x.family === "signal" || x.family === "indicator" || x.family === "light") && <span style={{ color: x.side === "bull" ? "var(--up)" : "var(--down)" }}>{x.side === "bull" ? "↑" : "↓"} </span>}
+                        {x.name}
+                      </td>
+                      <td className="py-1.5 pr-3">{TF_LABEL[x.tf]}</td>
+                      <td className="py-1.5 pr-3">{x.cells.is.n}</td>
+                      <td className="py-1.5 pr-3">
+                        {x.cells.is.hit ?? "—"}% <span className="text-ink-3">/ {x.cells.is.baseHit ?? "—"}%</span>
+                      </td>
+                      <td className="py-1.5 pr-3"><Edge g={x.cells.is} strong /></td>
+                      <td className="py-1.5 pr-3"><Edge g={x.cells.oos} /> <span className="text-[11px] text-ink-3">({x.cells.oos.n})</span></td>
+                      <td className="py-1.5 pr-3"><Edge g={x.cells.btc} /></td>
+                      <td className="py-1.5 pr-3"><Edge g={x.cells.eth} /></td>
+                      <td className="py-1.5 pr-3"><Edge g={x.cells.firstHalf} /></td>
+                      <td className="py-1.5 pr-3"><Edge g={x.cells.secondHalf} /></td>
+                      {DETAILED.includes(r.kind) && <td className="py-1.5 pr-3 text-xs text-ink-2">{detail(x)}</td>}
+                      <td className="py-1.5 pr-3">{x.q ?? "—"}</td>
+                      <td className="py-1.5 pr-3" style={{ color: VERDICT_COLOR[x.verdict] }}>{verdictText(x.verdict, x.control)}</td>
+                      {CONTROLLED.includes(r.kind) && <td className="py-1.5 text-xs text-ink-3">{x.control}</td>}
+                    </tr>
+                  </Fragment>
                 ))}
               </tbody>
             </table>

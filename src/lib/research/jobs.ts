@@ -2,6 +2,7 @@ import { currentParams } from "../server/params-store.ts";
 import { defendReport } from "./defend.ts";
 import { levelsReport } from "./levels.ts";
 import { plansReport } from "./plans.ts";
+import { patternsReport } from "./patterns.ts";
 import { lightReport, pruneReports, saveReport, signalsReport } from "./run.ts";
 import { watchReport } from "./watch.ts";
 
@@ -15,7 +16,8 @@ export async function runResearch() {
   const plans = await plansReport(engine, { paramsVersion: version });
   const defend = await defendReport(engine, { paramsVersion: version });
   const watch = await watchReport(engine, { paramsVersion: version });
-  const ids = [saveReport(signals), saveReport(light), saveReport(levels), saveReport(plans), saveReport(defend), saveReport(watch)];
+  const patterns = await patternsReport(engine, { paramsVersion: version });
+  const ids = [saveReport(signals), saveReport(light), saveReport(levels), saveReport(plans), saveReport(defend), saveReport(watch), saveReport(patterns)];
   pruneReports();
   const count = (rows: { verdict: string }[], v: string) => rows.filter((r) => r.verdict === v).length;
   return {
@@ -26,6 +28,7 @@ export async function runResearch() {
     plans: { rows: plans.rows.length, better: count(plans.rows, "有优势"), worse: count(plans.rows, "比随机差") },
     defend: { rows: defend.rows.length, better: count(defend.rows, "有优势"), worse: count(defend.rows, "比随机差") },
     watch: { rows: watch.rows.length, better: count(watch.rows, "有优势"), worse: count(watch.rows, "比随机差") },
+    patterns: { rows: patterns.rows.length, better: count(patterns.rows, "有优势"), worse: count(patterns.rows, "比随机差") },
     durationMs: Date.now() - t0,
   };
 }
