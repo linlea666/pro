@@ -8,7 +8,7 @@ import zlib from "node:zlib";
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "sl-archive-"));
 process.env.LOG_LEVEL = "error";
 const { getDb } = await import("../src/lib/server/db.ts");
-const { hourlyOpenInterest, syncOpenInterestArchive, unzipSingle } = await import("../src/lib/data/archive.ts");
+const { hourlyOpenInterest, openInterestCoverage, syncOpenInterestArchive, unzipSingle } = await import("../src/lib/data/archive.ts");
 const { openInterestSeries } = await import("../src/lib/data/perp.ts");
 
 /** A one-file zip as the archive serves it: local header, deflated data, central directory. */
@@ -34,19 +34,24 @@ const DAY = 86400;
 const NOW = Date.parse("2026-10-20T12:00:00Z") / 1000;
 /** the archive in this test starts on 2026-09-01 */
 const FIRST = "2026-09-01";
-const csvFor = (d: string) => {
+/** other coins' archives start later; open interest differs per coin */
+const FIRSTS: Record<string, string> = { BTC: FIRST, XRP: "2026-09-20", DOGE: "2026-10-01", ADA: "2026-08-15" };
+const BASE_OI: Record<string, number> = { BTC: 1000, XRP: 2000, DOGE: 3000, ADA: 4000 };
+const csvFor = (d: string, coin = "BTC") => {
   const rows = ["create_time,symbol,sum_open_interest,sum_open_interest_value,count_toptrader_long_short_ratio"];
+  const b = BASE_OI[coin];
   // out of order on purpose, five-minute rows; the first row of each hour wins
-  for (let h = 23; h >= 0; h--) for (const m of ["05", "00"]) rows.push(`${d} ${String(h).padStart(2, "0")}:${m}:00,BTCUSDT,${1000 + h + (m === "05" ? 0.5 : 0)},${(1000 + h) * 50000},""`);
+  for (let h = 23; h >= 0; h--) for (const m of ["05", "00"]) rows.push(`${d} ${String(h).padStart(2, "0")}:${m}:00,${coin}USDT,${b + h + (m === "05" ? 0.5 : 0)},${(b + h) * 50000},""`);
   return rows.join("\n");
 };
 
 let requested: string[] = [];
 globalThis.fetch = (async (url: string) => {
   requested.push(url);
-  const d = /metrics-(\d{4}-\d{2}-\d{2})\.zip$/.exec(url)?.[1];
-  if (!d || d < FIRST) return new Response("not found", { status: 404 });
-  return new Response(Buffer.from(zip(`BTCUSDT-metrics-${d}.csv`, csvFor(d), d.endsWith("5"))));
+  const m = /\/([A-Z]+)USDT-metrics-(\d{4}-\d{2}-\d{2})\.zip$/.exec(url);
+  const coin = m?.[1], d = m?.[2];
+  if (!coin || !d || !FIRSTS[coin] || d < FIRSTS[coin]) return new Response("not found", { status: 404 });
+  return new Response(Buffer.from(zip(`${coin}USDT-metrics-${d}.csv`, csvFor(d, coin), d.endsWith("5"))));
 }) as typeof fetch;
 
 test("archive: zip files with and without a data descriptor; one row per hour", () => {
@@ -90,4 +95,37 @@ test("archive: walks back to the first day, skips days already stored, then only
   assert.deepEqual(s.t, Array.from({ length: 8 }, (_, k) => ten + (k - 2) * 3600));
   assert.equal(s.oi[2], 1, "the live row");
   assert.equal(openInterestSeries("ETH", NOW), null);
+});
+
+test("archive: several coins at once store exactly what one at a time would", async () => {
+  const d = getDb();
+  const rowsOf = (coin: string) => d.prepare("SELECT t, oi, oi_value FROM open_interest WHERE coin = ? AND source = 'binance-futures' ORDER BY t").all(coin);
+  const coins = ["XRP", "DOGE", "ADA"];
+
+  // one at a time, then wipe rows and state
+  const alone = new Map<string, unknown[]>();
+  for (const coin of coins) {
+    const r = await syncOpenInterestArchive({ coins: [coin], pauseMs: 0, nowSec: NOW });
+    assert.equal(r.complete, true);
+    alone.set(coin, rowsOf(coin));
+  }
+  d.prepare("DELETE FROM open_interest WHERE coin IN ('XRP', 'DOGE', 'ADA')").run();
+  d.prepare("DELETE FROM settings WHERE key IN ('state.oiArchive.binance-futures.XRP', 'state.oiArchive.binance-futures.DOGE', 'state.oiArchive.binance-futures.ADA')").run();
+
+  requested = [];
+  const r = await syncOpenInterestArchive({ coins, pauseMs: 0, nowSec: NOW, concurrency: 3 });
+  assert.equal(r.error, undefined);
+  assert.equal(r.complete, true);
+  // XRP 2026-09-20…10-18 (29 days), DOGE 10-01…10-18 (18), ADA 08-15…10-18 (65)
+  assert.equal(r.days, 29 + 18 + 65);
+  assert.equal(r.rows, (29 + 18 + 65) * 24);
+  assert.equal(r.requests, 29 + 18 + 65 + 3 * 14);
+  assert.equal(requested.length, r.requests);
+  for (const coin of coins) {
+    const rows = rowsOf(coin) as { t: number; oi: number }[];
+    assert.deepEqual(rows, alone.get(coin), `${coin}: same rows as on its own`);
+    assert.equal(rows[0].t, Date.parse(`${FIRSTS[coin]}T00:00:00Z`) / 1000);
+    assert.equal(rows[0].oi, BASE_OI[coin]);
+  }
+  assert.deepEqual(openInterestCoverage(coins).map((c) => c.done), [true, true, true]);
 });

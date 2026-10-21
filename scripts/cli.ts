@@ -7,7 +7,8 @@
  *   restore FILE                  replace the database with a backup (service must be stopped)
  *   info                          print database path, schema version, admin count
  *   history [--sync] [--coin BTC] [--tf 1h]
- *                                 local candle history per coin/timeframe; --sync fills it now
+ *                                 local candle history per coin/timeframe; --sync fills it now (candles,
+ *                                 taker volume, mark prices and the open-interest archive)
  *   research [--kind signals|light|levels|plans|defend] [--all]
  *                                 generate the research reports, save them and print the findings (--all: every row)
  *   compare --set KEY=VALUE [--set ...] [--tf 1h] [--coin BTC] [--step 2]
@@ -81,6 +82,18 @@ async function main() {
         for (;;) {
           const r = await syncHistory({ coins, tfs, budgetMs: 60_000 });
           console.log(`补充 K 线：请求 ${r.requests} 次，向前补 ${r.added} 根，补缺口 ${r.filled} 根${r.error ? `，出错：${r.error}` : ""}`);
+          if (r.complete || r.error || !r.requests) break;
+        }
+        const { MARK_SOURCE } = await import("../src/lib/data/klines.ts");
+        for (;;) {
+          const r = await syncHistory({ source: MARK_SOURCE, budgetMs: 60_000 });
+          console.log(`标记价格：请求 ${r.requests} 次，补 ${r.added} 根，补缺口 ${r.filled} 根${r.error ? `，出错：${r.error}` : ""}`);
+          if (r.complete || r.error || !r.requests) break;
+        }
+        const { syncOpenInterestArchive } = await import("../src/lib/data/archive.ts");
+        for (;;) {
+          const r = await syncOpenInterestArchive({ coins, budgetMs: 60_000, concurrency: 3 });
+          console.log(`持仓量归档：请求 ${r.requests} 次，补 ${r.days} 天（${r.rows} 小时）${r.error ? `，出错：${r.error}` : ""}`);
           if (r.complete || r.error || !r.requests) break;
         }
       }

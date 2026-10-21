@@ -16,8 +16,8 @@ import { binancePage, KEEP_DAYS, MARK_SOURCE, PRIMARY_SOURCE, store } from "./kl
  *
  * Two additions: bars stored before taker buy volume was kept are fetched once more
  * to fill it in (the `tbv` cursor), and a few mark-price series used by research are
- * kept the same way (`source: MARK_SOURCE`, seeded and extended forward here, since no
- * page loads them).
+ * kept the same way (`source: MARK_SOURCE`, also extended forward here, since no page
+ * loads them). A series with no stored bars yet is started here with its newest page.
  */
 
 type LongSource = typeof PRIMARY_SOURCE | typeof MARK_SOURCE;
@@ -84,7 +84,7 @@ function reached(first: number, tf: Timeframe, st: SeriesState, nowSec: number) 
 
 export interface SyncResult {
   requests: number;
-  /** bars added before the oldest stored one */
+  /** bars added: a new series' first page, then bars before the oldest stored one */
   added: number;
   /** bars fetched into holes */
   filled: number;
@@ -98,8 +98,9 @@ export interface SyncResult {
 
 /**
  * Extend each series backwards, then patch holes inside it, then fill in taker volume,
- * until `budgetMs` is spent. Primary series not stored yet are skipped: the live loader
- * creates them first. Mark-price series are created and kept up to date here.
+ * until `budgetMs` is spent. A series not stored yet is started here with the newest page
+ * (5-minute bars are kept only 30 days, so a coin nobody opened on 5m would otherwise never
+ * get one); mark-price series are also kept current forward here, since no page loads them.
  * Stops at the first failed request and carries on next run.
  */
 export async function syncHistory(
@@ -124,22 +125,22 @@ export async function syncHistory(
       for (const coin of coins) {
         const st = readState(coin, tf, source);
         let s0 = span(coin, tf, source);
-        if (mark && left()) {
-          // no page loads mark prices: start the series here and keep its newest bars current
-          let next = s0.n ? s0.last! + sec : null;
-          if (next == null) {
-            const bars = await page(coin, tf, { limit: PAGE });
+        if (!s0.n && left()) {
+          // not stored yet (no page loads mark prices; a coin nobody opened on 5m): start it with the newest page
+          const bars = await page(coin, tf, { limit: PAGE });
+          store(coin, tf, source, bars);
+          r.added += bars.length;
+          s0 = span(coin, tf, source);
+        } else if (mark && s0.n && left()) {
+          // no page loads mark prices: keep the newest bars current here
+          let next = s0.last! + sec;
+          while (next <= nowSec - sec && left()) {
+            const bars = await page(coin, tf, { startTime: next, limit: PAGE });
+            if (!bars.length) break;
             store(coin, tf, source, bars);
             r.added += bars.length;
-          } else {
-            while (next <= nowSec - sec && left()) {
-              const bars = await page(coin, tf, { startTime: next, limit: PAGE });
-              if (!bars.length) break;
-              store(coin, tf, source, bars);
-              r.added += bars.length;
-              if (bars.length < PAGE) break;
-              next = bars[bars.length - 1].t + sec;
-            }
+            if (bars.length < PAGE) break;
+            next = bars[bars.length - 1].t + sec;
           }
           s0 = span(coin, tf, source);
         }

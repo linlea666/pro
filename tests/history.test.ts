@@ -121,3 +121,18 @@ test("history: mark-price series are started and kept current here", async () =>
   await syncHistory({ ...opts, nowSec: NOW + 3 * H });
   assert.equal(calls, 1);
 });
+
+test("history: a primary series nobody has loaded yet is started here", async () => {
+  // e.g. 5-minute bars of a coin nobody opened: no page ever stores them
+  const n = () => getDb().prepare("SELECT COUNT(*) n, MIN(t) first, MAX(t) last FROM candles WHERE coin = 'XRP' AND tf = '1h' AND source = 'binance-futures'").get() as { n: number; first: number; last: number };
+  assert.equal(n().n, 0);
+  const r = await syncHistory({ nowSec: NOW, pauseMs: 0, coins: ["XRP"], tfs: ["1h"] });
+  assert.equal(r.error, undefined);
+  assert.equal(r.complete, true);
+  const s = n();
+  assert.equal(s.n, 400 * 24 + 1 - 4, "seeded with the newest page, then walked back to the listing");
+  assert.equal(s.first, LISTED);
+  assert.equal(s.last, NOW);
+  assert.equal(r.added, s.n);
+  assert.equal(historyCoverage(NOW, ["XRP"], ["1h"])[0].complete, true);
+});

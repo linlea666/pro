@@ -102,24 +102,29 @@ export interface OiArchiveResult {
 
 /**
  * Walk each coin's open interest back to the archive's first day, a day per request,
- * skipping days already stored (the live sync keeps the last month). Stops at the first
- * failed request and carries on next run.
+ * skipping days already stored (the live sync keeps the last month). With `concurrency`
+ * above 1 (the CLI), that many coins are walked at once, each worker pausing between its
+ * own requests. Stops at the first failed request and carries on next run.
  */
 export async function syncOpenInterestArchive(
-  opts: { coins?: string[]; budgetMs?: number; pauseMs?: number; nowSec?: number } = {},
+  opts: { coins?: string[]; budgetMs?: number; pauseMs?: number; nowSec?: number; concurrency?: number } = {},
 ): Promise<OiArchiveResult> {
-  const { coins = COIN_IDS, budgetMs = 60_000, pauseMs = 150, nowSec = Date.now() / 1000 } = opts;
+  const { coins = COIN_IDS, budgetMs = 60_000, pauseMs = 150, nowSec = Date.now() / 1000, concurrency = 1 } = opts;
   const t0 = Date.now();
-  const left = () => Date.now() - t0 < budgetMs;
   const r: OiArchiveResult = { requests: 0, days: 0, rows: 0, complete: true };
+  // a failed request stops the other workers too
+  const left = () => !r.error && Date.now() - t0 < budgetMs;
   const d = getDb();
   const ins = d.prepare("INSERT OR IGNORE INTO open_interest (coin, source, t, oi, oi_value) VALUES (?, ?, ?, ?, ?)");
   const stored = d.prepare("SELECT COUNT(*) n FROM open_interest WHERE coin = ? AND source = ? AND t >= ? AND t < ?");
   // the archive publishes a day after it ends
   const newest = day(nowSec - 2 * DAY);
   const floor = day(nowSec - KEEP_DAYS * DAY);
-  try {
-    for (const coin of coins) {
+  const queue = [...coins];
+
+  const worker = async () => {
+    let requests = 0;
+    for (let coin = queue.shift(); coin != null && !r.error; coin = queue.shift()) {
       const st = readState(coin);
       // after the walk back, only the last weeks are looked at again
       let cur = st.done ? newest : (st.next ?? newest);
@@ -128,7 +133,8 @@ export async function syncOpenInterestArchive(
       while (cur >= stop && left()) {
         const from = daySec(cur);
         if ((stored.get(coin, PRIMARY_SOURCE, from, from + DAY) as { n: number }).n < 20) {
-          if (r.requests++ && pauseMs) await new Promise((ok) => setTimeout(ok, pauseMs));
+          r.requests++;
+          if (requests++ && pauseMs) await new Promise((ok) => setTimeout(ok, pauseMs));
           const csv = await fetchArchive(`daily/metrics/${coin}USDT/${coin}USDT-metrics-${cur}.zip`);
           if (csv == null) {
             if (!st.done && ++misses >= END_MISSES) {
@@ -155,10 +161,16 @@ export async function syncOpenInterestArchive(
       }
       setState(stateKey(coin), JSON.stringify(st));
     }
-  } catch (e) {
-    r.complete = false;
-    r.error = (e as Error).message;
-  }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.max(1, Math.min(concurrency, coins.length)) }, () =>
+      worker().catch((e) => {
+        r.complete = false;
+        r.error ??= (e as Error).message;
+      }),
+    ),
+  );
   return r;
 }
 
