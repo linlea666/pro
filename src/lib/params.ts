@@ -234,6 +234,14 @@ export const PARAM_MODULES: ParamModule[] = [
           n("defend.minNearAtr", "近止损最小距离", 0.5, 0.2, 2, 0.1, "近止损（1 小时极点之外）离入场至少这么多倍入场周期的 ATR，太近会被正常波动扫掉。", "ATR"),
         ],
       },
+      {
+        title: "实时盯盘",
+        hint: "价格来到关键高低点时，盯盘告诉新手“别接 / 观察 / 已转强”。观察窗口和研究报告（盯盘）是同一份定义；改了窗口，要等下一份研究报告才有对应的历史数字。",
+        params: [
+          n("watch.nearAtr", "靠近的距离", 1.5, 0.5, 4, 0.25, "价格离关键位不到这么多倍 1 小时 ATR、还没碰到时，显示“靠近”。", "ATR"),
+          n("watch.windowBars", "事件观察窗口", 288, 96, 672, 24, "碰到关键位之后，最多盯这么多根 15 分钟 K 线（288 根 = 3 天）等它转强；超过就不再算这次。", "根"),
+        ],
+      },
     ],
   },
   {
@@ -317,6 +325,8 @@ export interface EngineParams {
   structure: { swingAtr: number };
   /** defend-the-level plans (src/lib/ta/defend.ts) */
   defend: { stallBars: number; freshBars: number; reachAtr: number; minNearAtr: number };
+  /** the live key-level watch and its research (src/lib/ta/watch.ts, src/lib/research/watch.ts) */
+  watch: { nearAtr: number; windowBars: number };
   verdict: { trend: number; momentum: number; position: number; timing: number; threshold: number; stopQuantile: number; familyVotes: boolean };
   horizon: Record<Timeframe, number>;
   stats: { minSamples: number; costPct: number; alpha: number };
@@ -359,6 +369,7 @@ export function engineParams(values: ParamValues = DEFAULT_PARAMS): EngineParams
     },
     structure: { swingAtr: num(p, "structure.swingAtr") },
     defend: { stallBars: num(p, "defend.stallBars"), freshBars: num(p, "defend.freshBars"), reachAtr: num(p, "defend.reachAtr"), minNearAtr: num(p, "defend.minNearAtr") },
+    watch: { nearAtr: num(p, "watch.nearAtr"), windowBars: num(p, "watch.windowBars") },
     verdict: { trend: w.trend / sum, momentum: w.momentum / sum, position: w.position / sum, timing: w.timing / sum, threshold: num(p, "verdict.threshold"), stopQuantile: num(p, "verdict.stopQuantile"), familyVotes: p["verdict.familyVotes"] === true },
     horizon: Object.fromEntries(TFS.map((tf) => [tf, num(p, `stats.h.${tf}`)])) as Record<Timeframe, number>,
     stats: { minSamples: num(p, "stats.minSamples"), costPct: num(p, "stats.costPct"), alpha: num(p, "stats.alpha") },

@@ -4,12 +4,13 @@ import type { EngineParams } from "../params.ts";
 import { getDb } from "../server/db.ts";
 import { COIN_IDS } from "../symbols.ts";
 import * as ta from "../ta/core.ts";
-import { netTakerFlow, oiFlush, type OiSeries } from "../ta/defend.ts";
-import { alignHigher, relVolume } from "../ta/plan.ts";
+import type { OiSeries } from "../ta/defend.ts";
+import { alignHigher } from "../ta/plan.ts";
 import { atrSeries, bufferAtr } from "../ta/risk.ts";
 import { normCdf } from "../ta/stats.ts";
 import { structureSeries, swings, type Swing } from "../ta/structure.ts";
-import { firstReclaim, firstTurn, FROM_BARS, keyLevelCandidates, pickLevels, stopBeyond, touchedLevel, turnAt, type KeyFrames, type KeyLevel, type Trigger } from "../ta/watch.ts";
+import { eventTriggers, FROM_BARS, levelSource, scanEvents, stopBeyond, type KeyLevel, type Trigger, type WatchInput } from "../ta/watch.ts";
+import { SIGN_NAME, SIGNS, signsAt, type SignData, type SignKey } from "../ta/watchsigns.ts";
 import type { Candle } from "../types.ts";
 import { fundingFuel } from "./defend.ts";
 import { bhAdjust, cells, controlTrades, judge, makeSplit, trades as fwdTrades, type Split, type Trade } from "./engine.ts";
@@ -46,10 +47,9 @@ const POLICY_NAME: Record<Policy, string> = {
   C1: "1 小时转强才进",
 };
 
-/** 15-minute bars: the event window, the reclaim window, the cooldown between events of one direction */
-const WINDOW = 288;
+/** 15-minute bars: the reclaim window (the event window and the cooldown between events of one direction are
+ * EngineParams.watch.windowBars, 288 = 3 days) */
 const RECLAIM_BARS = 16;
-const COOLDOWN = 288;
 /** longest hold (7 days) */
 const MAX_BARS = 672;
 /** "run over": within this many bars, a further HALFWAY_ATR of the hour chart's ATR against the entry */
@@ -83,18 +83,6 @@ interface EvOut {
   missed: { C: boolean; C1: boolean };
   taken: Record<Policy, Taken | null>;
 }
-
-type SignKey = "rsi" | "flow" | "spot" | "climax" | "oi" | "funding" | "hour";
-const SIGNS: SignKey[] = ["rsi", "flow", "spot", "climax", "oi", "funding", "hour"];
-const SIGN_NAME: Record<SignKey, string> = {
-  rsi: "动能衰竭（价格新低，RSI 没有新低）",
-  flow: "主动成交背离（新低途中主动买入占多）",
-  spot: "现货承接（现货主动买入、合约主动卖出）",
-  climax: "放量后缩量（新低那根放量，更高的低点缩量）",
-  oi: "持仓量骤降（多头被洗出）",
-  funding: "资金费率在反方向拥挤",
-  hour: "1 小时也已转强",
-};
 
 interface CoinOut {
   coin: string;
@@ -154,6 +142,8 @@ function runCoin(coin: string, ci: number, ep: EngineParams, nowSec: number): Co
   const funding = { t: fr.map((x) => x.t), rate: fr.map((x) => x.rate) };
   const mult = ep.structure.swingAtr;
   const buf = bufferAtr(null, 80);
+  const WINDOW = ep.watch.windowBars;
+  const COOLDOWN = WINDOW;
 
   const times = c.map((x) => x.t);
   const spotTimes = spot.map((x) => x.t);
@@ -173,57 +163,24 @@ function runCoin(coin: string, ci: number, ep: EngineParams, nowSec: number): Co
   const at15 = (hourOpen: number) => lowerBound(times, hourOpen + 3600 - 900);
   const ctxSwings: Swing[] = swings(h, hatr, mult).map((s) => ({ ...s, i: lowerBound(times, h[s.i].t), confirmedAt: at15(h[s.confirmedAt].t) }));
   const ctx: SimContext = { c, atr, swings: ctxSwings, buf, costPct: ep.stats.costPct, maxBars: MAX_BARS };
-  const hourClose = (k: number) => hIdx[k] >= 0 && h[hIdx[k]].t + 3600 === c[k].t + 900;
+  const w: WatchInput = { c, atr, ss, h, hss, hIdx, levels: levelSource(c, d1, atr1, idx1, c4, atr4, idx4) };
 
-  // ---- events: the first touch of a key level price came down (up) to; one per direction per 3 days
+  // ---- events: the first touch of a key level price came down (up) to; one per direction per window (3 days)
   let start = Math.max(WARMUP, FROM_BARS + 1);
   while (start < c.length && !(atr[start - 1] > 0)) start++;
-  const dailyCache = new Map<string, KeyLevel[]>();
-  const h4Cache = new Map<string, KeyLevel[]>();
-  const candidatesAt = (k: number, dir: 1 | -1): KeyLevel[] => {
-    // known at the close of bar k − 1, i.e. before bar k trades: the touching bar never defines its own level
-    const endSec = c[k - 1].t + 900;
-    const f: KeyFrames = { daily: d1, atr1d: atr1, j1: idx1[k - 1], c4h: c4, atr4h: atr4, j4: idx4[k - 1], endSec };
-    const dk = `${dir}|${f.j1}|${Math.floor(endSec / 86400)}`;
-    let daily = dailyCache.get(dk);
-    if (!daily) {
-      daily = keyLevelCandidates({ ...f, j4: -1 }, dir);
-      dailyCache.set(dk, daily);
-    }
-    const hk = `${dir}|${f.j4}`;
-    let four = h4Cache.get(hk);
-    if (!four) {
-      four = f.j4 >= 0 ? keyLevelCandidates({ ...f, daily: [], j1: -1 }, dir) : [];
-      h4Cache.set(hk, four);
-    }
-    return daily.concat(four);
-  };
   type Ev = { k0: number; dir: 1 | -1; level: KeyLevel; trig: Record<Policy, Trigger | null>; missed: { C: boolean; C1: boolean } };
-  const evs: Ev[] = [];
-  const next = new Map<number, number>();
-  for (let k = start; k + WINDOW < c.length; k++) {
-    for (const dir of [1, -1] as const) {
-      if (k < (next.get(dir) ?? 0)) continue;
-      const cands = candidatesAt(k, dir);
-      // nothing reached: skip the filtering
-      if (!cands.some((x) => (dir > 0 ? c[k].l <= x.price : c[k].h >= x.price))) continue;
-      const level = touchedLevel(c[k], pickLevels(cands, dir, c[k - FROM_BARS].c, atr[k - 1]), dir);
-      if (!level) continue;
-      next.set(dir, k + COOLDOWN);
-      const L = level.price;
-      const ext = dir > 0 ? Math.min(L, c[k].l) : Math.max(L, c[k].h);
-      const trig: Record<Policy, Trigger | null> = {
-        A: { i: k, extreme: ext, extremeI: k, extremeT: c[k].t },
-        B: firstReclaim(c, k, L, dir, RECLAIM_BARS),
-        C: firstTurn(c, k, dir, WINDOW, (j, tX) => turnAt(ss[j], dir, tX)),
-        C1: firstTurn(c, k, dir, WINDOW, (j, tX) => hourClose(j) && turnAt(hss[hIdx[j]], dir, tX)),
-      };
-      let best = -Infinity;
-      for (let j = k; j <= k + WINDOW; j++) best = Math.max(best, ((dir > 0 ? c[j].h : c[j].l) - L) * dir);
-      const went = best >= MISSED_ATR * atr[k];
-      evs.push({ k0: k, dir, level, trig, missed: { C: !trig.C && went, C1: !trig.C1 && went } });
-    }
-  }
+  const evs: Ev[] = scanEvents(w, start, c.length - WINDOW, COOLDOWN).map((e) => {
+    const { k0: k, dir } = e;
+    const L = e.level.price;
+    const trig = eventTriggers(w, e, WINDOW, RECLAIM_BARS);
+    let best = -Infinity;
+    for (let j = k; j <= k + WINDOW; j++) best = Math.max(best, ((dir > 0 ? c[j].h : c[j].l) - L) * dir);
+    const went = best >= MISSED_ATR * atr[k];
+    return { ...e, trig, missed: { C: !trig.C && went, C1: !trig.C1 && went } };
+  });
+
+  // E19b: the seven signs at the C entries (null: the data is missing)
+  const sd: SignData = { c, times, ss, rsi, spot, spotTimes, oi, hss, hIdx, funding: (dir, at) => fundingFuel(funding, dir, at) };
 
   // ---- the trades: one at a time per policy and direction, as `sequential` in plans.ts
   const enter = (e: Ev, p: Policy): { i: number; entry: number; stop: number; r: SimResult } | null => {
@@ -287,41 +244,11 @@ function runCoin(coin: string, ci: number, ep: EngineParams, nowSec: number): Co
           const res = simulate(ctx, u, dir, c[u].c - dir * riskAtr * atr[u], "structure");
           if (res) random[p].push({ t: c[u].t, coin, r: res.r, pct: res.pct });
         }
-        if (p === "C") signs.push({ trade, v: signsAt(g, dir) });
+        if (p === "C") signs.push({ trade, v: signsAt(sd, g.extremeI, g.i, g.extreme, dir) });
       });
     }
   });
   return { coin, events: out, random, signs, bars: c.length, from: c[start].t, to: c[c.length - 1].t };
-
-  /** E19b: the seven signs at a C entry (null: the data is missing). */
-  function signsAt(g: Trigger, dir: 1 | -1): Record<SignKey, boolean | null> {
-    const e = g.extremeI, i = g.i;
-    const prev = dir > 0 ? ss[e - 1].lastLow : ss[e - 1].lastHigh;
-    let rsiDiv: boolean | null = null, flow: boolean | null = null;
-    if (prev) {
-      if (Number.isFinite(rsi[e]) && Number.isFinite(rsi[prev.i])) rsiDiv = (g.extreme - prev.price) * dir < 0 && (rsi[e] - rsi[prev.i]) * dir > 0;
-      const f = netTakerFlow(c, times, prev.t + 900, c[e].t + 900);
-      flow = f == null ? null : f * dir > 0;
-    }
-    let spotBuy: boolean | null = null;
-    if (spot.length && e >= 15) {
-      const from = c[e - 15].t, to = c[e].t + 900;
-      const s = netTakerFlow(spot, spotTimes, from, to), f = netTakerFlow(c, times, from, to);
-      spotBuy = s == null || f == null ? null : s * dir > 0 && f * dir < 0;
-    }
-    const hl = dir > 0 ? ss[i].lastLow : ss[i].lastHigh;
-    const climax = hl ? relVolume(c, e) >= 2 && relVolume(c, hl.i) < 1 : null;
-    const j = hIdx[i];
-    return {
-      rsi: rsiDiv,
-      flow,
-      spot: spotBuy,
-      climax,
-      oi: oi ? oiFlush(oi, c[e].t - 4 * 3600, c[e].t + 900) : null,
-      funding: fundingFuel(funding, dir, c[i].t + 900),
-      hour: j >= 0 ? turnAt(hss[j], dir, c[e].t) : null,
-    };
-  }
 }
 
 interface Move24Out {
@@ -548,6 +475,7 @@ export async function watchReport(ep: EngineParams, opts: { paramsVersion: numbe
 
   const rows = groups.flatMap((g) => finish(g, ep));
   const sgn = (p: string) => (p === "C" ? "15 分钟" : "1 小时");
+  const days = `${Math.round(((ep.watch.windowBars * 15) / 1440) * 10) / 10} 天`;
   return {
     kind: "watch",
     title,
@@ -561,10 +489,10 @@ export async function watchReport(ep: EngineParams, opts: { paramsVersion: numbe
     coverage,
     rows,
     notes: [
-      `事件：价格从上方（${FROM_BARS} 根 15 分钟 K 线之前的收盘至少高 0.5 倍 1 小时 ATR）第一次碰到一个关键低点——前一日 / 上周 / 上月低点（UTC 日历）、没被收盘跌破的 4 小时或日线摆动低点；关键位只用这根 15 分钟 K 线开盘之前已经收盘的数据，相距 0.25 倍 1 小时 ATR 以内的合并为一个（上月 > 上周 > 日线摆动点 > 前一日 > 4 小时摆动点）。同一方向 3 天内只算一次；高点和做空是镜像。`,
-      `四种进场，每个事件都算：A 碰到就进（在关键位挂单成交）；B 扫过后收回（${RECLAIM_BARS} 根 15 分钟内第一次收盘回到关键位之上）；C 15 分钟转强（触位后 3 天内，最新低点之后 15 分钟出现更高的低点，并收盘站上最近的反弹高点 0.1 倍 ATR 以上）；C1 1 小时转强（同样的定义，看 1 小时收盘）。`,
+      `事件：价格从上方（${FROM_BARS} 根 15 分钟 K 线之前的收盘至少高 0.5 倍 1 小时 ATR）第一次碰到一个关键低点——前一日 / 上周 / 上月低点（UTC 日历）、没被收盘跌破的 4 小时或日线摆动低点；关键位只用这根 15 分钟 K 线开盘之前已经收盘的数据，相距 0.25 倍 1 小时 ATR 以内的合并为一个（上月 > 上周 > 日线摆动点 > 前一日 > 4 小时摆动点）。同一方向 ${days}内只算一次；高点和做空是镜像。`,
+      `四种进场，每个事件都算：A 碰到就进（在关键位挂单成交）；B 扫过后收回（${RECLAIM_BARS} 根 15 分钟内第一次收盘回到关键位之上）；C 15 分钟转强（触位后 ${days}内，最新低点之后 15 分钟出现更高的低点，并收盘站上最近的反弹高点 0.1 倍 ATR 以上）；C1 1 小时转强（同样的定义，看 1 小时收盘）。`,
       "四种进场的止损规则相同：入场时已知的最新低点之外加 p80 扫损缓冲（A 在关键位挂单成交，成交时还不知道这根 K 线会跌到哪，所以按关键位本身算）（0.8 倍 1 小时 ATR）；离场也相同：跟着新确认的 1 小时摆动点移动认错位，最长 7 天。所以 R 可以直接比较。A 那根 K 线如果同时碰到止损，按亏 1R 加成本算。一个币、一种进场、一个方向同时只持有一笔。",
-      `“接到半山腰”：入场后 24 小时内价格又朝不利方向走了 1 倍 1 小时 ATR（只看价格路径，不管是否止损；A 包括成交那根 K 线剩下的部分）。“24 小时内被扫”：24 小时内打到止损出局。“错过”：${sgn("C")} / ${sgn("C1")}转强在 3 天内一直没出现，但价格从关键位朝交易方向走出了 ${MISSED_ATR} 倍 1 小时 ATR。细节里的百分比都按样本内计（和“优势”一栏相同）。`,
+      `“接到半山腰”：入场后 24 小时内价格又朝不利方向走了 1 倍 1 小时 ATR（只看价格路径，不管是否止损；A 包括成交那根 K 线剩下的部分）。“24 小时内被扫”：24 小时内打到止损出局。“错过”：${sgn("C")} / ${sgn("C1")}转强在 ${days}内一直没出现，但价格从关键位朝交易方向走出了 ${MISSED_ATR} 倍 1 小时 ATR。细节里的百分比都按样本内计（和“优势”一栏相同）。`,
       "预先写定的判据：只有“15 分钟转强 对 碰到就进”的“接到半山腰”比例至少少 5 个百分点、三组配对比较 BH 校正后 q < 0.05（halfwayQ）、并且 BTC / ETH、前后两半和最近 12 个月方向一致（halfwayConsistent = 1），才可以说“等转强能少接飞刀”。平均 R 的优势仍按常规标准判定。",
       "迹象（E19b，在 15 分钟转强的入场上，有对没有；数据缺失不算“没有”，单独计数）：动能衰竭——新低低于之前的 15 分钟摆动低点，RSI(14) 却高于那时；主动成交背离——从前一个摆动低点到新低，合约主动买入多于卖出；现货承接——新低前 16 根，现货主动买入占多、合约主动卖出占多；放量后缩量——新低那根成交量 ≥ 2 倍近 20 根中位数，更高的低点那根 < 1 倍；持仓量骤降——新低前 4 小时到那根收盘，持仓量降幅超过过去 30 天同长度变化的 p80；资金费率——入场时在 90 天的反方向 20% 分位；1 小时也已转强。",
       `24 小时涨跌（E19c）：每小时收盘的 24 小时涨跌幅落在这个币此前全部历史的 5% / 95% 分位之外（至少 ${MIN_HISTORY} 小时历史），同类事件相隔至少 24 小时；之后持有 72 小时，不设止损止盈，R = 入场时 1 倍 1 小时 ATR，交易之间不重叠；对照是同期每根 K 线。volRatio = 之后 72 小时每小时涨跌的波动 ÷ 这个币平时的中位数。`,
@@ -572,6 +500,7 @@ export async function watchReport(ep: EngineParams, opts: { paramsVersion: numbe
       "15 分钟数据：BTC / ETH 从 2022 年起，其余币只有最近约 1 年（大部分落在样本外）。10 个币走势高度相关，合并后的显著性偏乐观，以 BTC / ETH 分开的结果是否一致为准。",
     ],
     durationMs: Date.now() - t0,
+    rules: { ...ep.watch },
   };
 }
 

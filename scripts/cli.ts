@@ -17,6 +17,9 @@
  *   plan [--coin BTC] [--fw 4h|1d] [--at "2026-09-23 20:00"]
  *                                 the trend map and both trading plans now, or as they stood when the bar
  *                                 opening at --at (Beijing time unless a zone is given) closed, with what came next
+ *   watch [--coin BTC] [--at "2026-10-15 21:00"]
+ *                                 the key-level watch now, or at the close of the 15-minute bar containing --at
+ *                                 (Beijing time unless a zone is given): both sides' state, the levels, the signs
  */
 import fs from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -270,8 +273,48 @@ async function main() {
       if (p.scorecard?.warning) console.log(`! ${p.scorecard.warning}`);
       break;
     }
+    case "watch": {
+      const { currentParams } = await import("../src/lib/server/params-store.ts");
+      const { computeWatch, fmtPrice: fp } = await import("../src/lib/watch.ts");
+      const coin = (opt("coin") ?? "BTC").toUpperCase();
+      const at = opt("at");
+      // a time without a zone is Beijing time, as people quote it
+      const atSec = at ? Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(" ", "T")}+08:00`) / 1000 : null;
+      if (at && !Number.isFinite(atSec)) throw new Error(`看不懂的时间：${at}，例如 --at "2026-10-15 21:00"`);
+      // the close of the 15-minute bar containing that moment
+      const end = atSec == null ? null : Math.floor(atSec / 900) * 900 + 900;
+      const v = await computeWatch(coin, currentParams().engine, end);
+      const bj = (t: number | null | undefined) => (t == null ? "—" : new Date((t + 8 * 3600) * 1000).toISOString().slice(0, 16).replace("T", " "));
+      const STATE = { far: "离得远", near: "靠近", falling: "别接（还在往下打）", watching: "观察（止住了，还没转强）", turned: "已转强" } as const;
+      console.log(`${coin} 盯盘：${bj(v.lastClosedT)} 那根 15 分钟 K 线收盘（北京时间）`);
+      console.log(`收盘价 ${fp(v.closedPrice)}${v.forming ? `，最新价 ${fp(v.price)}` : ""}，1 小时 ATR ${fp(v.atr1h)}，扫损缓冲 ${v.buf} 倍 ATR${v.calibrated ? "" : "（默认值）"}，数据源 ${v.source}`);
+      console.log(`\n${v.headline}`);
+      for (const s of [v.long, v.short]) {
+        const short = s.dir < 0;
+        const state = short ? STATE[s.state].replace("别接（还在往下打）", "别急着空（还在往上冲）").replace("已转强", "已转弱") : STATE[s.state];
+        console.log(`\n【${short ? "空（关键高点）" : "多（关键低点）"}】${state}${s.level ? `：${s.level.name} ${fp(s.level.price)}（${s.distAtr} 倍 ATR）` : ""}${s.piercing ? "，正在刺穿" : ""}`);
+        const e = s.event;
+        if (!e) continue;
+        console.log(`  ${bj(e.startT)} 碰到，已过 ${e.bars} 根；最新${short ? "高点" : "低点"} ${fp(e.extreme)}（${bj(e.extremeT)}）${e.bounce != null ? `，${short ? "回落低点" : "反弹高点"} ${fp(e.bounce)}` : ""}${e.reclaimed ? "，扫过后收回" : ""}；第 ${e.attempt} 次等待`);
+        console.log(`  创新${short ? "高" : "低"}：${e.newExtremes.map((x) => `${bj(x.t)} ${fp(x.price)}`).join("；")}`);
+        if (e.turn) console.log(`  ${bj(e.turn.t)} 15 分钟${short ? "转弱" : "转强"}：入场 ${fp(e.turn.entry)}，止损 ${fp(e.turn.stop)}（${short ? "高点" : "低点"} ${fp(e.turn.extreme)} 之外）`);
+        else console.log(`  还没${short ? "转弱" : "转强"}；现在的止损位会在 ${fp(e.stop)}`);
+        console.log(`  1 小时${e.hourTurned ? "也已" : "还没"}${short ? "转弱" : "转强"}`);
+        for (const g of s.signs ?? []) console.log(`  迹象 ${g.name}：${g.value == null ? "数据缺" : g.value ? "有" : "没有"}${g.text ? `。${g.text}` : ""}`);
+      }
+      const LS = { none: "", pierced: "，被刺穿·观察", broken: "，失效" } as const;
+      console.log(`\n关键位（由近到远）：`);
+      for (const l of [...v.levels].sort((x, y) => Math.abs(x.distAtr) - Math.abs(y.distAtr))) console.log(`  ${l.distAtr > 0 ? "上方" : "下方"} ${l.name} ${fp(l.price)}（${l.distAtr} 倍 ATR${LS[l.state]}）`);
+      const m = v.move24;
+      if (m) {
+        console.log(`\n24 小时涨跌 ${m.changePct ?? "—"}%，比历史上 ${m.pctRank ?? "—"}% 的 24 小时波动都大${m.volRatio != null ? `；研究里大涨大跌之后 72 小时的波动是平时的 ${m.volRatio} 倍` : ""}`);
+        console.log(`历史最大的日跌幅：${m.topDrops.map((x) => `${bj(x.t).slice(0, 10)} ${x.pct}%`).join("；") || "—"}`);
+      }
+      console.log(`\n研究：${v.research?.text ?? v.researchNote ?? "—"}`);
+      break;
+    }
     default:
-      console.log("用法：cli.ts migrate | admin [--user 名称] [--password 密码] | backup | restore 文件 | info | history [--sync] | research [--kind …] | compare --set … | plan [--coin BTC] [--at 时间]");
+      console.log("用法：cli.ts migrate | admin [--user 名称] [--password 密码] | backup | restore 文件 | info | history [--sync] | research [--kind …] | compare --set … | plan [--coin BTC] [--at 时间] | watch [--coin BTC] [--at 时间]");
       process.exitCode = cmd ? 1 : 0;
   }
 }

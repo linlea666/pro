@@ -178,7 +178,7 @@ const signedR = (x: number | null) => (x == null ? "â€”" : `${x >= 0 ? "+" : "âˆ
 
 const reportMemo = new Map<ReportKind, { at: number; value: (ResearchReport & { id: number }) | null }>();
 
-function latestReport(kind: ReportKind) {
+export function latestReport(kind: ReportKind) {
   const hit = reportMemo.get(kind);
   if (hit && Date.now() - hit.at < 10 * 60_000) return hit.value;
   let value: (ResearchReport & { id: number }) | null = null;

@@ -213,3 +213,233 @@ test("watch report: the four entries, the paired comparisons, the signs and the 
   assert.equal(r.rows.find((x) => x.key === "watch:A")!.extra!.triggerPct, 100, "A triggers on every event");
   assert.equal(r.coverage[0].tf, "15m");
 });
+
+// ---------------------------------------------------------------- the live state (watchState) and the page (computeWatch)
+
+const { alignHigher } = await import("../src/lib/ta/plan.ts");
+const { watchState } = await import("../src/lib/ta/watch.ts");
+
+/** Bars of a coarser timeframe made from finer ones. */
+function aggregate(c: Candle[], sec: number): Candle[] {
+  const out: Candle[] = [];
+  for (const x of c) {
+    const t = Math.floor(x.t / sec) * sec;
+    const last = out[out.length - 1];
+    if (last && last.t === t) {
+      last.h = Math.max(last.h, x.h);
+      last.l = Math.min(last.l, x.l);
+      last.c = x.c;
+      last.v += x.v;
+    } else out.push({ ...x, t });
+  }
+  return out;
+}
+
+/** The watch input for 15-minute bars `c`, with the hour chart made from them and one key low at 100. */
+function watchInput(c: Candle[], windowBars = 288) {
+  const h = aggregate(c, 3600);
+  const hatr = atrSeries(h);
+  const hIdx = alignHigher(c, "15m", h, "1h");
+  return {
+    c,
+    atr: hIdx.map((j) => (j >= 0 ? hatr[j] : NaN)),
+    ss: structureSeries(c, atrSeries(c)),
+    h,
+    hss: structureSeries(h, hatr),
+    hIdx,
+    levels: (_j: number, dir: 1 | -1) => (dir > 0 ? [{ price: 100, kind: "prevWeek" as const }] : []),
+    buf: 0.8,
+    rules: { nearAtr: 1.5, windowBars },
+  };
+}
+
+/** Swinging above the level long enough to warm up the hour ATR (about 2.2), then the given path from 112. */
+const warm = [112, 108, 112, 108, 112, 108, 112, 108, 112, 108, 112];
+
+test("watch: near, touched and still falling, a new lower low, the turn, then the turn undone", () => {
+  // down to the level, through it to 98.5, a small bounce, a new low at 96, a bounce to 99.5, a higher low at
+  // 97.5, a close above the bounce high, then a break under the 96 low
+  const c = path15([...warm, 103, 98.5, 99.5, 96, 99.5, 97.5, 100.5, 101, 95, 96]);
+  const w = watchInput(c);
+  const at = (n: number) => watchState(w, 1, n);
+  const states = c.map((_, n) => (n < 60 ? null : at(n).state));
+  const path: string[] = [];
+  for (const s of states) if (s && s !== path[path.length - 1]) path.push(s);
+  assert.deepEqual(path, ["far", "near", "falling", "turned", "falling"]);
+
+  const touch = states.indexOf("falling");
+  assert.ok(c[touch].l <= 100 && c[touch - 1].l > 100, "the event starts on the bar that reaches the level");
+  const first = at(touch);
+  assert.equal(first.level?.name, "上周低点");
+  assert.equal(first.event?.startT, c[touch].t);
+  assert.equal(first.event?.attempt, 1);
+  assert.equal(first.event?.newExtremes.length, 1);
+  // the small bounce under the level: still falling, no new extreme
+  const bounce = c.findIndex((x, k) => k > touch && x.c === 99.5);
+  assert.equal(at(bounce).state, "falling");
+  assert.equal(at(bounce).event?.newExtremes.length, 1);
+  // the new lower low
+  const low = c.findIndex((x, k) => k > touch && x.c === 96);
+  assert.equal(at(low).event?.newExtremes.length, 2, "a new low after a bounce is a new entry");
+  assert.equal(at(low).event?.extreme, 95.9);
+
+  const ti = states.indexOf("turned");
+  const s = at(ti);
+  const ss = w.ss[ti];
+  assert.equal(ss.lastLow?.label, "HL");
+  assert.ok(ss.lastLow!.price > 95.9 && c[ti].c > ss.lastHigh!.price, "a higher low, then a close above the bounce high");
+  assert.equal(s.event?.turn?.t, c[ti].t);
+  assert.equal(s.event?.turn?.entry, c[ti].c);
+  assert.equal(s.event?.turn?.extreme, 95.9, "the stop hangs on the newest low, not the first one");
+  assert.equal(s.event?.turn?.stop, stopBeyond(95.9, 1, 0.8, w.atr[ti]));
+  assert.ok(s.event!.turn!.stop < 95.9);
+  // still turned while the low holds
+  assert.equal(at(ti + 4).state, "turned");
+
+  const broke = states.lastIndexOf("falling");
+  const f = at(states.indexOf("falling", ti));
+  assert.equal(f.event?.attempt, 2, "a turn undone by a new low: the second wait");
+  assert.equal(f.event?.turn, null);
+  assert.equal(at(broke).event?.newExtremes.length, 3);
+  assert.ok(at(broke).event!.extreme < 95.9);
+});
+
+test("watch: no lookahead; bars after the moment (or one still forming) change nothing", () => {
+  const c = path15([...warm, 103, 98.5, 99.5, 96, 99.5, 97.5, 100.5, 101, 95, 96]);
+  const w = watchInput(c);
+  for (const n of [100, 104, 112, 125, 131, 140, 146]) {
+    const before = watchState(w, 1, n);
+    // everything after n replaced: a crash, then a rally
+    const changed = c.map((x, k) => (k > n ? { ...x, o: x.o - 8, h: x.h - 7, l: x.l - 9, c: x.c - (k % 2 ? 9 : 2) } : x));
+    assert.deepEqual(watchState(watchInput(changed), 1, n), before, `bar ${n}`);
+    // only the bars up to n
+    assert.deepEqual(watchState(watchInput(c.slice(0, n + 1)), 1), before);
+    // a forming bar would only be bar n + 1: the closed bars decide
+    const forming = { ...c[n], t: c[n].t + M15, o: c[n].c, h: c[n].c + 0.2, l: 90, c: 91 };
+    assert.deepEqual(watchState(watchInput([...c.slice(0, n + 1), forming]), 1, n), before);
+  }
+});
+
+test("watch: an event ends when the window passes, or once price is 3 ATR above the level", () => {
+  // touched, then hovering under the level without a turn
+  const hover: number[] = [];
+  for (let k = 0; k < 320; k++) hover.push(k % 2 ? 99 : 98.5);
+  const c = path15([...warm, 103, 98.5, ...hover]);
+  const w = watchInput(c);
+  const k0 = c.findIndex((x, k) => k > 80 && x.l <= 100);
+  assert.ok(watchState(w, 1, k0 + 287).event, "still watched on the last bar of the window");
+  assert.equal(watchState(w, 1, k0 + 287).event?.startT, c[k0].t);
+  const after = watchState(w, 1, k0 + 288);
+  assert.equal(after.event, null, "288 bars later it is over");
+  assert.equal(after.state, "far", "no key low below the price any more");
+  assert.equal(after.level, null);
+  assert.equal(watchState(watchInput(c, 96), 1, k0 + 96).event, null, "a shorter window from the parameters");
+
+  // touched, then straight up: no turn, and once a close is 3 hour ATR above the level it is over
+  const d = path15([...warm, 103, 98.5, 112]);
+  const v = watchInput(d);
+  const t0 = d.findIndex((x, k) => k > 80 && x.l <= 100);
+  const end = d.findIndex((x, k) => k > t0 && x.c - 100 >= 3 * v.atr[k]);
+  assert.ok(end > t0);
+  assert.ok(watchState(v, 1, end - 1).event, "before the close 3 ATR above");
+  const s = watchState(v, 1, end);
+  assert.equal(s.event, null);
+  assert.equal(s.state, "far");
+  assert.equal(s.level?.price, 100);
+  assert.ok(s.distAtr! <= -3);
+});
+
+test("watch page: a replay never sees what came after its moment; the research is worded from the verdicts", async () => {
+  const { getDb } = await import("../src/lib/server/db.ts");
+  const { store } = await import("../src/lib/data/klines.ts");
+  const { saveReport } = await import("../src/lib/research/run.ts");
+  const { computeWatch, watchResearchText } = await import("../src/lib/watch.ts");
+  const { DEFAULT_ENGINE_PARAMS } = await import("../src/lib/params.ts");
+  const { TF_SECONDS } = await import("../src/lib/types.ts");
+  const D = 86400;
+  const NOW = Math.floor(Date.now() / 1000 / D) * D;
+  // slow waves and per-bar noise, as the plan replay test; another coin than the report test's
+  const noise = (t: number) => {
+    const x = Math.sin(t * 12.9898) * 43758.5453;
+    return (x - Math.floor(x) - 0.5) * 0.006;
+  };
+  const price = (t: number) => 100 * Math.exp(0.15 * Math.sin(t / (D * 40)) + 0.04 * Math.sin(t / (D * 1.3)) + 0.01 * Math.sin(t / 7000) + noise(t));
+  const bars = (tf: Timeframe, from: number, to: number, bump = 1): Candle[] => {
+    const sec = TF_SECONDS[tf];
+    const out: Candle[] = [];
+    for (let t = Math.ceil(from / sec) * sec; t <= to; t += sec) {
+      const o = price(t) * bump, c = price(t + sec) * bump;
+      const v = 1000 + 500 * Math.sin(t / 7777);
+      out.push({ t, o, c, h: Math.max(o, c) * 1.002, l: Math.min(o, c) * 0.998, v, tbv: v * (0.5 + 0.3 * Math.sin(t / 5555)) });
+    }
+    return out;
+  };
+  globalThis.fetch = (async () => new Response("[]", { status: 503 })) as typeof fetch;
+  const FROM: Partial<Record<Timeframe, number>> = { "15m": NOW - 60 * D, "1h": NOW - 400 * D, "4h": NOW - 600 * D, "1d": NOW - 1500 * D };
+  const TFS: Timeframe[] = ["15m", "1h", "4h", "1d"];
+  for (const tf of TFS) store("SOL", tf, "binance-futures", bars(tf, FROM[tf]!, NOW));
+
+  const grp = (n: number, meanR: number, edgeR: number) => ({ n, hit: 40, hitLo: 35, hitHi: 45, baseHit: 40, meanPct: 0, meanR, edgeR, p: 0.01 });
+  const row = (key: string, family: string, verdict: string, edgeR: number, extra: Record<string, number | null> = {}) =>
+    ({ family, key, name: key, side: "bull", tf: "15m", horizon: 672, cells: { is: grp(400, 0.1, edgeR), oos: grp(100, 0, 0), btc: grp(50, 0, 0), eth: grp(50, 0, 0), firstHalf: grp(100, 0, 0), secondHalf: grp(100, 0, 0) }, q: 0.01, consistent: true, verdict, extra }) as never;
+  const A = row("watch:A", "watch", "比随机差", -0.53, { halfwayPct: 80 });
+  const C = row("watch:C", "watch", "无可证明的优势", 0.02, { halfwayPct: 73 });
+  const CA = row("watch:C_vs_A", "watch", "有优势", 0.57, { halfwayPct: 73, halfwayA: 80, halfwayDiff: -7, halfwayQ: 0.01, halfwayConsistent: 1 });
+  const text = watchResearchText(A, C, CA)!;
+  assert.equal(text, "历史上，碰到关键位就接，平均每笔比同方向随机入场差 0.53R；等 15 分钟转强再进，比碰到就接好 0.57R（接到半山腰——入场后又被反向打出 1 倍 1 小时 ATR——的比例 80% → 73%），本身和同方向随机入场比没有可证明的优势。转强不预测方向，它只是让你少接飞刀。");
+  const weak = watchResearchText(row("watch:A", "watch", "无可证明的优势", -0.1), C, row("watch:C_vs_A", "watch", "无可证明的优势", 0.05, { halfwayPct: 78, halfwayA: 80, halfwayDiff: -2, halfwayQ: 0.4, halfwayConsistent: 0 }))!;
+  assert.match(weak, /差别不能确定.*差别不能确定/);
+  assert.match(weak, /还不能算可靠/);
+  assert.doesNotMatch(weak, /少接飞刀|到底|见顶/);
+  assert.match(watchResearchText(row("watch:A", "watch", "样本不足", 0), undefined, undefined)!, /样本还不够/);
+  assert.equal(watchResearchText(undefined, undefined, undefined), null);
+  saveReport({
+    kind: "watch", title: "watch", createdAt: Date.now(), source: "binance-futures", paramsVersion: 0, costPct: 0.15, alpha: 0.05, holdoutFrom: NOW - 365 * D, coins: ["BTC"], coverage: [], notes: [], durationMs: 1, rules: { nearAtr: 1.5, windowBars: 288 },
+    rows: [A, C, CA, row("watch_sign:rsi", "watch_sign", "无可证明的优势", 0.1), row("move24:drop:long", "move24", "无可证明的优势", 0, { volRatio: 1.8 }), row("move24:rise:short", "move24", "无可证明的优势", 0, { volRatio: 1.6 })],
+  });
+
+  // a few moments: each the same after everything later is rewritten
+  const ends = [20, 17, 13, 9].map((k) => NOW - k * D + 37 * 900);
+  const before = [];
+  for (const end of ends) before.push(await computeWatch("SOL", DEFAULT_ENGINE_PARAMS, end));
+  for (const [k, v] of before.entries()) {
+    assert.equal(v.end, ends[k]);
+    assert.equal(v.lastClosedT + 900, ends[k]);
+    assert.equal(v.forming, false, "a replay has no bar forming");
+    assert.equal(v.price, v.closedPrice);
+    assert.equal(v.research?.text, text);
+    assert.equal(v.long.dir, 1);
+    assert.equal(v.short.dir, -1);
+    assert.ok(v.levels.length > 0);
+    for (const l of v.levels) assert.ok(l.distAtr !== 0 && ["none", "pierced", "broken"].includes(l.state));
+    assert.ok(v.move24 && v.move24.pctRank != null && v.move24.topDrops.length > 0);
+    assert.equal(v.move24!.volRatio, v.move24!.changePct! < 0 ? 1.8 : 1.6);
+    for (const s of [v.long, v.short]) {
+      assert.equal(s.piercing, false);
+      if (s.event) {
+        assert.equal(s.signs?.length, 7);
+        assert.match(s.signs!.find((x) => x.key === "rsi")!.text!, /差别不能确定/);
+        assert.ok((s.event.extreme - s.event.stop) * s.dir > 0, "the stop is beyond the newest extreme");
+      } else assert.equal(s.signs, null);
+    }
+    assert.doesNotMatch(v.headline, /到底|见顶/);
+  }
+  const d = getDb();
+  // every bar not closed by the earliest moment, the hour, 4-hour and daily bars still forming then included
+  const first = ends[ends.length - 1];
+  for (const tf of TFS) {
+    const from = first - TF_SECONDS[tf] + 1;
+    d.prepare("DELETE FROM candles WHERE coin = 'SOL' AND tf = ? AND t >= ?").run(tf, from);
+    store("SOL", tf, "binance-futures", bars(tf, from, NOW, 0.7));
+  }
+  for (const [k, end] of ends.entries()) {
+    const after = await computeWatch("SOL", DEFAULT_ENGINE_PARAMS, end);
+    const strip = (v: typeof after) => {
+      const { updatedAt: _u, ...rest } = v;
+      return rest;
+    };
+    // the percentile base and the biggest drops read the stored history up to the moment, so they stay too
+    assert.deepEqual(strip(after), strip(before[k]), `moment ${k}`);
+  }
+  assert.ok(before.some((v) => v.long.event || v.short.event), "an event at one of the moments at least");
+});
