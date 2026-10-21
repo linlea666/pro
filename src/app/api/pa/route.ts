@@ -4,7 +4,7 @@ import { limited, withRoute } from "@/lib/server/route";
 import { getSetting } from "@/lib/server/settings";
 import { ReplayError } from "@/lib/analysis";
 import { getPa, PA_TFS, paAt, type PaTf } from "@/lib/pa";
-import { getCoin } from "@/lib/symbols";
+import { findCoin } from "@/lib/server/coins";
 import { TF_SECONDS, TIMEFRAMES, type Timeframe } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
  */
 async function handler(req: NextRequest) {
   const q = req.nextUrl.searchParams;
-  const coin = getCoin(q.get("coin") ?? "");
+  const coin = findCoin(q.get("coin") ?? "");
   if (!coin) return NextResponse.json({ error: "unknown coin" }, { status: 400 });
   const pf = (q.get("pf") ?? "4h") as PaTf;
   if (!PA_TFS.includes(pf)) return NextResponse.json({ error: "unknown pf" }, { status: 400 });

@@ -2,7 +2,7 @@ import { MARK_SOURCE, PRIMARY_SOURCE, readStored } from "../data/klines.ts";
 import { openInterestSeries } from "../data/perp.ts";
 import type { EngineParams } from "../params.ts";
 import { getDb } from "../server/db.ts";
-import { COIN_IDS } from "../symbols.ts";
+import { RESEARCH_COINS } from "../symbols.ts";
 import { findDefends, lastAtOrBefore, LOWER_WARMUP, nearStop, type DefendEvent, type LowerFrame } from "../ta/defend.ts";
 import { roundStep } from "../ta/levels.ts";
 import { atrSeries, bufferAtr, calibrate } from "../ta/risk.ts";
@@ -135,7 +135,7 @@ export async function defendReport(
   opts: { paramsVersion: number; coins?: string[]; nowSec?: number } = { paramsVersion: 0 },
 ): Promise<ResearchReport> {
   const t0 = Date.now();
-  const { coins = COIN_IDS, nowSec = Date.now() / 1000 } = opts;
+  const { coins = RESEARCH_COINS, nowSec = Date.now() / 1000 } = opts;
   const tick = () => new Promise((ok) => setImmediate(ok));
   const tf = SETUP.tf;
   const sec = TF_SECONDS[tf];

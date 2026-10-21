@@ -1,7 +1,7 @@
 import { PRIMARY_SOURCE, readStored, type SourceId } from "../data/klines.ts";
 import type { EngineParams } from "../params.ts";
 import { getDb } from "../server/db.ts";
-import { COIN_IDS } from "../symbols.ts";
+import { RESEARCH_COINS } from "../symbols.ts";
 import * as ta from "../ta/core.ts";
 import { computeIndicators } from "../ta/indicators.ts";
 import { indicatorFlips, signalEvents } from "../ta/signals.ts";
@@ -75,7 +75,7 @@ export async function signalsReport(
   opts: { paramsVersion: number; coins?: string[]; tfs?: Timeframe[]; nowSec?: number; indicators?: boolean } = { paramsVersion: 0 },
 ): Promise<ResearchReport> {
   const t0 = Date.now();
-  const { coins = COIN_IDS, tfs = ["1h", "4h", "1d"], nowSec = Date.now() / 1000, indicators = true } = opts;
+  const { coins = RESEARCH_COINS, tfs = ["1h", "4h", "1d"], nowSec = Date.now() / 1000, indicators = true } = opts;
   const cost = ep.stats.costPct;
   const rows: Omit<ResearchRow, "q" | "consistent" | "verdict">[] = [];
   const coverage: ResearchReport["coverage"] = [];
@@ -190,7 +190,9 @@ export function lightReport(ep: EngineParams, opts: { paramsVersion: number; now
   const t0 = Date.now();
   const nowSec = opts.nowSec ?? Date.now() / 1000;
   const points = (
-    getDb().prepare("SELECT coin, tf, t, light, close_pct, atr_pct FROM scorecard_points").all() as {
+    getDb()
+      .prepare(`SELECT coin, tf, t, light, close_pct, atr_pct FROM scorecard_points WHERE coin IN (${RESEARCH_COINS.map(() => "?").join(",")})`)
+      .all(...RESEARCH_COINS) as {
       coin: string;
       tf: Timeframe;
       t: number;

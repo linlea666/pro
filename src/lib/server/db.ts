@@ -182,6 +182,19 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE candles ADD COLUMN tbv REAL;
   `,
+  // 11: the coins shown on the site (admin can add or hide one); filled with the built-in ten on first read.
+  // An older release rolled back onto this database ignores it and shows its own list.
+  `
+  CREATE TABLE coins (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    intro TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    sort INTEGER NOT NULL,
+    added_at INTEGER NOT NULL,
+    listed_at INTEGER
+  );
+  `,
 ];
 
 let db: Database.Database | null = null;

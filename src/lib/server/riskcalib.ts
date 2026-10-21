@@ -1,5 +1,5 @@
 import { closedThrough, getKlines } from "../data/klines.ts";
-import { COIN_IDS } from "../symbols.ts";
+import { coinIds } from "../server/coins.ts";
 import { calibrate, type Calibration } from "../ta/risk.ts";
 import { TF_SECONDS, type Timeframe } from "../types.ts";
 import { getDb } from "./db.ts";
@@ -40,7 +40,7 @@ export async function runCalibration(): Promise<{ done: number; failed: number; 
     "INSERT OR REPLACE INTO risk_calib (coin, tf, probe, noise, horizon, samples, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
   );
   let done = 0, failed = 0;
-  for (const coin of COIN_IDS) {
+  for (const coin of coinIds()) {
     for (const tf of CALIBRATED_TFS) {
       try {
         const k = await getKlines(coin, tf);

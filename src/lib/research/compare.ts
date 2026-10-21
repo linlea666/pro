@@ -1,6 +1,6 @@
 import { analyzeWith } from "../analysis.ts";
 import type { EngineParams } from "../params.ts";
-import { COIN_IDS } from "../symbols.ts";
+import { RESEARCH_COINS } from "../symbols.ts";
 import { TF_SECONDS, type Timeframe } from "../types.ts";
 import { lightRows, loadHistory, type LightPoint, type ResearchRow } from "./run.ts";
 
@@ -25,7 +25,7 @@ export async function compareEngines(
   opts: { coins?: string[]; tfs?: Timeframe[]; step?: number; nowSec?: number; onProgress?: (done: number, total: number) => void } = {},
 ): Promise<Comparison> {
   const t0 = Date.now();
-  const { coins = COIN_IDS, tfs = ["1h", "4h", "1d"], step = 1, nowSec = Date.now() / 1000 } = opts;
+  const { coins = RESEARCH_COINS, tfs = ["1h", "4h", "1d"], step = 1, nowSec = Date.now() / 1000 } = opts;
   const jobs: { coin: string; tf: Timeframe; t: number; closePct: number }[] = [];
   for (const tf of tfs) {
     const H = before.horizon[tf];

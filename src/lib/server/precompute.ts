@@ -1,5 +1,5 @@
 import { multiTimeframe } from "../analysis.ts";
-import { COIN_IDS } from "../symbols.ts";
+import { coinIds } from "./coins.ts";
 import { logger } from "./log.ts";
 import { getSetting } from "./settings.ts";
 import { raiseAlert } from "./alert.ts";
@@ -48,7 +48,8 @@ async function pass() {
   const t0 = Date.now();
   let failed = 0;
   try {
-    for (const coin of COIN_IDS) {
+    const ids = coinIds();
+    for (const coin of ids) {
       state.stats.current = coin;
       state.stats.currentSince = Date.now();
       try {
@@ -66,7 +67,7 @@ async function pass() {
       // let queued requests run between coins
       await new Promise((r) => setImmediate(r));
     }
-    failedPasses = failed === COIN_IDS.length ? failedPasses + 1 : 0;
+    failedPasses = failed === ids.length ? failedPasses + 1 : 0;
     if (failedPasses === 3) raiseAlert("job", "预计算连续 3 轮全部失败", { 最近错误: state.stats.lastError ?? "" });
     state.stats.runs++;
     state.stats.lastRunAt = Date.now();

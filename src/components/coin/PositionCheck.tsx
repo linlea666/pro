@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { TrendPlan } from "@/lib/trendplan";
 import { MMR } from "@/lib/ta/plan";
-import { COINS } from "@/lib/symbols";
+import { useCoins } from "../coins-context";
 import { TF_LABEL } from "@/lib/types";
 import { Term } from "../Term";
 import { track } from "../track";
@@ -218,6 +218,7 @@ function assess(x: Position, p: TrendPlan) {
 }
 
 function AddForm({ defaultCoin, price, onAdd, onCancel }: { defaultCoin: string; price: number; onAdd: (x: Position) => void; onCancel: () => void }) {
+  const coins = useCoins();
   const [coin, setCoin] = useState(defaultCoin);
   const [side, setSide] = useState<"long" | "short">("long");
   const [entry, setEntry] = useState(coin === defaultCoin ? +price.toPrecision(6) : 0);
@@ -232,7 +233,7 @@ function AddForm({ defaultCoin, price, onAdd, onCancel }: { defaultCoin: string;
         <label className="space-y-1">
           <span>币种</span>
           <select className={field} value={coin} onChange={(e) => setCoin(e.target.value)}>
-            {COINS.map((c) => (
+            {coins.map((c) => (
               <option key={c.id} value={c.id}>{c.id}</option>
             ))}
           </select>

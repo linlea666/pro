@@ -1,7 +1,7 @@
 import zlib from "node:zlib";
 import { getDb } from "../server/db.ts";
 import { getState, setState } from "../server/settings.ts";
-import { COIN_IDS } from "../symbols.ts";
+import { coinIds } from "../server/coins.ts";
 import { PRIMARY_SOURCE } from "./klines.ts";
 
 /**
@@ -109,7 +109,7 @@ export interface OiArchiveResult {
 export async function syncOpenInterestArchive(
   opts: { coins?: string[]; budgetMs?: number; pauseMs?: number; nowSec?: number; concurrency?: number } = {},
 ): Promise<OiArchiveResult> {
-  const { coins = COIN_IDS, budgetMs = 60_000, pauseMs = 150, nowSec = Date.now() / 1000, concurrency = 1 } = opts;
+  const { coins = coinIds(), budgetMs = 60_000, pauseMs = 150, nowSec = Date.now() / 1000, concurrency = 1 } = opts;
   const t0 = Date.now();
   const r: OiArchiveResult = { requests: 0, days: 0, rows: 0, complete: true };
   // a failed request stops the other workers too
@@ -175,7 +175,7 @@ export async function syncOpenInterestArchive(
 }
 
 /** First and last stored hour of open interest per coin, for the CLI. */
-export function openInterestCoverage(coins = COIN_IDS) {
+export function openInterestCoverage(coins = coinIds()) {
   const q = getDb().prepare("SELECT MIN(t) first, MAX(t) last, COUNT(*) n FROM open_interest WHERE coin = ? AND source = ?");
   return coins.map((coin) => ({ coin, ...(q.get(coin, PRIMARY_SOURCE) as { first: number | null; last: number | null; n: number }), done: readState(coin).done }));
 }

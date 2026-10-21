@@ -6,7 +6,13 @@ export interface CoinMeta {
   intro: string;
 }
 
-export const COINS: CoinMeta[] = [
+/**
+ * The ten coins the site started with. The coins shown on the site are kept in the
+ * database (`src/lib/server/coins.ts`, the admin "币种" page) and start as these; this
+ * list stays fixed as the research pool, so adding or hiding a coin does not change
+ * what the research reports are computed on.
+ */
+export const BUILTIN_COINS: CoinMeta[] = [
   { id: "BTC", name: "比特币", intro: "第一个也是市值最大的加密货币，常被称为“数字黄金”。" },
   { id: "ETH", name: "以太坊", intro: "智能合约平台，大量 DeFi、NFT 应用运行在它上面。" },
   { id: "BNB", name: "币安币", intro: "币安交易所及 BNB Chain 的平台币。" },
@@ -19,8 +25,8 @@ export const COINS: CoinMeta[] = [
   { id: "AVAX", name: "雪崩", intro: "Avalanche 公链，支持多条子网。" },
 ];
 
-export const COIN_IDS = COINS.map((c) => c.id);
+/** the coins every research report is computed on (fixed, see above) */
+export const RESEARCH_COINS = BUILTIN_COINS.map((c) => c.id);
 
-export function getCoin(id: string): CoinMeta | undefined {
-  return COINS.find((c) => c.id === id.toUpperCase());
-}
+/** a coin id as typed by an admin: letters and digits, e.g. SUI or 1000PEPE */
+export const COIN_ID_RE = /^[A-Z0-9]{2,15}$/;

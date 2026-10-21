@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 const ITEMS: { href: string; label: string; soon?: string }[] = [
   { href: "/admin", label: "运行概览" },
   { href: "/admin/logs", label: "日志中心" },
+  { href: "/admin/coins", label: "币种" },
   { href: "/admin/research", label: "研究报告" },
   { href: "/admin/metrics", label: "产品指标" },
   { href: "/admin/params", label: "参数调试" },
@@ -13,7 +14,7 @@ const ITEMS: { href: string; label: string; soon?: string }[] = [
   { href: "/admin/settings", label: "系统设置" },
 ];
 
-export function AdminNav({ username, ready = ["/admin", "/admin/logs", "/admin/research", "/admin/metrics", "/admin/params", "/admin/ai", "/admin/settings"] }: { username: string; ready?: string[] }) {
+export function AdminNav({ username, ready = ["/admin", "/admin/logs", "/admin/coins", "/admin/research", "/admin/metrics", "/admin/params", "/admin/ai", "/admin/settings"] }: { username: string; ready?: string[] }) {
   const path = usePathname();
   const logout = async () => {
     await fetch("/api/admin/logout", { method: "POST" });

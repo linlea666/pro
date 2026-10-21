@@ -30,7 +30,7 @@ const END = endArg > 0 ? process.argv[endArg + 1] : new Date(Date.now() - 86400_
 const { unzipSingle } = await import("../../src/lib/data/archive.ts");
 const { store } = await import("../../src/lib/data/klines.ts");
 const { getDb } = await import("../../src/lib/server/db.ts");
-const { COIN_IDS } = await import("../../src/lib/symbols.ts");
+const { RESEARCH_COINS } = await import("../../src/lib/symbols.ts");
 type Timeframe = import("../../src/lib/types.ts").Timeframe;
 type Candle = import("../../src/lib/types.ts").Candle;
 
@@ -87,13 +87,13 @@ function klines(market: Market, kind: "klines" | "markPriceKlines", coin: string
 }
 
 const START: Partial<Record<Timeframe, string>> = { "15m": "2022-01", "1h": "2020-01", "4h": "2021-10", "1d": "2019-09", "1w": "2019-09" };
-for (const coin of COIN_IDS) for (const [tf, from] of Object.entries(START)) klines("futures/um", "klines", coin, tf as Timeframe, from);
+for (const coin of RESEARCH_COINS) for (const [tf, from] of Object.entries(START)) klines("futures/um", "klines", coin, tf as Timeframe, from);
 for (const coin of ["BTC", "ETH"]) {
   for (const tf of ["1h", "4h"] as const) klines("futures/um", "markPriceKlines", coin, tf, "2024-10");
   for (const tf of ["15m", "1h"] as const) klines("spot", "klines", coin, tf, "2022-01");
 }
 const fins = getDb().prepare("INSERT OR REPLACE INTO funding_rates (coin, source, t, rate, mark_price) VALUES (?, 'binance-futures', ?, ?, NULL)");
-for (const coin of COIN_IDS)
+for (const coin of RESEARCH_COINS)
   for (const m of months("2021-12"))
     jobs.push(async () => {
       const t = await get(`futures/um/monthly/fundingRate/${coin}USDT/${coin}USDT-fundingRate-${m}.zip`);
@@ -124,7 +124,7 @@ console.log(`done: ${rows} bars, ${miss} files missing on the archive`);
 // the archive stops publishing weekly files at some point: build the later weeks (Monday, UTC) from the daily bars
 const loadAll = (coin: string, tf: Timeframe) =>
   getDb().prepare("SELECT t, o, h, l, c, v FROM candles WHERE coin = ? AND tf = ? AND source = 'binance-futures' ORDER BY t").all(coin, tf) as Candle[];
-for (const coin of COIN_IDS) {
+for (const coin of RESEARCH_COINS) {
   const lastWeek = loadAll(coin, "1w").at(-1)?.t ?? 0;
   const weeks: Candle[] = [];
   for (const d of loadAll(coin, "1d")) {

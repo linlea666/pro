@@ -7,7 +7,8 @@ import type { Analysis, LightSummary } from "@/lib/analysis";
 import type { Framework, TrendPlan } from "@/lib/trendplan";
 import type { WatchView } from "@/lib/watch";
 import type { PaTf, PaView } from "@/lib/pa";
-import { COINS, getCoin } from "@/lib/symbols";
+import type { CoinMeta } from "@/lib/symbols";
+import { CoinsContext } from "../coins-context";
 import { BEGINNER_TIMEFRAMES, TF_HORIZON, TF_LABEL, TF_SECONDS, TIMEFRAMES, type Timeframe } from "@/lib/types";
 import { ago, fmtBjTime, fmtPct, fmtPrice, signColor } from "./format";
 import { Overview } from "./Overview";
@@ -63,8 +64,8 @@ export interface TabProps {
   onTf: (t: Timeframe) => void;
 }
 
-export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: { coinId: string; initialTf: Timeframe; initialTab: string; initialAsOf?: number | null }) {
-  const coin = getCoin(coinId)!;
+export function CoinView({ coinId, coins, initialTf, initialTab, initialAsOf = null }: { coinId: string; coins: CoinMeta[]; initialTf: Timeframe; initialTab: string; initialAsOf?: number | null }) {
+  const coin = coins.find((c) => c.id === coinId)!;
   const [tf, setTf] = useState<Timeframe>(initialTf);
   const [tab, setTab] = useState<TabId>(TABS.some((t) => t.id === initialTab) ? (initialTab as TabId) : "overview");
   const [mode, setMode] = useState<Mode>("beginner");
@@ -320,11 +321,12 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
   }, [asOf, fresh, data, mtf, closeTf]);
 
   return (
+    <CoinsContext.Provider value={coins}>
     <div className="space-y-4">
       {/* coin chips */}
       <div className="-mx-4 overflow-x-auto px-4">
         <div className="flex gap-2 pb-1">
-          {COINS.map((c) => (
+          {coins.map((c) => (
             <Link key={c.id} href={`/coin/${c.id}?tf=${tf}&tab=${tab}`} className="chip whitespace-nowrap" data-active={c.id === coinId}>
               {c.id}
             </Link>
@@ -501,6 +503,7 @@ export function CoinView({ coinId, initialTf, initialTab, initialAsOf = null }: 
         </ReplayContext.Provider>
       )}
     </div>
+    </CoinsContext.Provider>
   );
 }
 

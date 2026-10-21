@@ -1,5 +1,6 @@
 import { analyzeWith } from "../analysis.ts";
-import { COIN_IDS } from "../symbols.ts";
+import { coinIds } from "./coins.ts";
+import { RESEARCH_COINS } from "../symbols.ts";
 import { wilson } from "../ta/stats.ts";
 import { TF_SECONDS, type Timeframe } from "../types.ts";
 import { closedThrough, getKlines, PRIMARY_SOURCE, readStored } from "../data/klines.ts";
@@ -70,7 +71,7 @@ export async function runScorecard(budgetMs = 20_000): Promise<{ added: number; 
   for (const tf of SCORECARD_TFS) {
     const H = engine.horizon[tf];
     const sec = TF_SECONDS[tf];
-    for (const coin of COIN_IDS) {
+    for (const coin of coinIds()) {
       try {
         // the stored history, minus its newest bar (it may still be forming); the live window while there is none
         let closed = readStored(coin, tf, PRIMARY_SOURCE, 1_000_000).slice(0, -1);
@@ -137,7 +138,10 @@ export function getScorecard(coin: string | null, tf: Timeframe): Scorecard {
   const rows = (
     coin
       ? getDb().prepare("SELECT t, light, close_pct FROM scorecard_points WHERE coin = ? AND tf = ? ORDER BY t").all(coin, tf)
-      : getDb().prepare("SELECT t, light, close_pct FROM scorecard_points WHERE tf = ? ORDER BY t").all(tf)
+      : // all coins = the research pool, so a coin added later does not change the overall record
+        getDb()
+          .prepare(`SELECT t, light, close_pct FROM scorecard_points WHERE tf = ? AND coin IN (${RESEARCH_COINS.map(() => "?").join(",")}) ORDER BY t`)
+          .all(tf, ...RESEARCH_COINS)
   ) as { t: number; light: string; close_pct: number }[];
   const cost = engine.stats.costPct;
   const avgAbs = (list: typeof rows) => (list.length ? Math.round((list.reduce((s, r) => s + Math.abs(r.close_pct), 0) / list.length) * 100) / 100 : null);

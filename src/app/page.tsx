@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { getOverview } from "@/lib/overview";
-import { getCoin } from "@/lib/symbols";
+import { allCoins } from "@/lib/server/coins";
 import { TF_LABEL } from "@/lib/types";
 import { LightPill } from "@/components/Light";
 import { Sparkline } from "@/components/Sparkline";
@@ -73,7 +73,7 @@ export default async function Home() {
         </div>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {data.coins.map((c) => {
-            const meta = getCoin(c.coin);
+            const meta = allCoins().find((x) => x.id === c.coin);
             return (
               <Link key={c.coin} href={`/coin/${c.coin}`} className="card group p-4 transition hover:border-ink-3">
                 <div className="flex items-start gap-2">

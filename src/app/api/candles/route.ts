@@ -3,7 +3,7 @@ import { getKlines } from "@/lib/data/klines";
 import { logger } from "@/lib/server/log";
 import { limited, withRoute } from "@/lib/server/route";
 import { getSetting } from "@/lib/server/settings";
-import { getCoin } from "@/lib/symbols";
+import { findCoin } from "@/lib/server/coins";
 import { TIMEFRAMES, type Timeframe } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 export const GET = withRoute("candles", async (req: NextRequest) => {
   const over = limited(req, "candles", getSetting("rate.publicPerMin"));
   if (over) return over;
-  const coin = getCoin(req.nextUrl.searchParams.get("coin") ?? "");
+  const coin = findCoin(req.nextUrl.searchParams.get("coin") ?? "");
   const tf = req.nextUrl.searchParams.get("tf") as Timeframe;
   if (!coin || !TIMEFRAMES.includes(tf)) return NextResponse.json({ error: "unknown coin or timeframe" }, { status: 400 });
   try {

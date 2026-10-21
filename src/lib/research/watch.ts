@@ -2,7 +2,7 @@ import { PRIMARY_SOURCE } from "../data/klines.ts";
 import { openInterestSeries } from "../data/perp.ts";
 import type { EngineParams } from "../params.ts";
 import { getDb } from "../server/db.ts";
-import { COIN_IDS } from "../symbols.ts";
+import { RESEARCH_COINS } from "../symbols.ts";
 import * as ta from "../ta/core.ts";
 import type { OiSeries } from "../ta/defend.ts";
 import { alignHigher } from "../ta/plan.ts";
@@ -335,7 +335,7 @@ function move24(coin: string, nowSec: number): Move24Out | null {
 
 export async function watchReport(ep: EngineParams, opts: { paramsVersion: number; coins?: string[]; nowSec?: number } = { paramsVersion: 0 }): Promise<ResearchReport> {
   const t0 = Date.now();
-  const { coins = COIN_IDS, nowSec = Date.now() / 1000 } = opts;
+  const { coins = RESEARCH_COINS, nowSec = Date.now() / 1000 } = opts;
   const tick = () => new Promise((ok) => setImmediate(ok));
   const cost = ep.stats.costPct;
   const title = "盯盘：等转强 vs 碰到就进（接飞刀）";

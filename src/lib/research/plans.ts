@@ -4,7 +4,7 @@ import * as ta from "../ta/core.ts";
 import { alignHigher, ENTRY_NAME, findEntries, MAX_HOLD_BARS, type EntryKind } from "../ta/plan.ts";
 import { atrSeries, bufferAtr, calibrate } from "../ta/risk.ts";
 import { structureDirection, structureSeries, swings, type StructureState, type Swing } from "../ta/structure.ts";
-import { COIN_IDS } from "../symbols.ts";
+import { RESEARCH_COINS } from "../symbols.ts";
 import type { Candle, Timeframe } from "../types.ts";
 import { bhAdjust, cells, controlTrades, judge, makeSplit, trades as fwdTrades, type Trade } from "./engine.ts";
 import { loadHistory, type ResearchReport, type ResearchRow } from "./run.ts";
@@ -175,7 +175,7 @@ export async function plansReport(
   opts: { paramsVersion: number; coins?: string[]; nowSec?: number; policy?: ExitPolicy } = { paramsVersion: 0 },
 ): Promise<ResearchReport> {
   const t0 = Date.now();
-  const { coins = COIN_IDS, nowSec = Date.now() / 1000, policy = "structure" } = opts;
+  const { coins = RESEARCH_COINS, nowSec = Date.now() / 1000, policy = "structure" } = opts;
   const rows: Row[] = [];
   const coverage: ResearchReport["coverage"] = [];
   let holdoutFrom = 0;

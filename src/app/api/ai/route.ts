@@ -1,13 +1,13 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { AI_TFS, AiError, getAiConfig, interpret, peekInterpretation } from "@/lib/server/ai";
 import { limited, withRoute } from "@/lib/server/route";
-import { getCoin } from "@/lib/symbols";
+import { findCoin } from "@/lib/server/coins";
 import type { Timeframe } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 function parse(req: NextRequest) {
-  const coin = getCoin(req.nextUrl.searchParams.get("coin") ?? "");
+  const coin = findCoin(req.nextUrl.searchParams.get("coin") ?? "");
   const tf = req.nextUrl.searchParams.get("tf") as Timeframe;
   return coin && AI_TFS.includes(tf) ? { coin: coin.id, tf } : null;
 }

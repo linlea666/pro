@@ -4,7 +4,7 @@ import { limited, withRoute } from "@/lib/server/route";
 import { getSetting } from "@/lib/server/settings";
 import { ReplayError } from "@/lib/analysis";
 import { FRAMEWORKS, getTrendPlan, trendPlanAt, type Framework } from "@/lib/trendplan";
-import { getCoin } from "@/lib/symbols";
+import { findCoin } from "@/lib/server/coins";
 import { TF_SECONDS, TIMEFRAMES, type Timeframe } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
  */
 async function handler(req: NextRequest) {
   const q = req.nextUrl.searchParams;
-  const coin = getCoin(q.get("coin") ?? "");
+  const coin = findCoin(q.get("coin") ?? "");
   const fw = (q.get("fw") ?? "4h") as Framework;
   if (!coin || !(fw in FRAMEWORKS)) return NextResponse.json({ error: "unknown coin or framework" }, { status: 400 });
   const asOf = Number(q.get("asOf"));

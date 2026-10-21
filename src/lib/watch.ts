@@ -8,7 +8,7 @@ import { getCalibration } from "./server/riskcalib.ts";
 import { DEFAULT_ENGINE_PARAMS, type EngineParams } from "./params.ts";
 import { fundingFuel } from "./research/defend.ts";
 import { loadHistory, type ResearchRow } from "./research/run.ts";
-import { COIN_IDS } from "./symbols.ts";
+import { coinIds } from "./server/coins.ts";
 import * as ta from "./ta/core.ts";
 import { alignHigher } from "./ta/plan.ts";
 import { atrSeries, bufferAtr } from "./ta/risk.ts";
@@ -512,7 +512,7 @@ export interface WatchSummary {
 /** Every coin's live watch in one line each; coins one after another, so a cold start does not load all at once. */
 export async function watchOverview(): Promise<WatchSummary[]> {
   const out: WatchSummary[] = [];
-  for (const coin of COIN_IDS) {
+  for (const coin of coinIds()) {
     try {
       const v = await getWatch(coin);
       const s = v.side ? v[v.side] : [v.long, v.short].filter((x) => x.level).sort((x, y) => Math.abs(x.distAtr!) - Math.abs(y.distAtr!))[0];

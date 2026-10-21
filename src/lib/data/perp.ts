@@ -1,7 +1,7 @@
 import { getDb } from "../server/db.ts";
 import type { OiSeries } from "../ta/defend.ts";
 import { logger } from "../server/log.ts";
-import { COIN_IDS } from "../symbols.ts";
+import { coinIds } from "../server/coins.ts";
 import { getJson, PRIMARY_SOURCE } from "./klines.ts";
 
 /**
@@ -129,7 +129,7 @@ export async function getPerpSnapshot(coin: string): Promise<PerpSnapshot> {
  * Stops at the first failure and carries on next run.
  */
 export async function syncPerpHistory(opts: { nowSec?: number; coins?: string[]; pauseMs?: number } = {}) {
-  const { nowSec = Date.now() / 1000, coins = COIN_IDS, pauseMs = 200 } = opts;
+  const { nowSec = Date.now() / 1000, coins = coinIds(), pauseMs = 200 } = opts;
   const d = getDb();
   const insF = d.prepare("INSERT OR REPLACE INTO funding_rates (coin, source, t, rate, mark_price) VALUES (?, ?, ?, ?, ?)");
   const insO = d.prepare("INSERT OR REPLACE INTO open_interest (coin, source, t, oi, oi_value) VALUES (?, ?, ?, ?, ?)");

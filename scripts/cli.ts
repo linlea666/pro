@@ -118,8 +118,8 @@ async function main() {
     }
     case "history": {
       const { historyCoverage, syncHistory, HISTORY_TFS } = await import("../src/lib/data/history.ts");
-      const { COIN_IDS } = await import("../src/lib/symbols.ts");
-      const coins = opt("coin") ? [opt("coin")!.toUpperCase()] : COIN_IDS;
+      const { coinIds } = await import("../src/lib/server/coins.ts");
+      const coins = opt("coin") ? [opt("coin")!.toUpperCase()] : coinIds();
       const tfs = (opt("tf") ? [opt("tf")] : HISTORY_TFS) as typeof HISTORY_TFS;
       if (rest.includes("--sync")) {
         for (;;) {

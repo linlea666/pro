@@ -4,7 +4,7 @@ import { limited, withRoute } from "@/lib/server/route";
 import { getSetting } from "@/lib/server/settings";
 import { ReplayError } from "@/lib/analysis";
 import { getWatch, watchAt, watchOverview } from "@/lib/watch";
-import { getCoin } from "@/lib/symbols";
+import { findCoin } from "@/lib/server/coins";
 import { TF_SECONDS, TIMEFRAMES, type Timeframe } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -16,7 +16,7 @@ export const dynamic = "force-dynamic";
 async function handler(req: NextRequest) {
   const q = req.nextUrl.searchParams;
   const id = q.get("coin");
-  const coin = id ? getCoin(id) : null;
+  const coin = id ? findCoin(id) : null;
   if (id && !coin) return NextResponse.json({ error: "unknown coin" }, { status: 400 });
   const asOf = Number(q.get("asOf"));
   const tf = q.get("tf") as Timeframe;

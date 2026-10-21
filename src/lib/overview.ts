@@ -1,5 +1,5 @@
 import { snapshot, type CoinSnapshot } from "./analysis.ts";
-import { COIN_IDS } from "./symbols.ts";
+import { coinIds } from "./server/coins.ts";
 import { logger } from "./server/log.ts";
 
 export interface Overview {
@@ -10,14 +10,15 @@ export interface Overview {
 
 /** All tracked coins; one failing coin never blanks the whole page. */
 export async function getOverview(): Promise<Overview> {
-  const settled = await Promise.allSettled(COIN_IDS.map((id) => snapshot(id)));
+  const ids = coinIds();
+  const settled = await Promise.allSettled(ids.map((id) => snapshot(id)));
   const coins: CoinSnapshot[] = [];
   const failed: string[] = [];
   settled.forEach((r, k) => {
     if (r.status === "fulfilled") coins.push(r.value);
     else {
-      failed.push(COIN_IDS[k]);
-      logger.error("engine", `总览中 ${COIN_IDS[k]} 计算失败`, { error: r.reason });
+      failed.push(ids[k]);
+      logger.error("engine", `总览中 ${ids[k]} 计算失败`, { error: r.reason });
     }
   });
   if (coins.length === 0) throw new Error("all coins failed");

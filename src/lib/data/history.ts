@@ -1,6 +1,6 @@
 import type { Timeframe } from "../types.ts";
 import { TF_SECONDS } from "../types.ts";
-import { COIN_IDS } from "../symbols.ts";
+import { coinIds } from "../server/coins.ts";
 import { getDb } from "../server/db.ts";
 import { raiseAlert } from "../server/alert.ts";
 import { logger } from "../server/log.ts";
@@ -108,7 +108,7 @@ export async function syncHistory(
 ): Promise<SyncResult> {
   const { budgetMs = 60_000, pauseMs = 200, nowSec = Date.now() / 1000, source = PRIMARY_SOURCE } = opts;
   const mark = source === MARK_SOURCE;
-  const { coins = mark ? MARK_SERIES.coins : COIN_IDS, tfs = mark ? MARK_SERIES.tfs : HISTORY_TFS } = opts;
+  const { coins = mark ? MARK_SERIES.coins : coinIds(), tfs = mark ? MARK_SERIES.tfs : HISTORY_TFS } = opts;
   const t0 = Date.now();
   const r: SyncResult = { requests: 0, added: 0, filled: 0, tbv: 0, complete: true, durationMs: 0 };
   const left = () => Date.now() - t0 < budgetMs;
@@ -259,7 +259,7 @@ export interface SeriesCoverage {
 }
 
 /** Coverage of every coin and timeframe, for the CLI and the health report. */
-export function historyCoverage(nowSec = Date.now() / 1000, coins = COIN_IDS, tfs = HISTORY_TFS, source: LongSource = PRIMARY_SOURCE): SeriesCoverage[] {
+export function historyCoverage(nowSec = Date.now() / 1000, coins = coinIds(), tfs = HISTORY_TFS, source: LongSource = PRIMARY_SOURCE): SeriesCoverage[] {
   const out: SeriesCoverage[] = [];
   for (const tf of tfs) {
     for (const coin of coins) {
