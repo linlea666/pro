@@ -17,7 +17,7 @@ export interface TdDetail {
   setupCount: number;
   setupLength: number;
   countdownLength: number;
-  countdown: { side: TdSide; count: number } | null;
+  countdown: { side: TdSide; count: number; cancelLevel?: number; cancelByBar?: boolean } | null;
   last: { side: TdSide; kind: TdEvent["kind"]; barsAgo: number; invalidated: boolean } | null;
   /** close the next bar needs to keep the current setup counting */
   nextCloseNeeded: number | null;
@@ -108,7 +108,7 @@ export function tdDetailOf(td: { events: TdEvent[]; current: TdState["current"] 
     setupCount: cur.setupCount,
     setupLength: cur.setupLength,
     countdownLength: cur.countdownLength,
-    countdown: cur.countdown ? { side: cur.countdown.side, count: cur.countdown.count } : null,
+    countdown: cur.countdown ? { side: cur.countdown.side, count: cur.countdown.count, cancelLevel: cur.countdown.cancelLevel, cancelByBar: cur.countdown.cancelByBar } : null,
     last: cur.lastSignal ? { side: cur.lastSignal.side, kind: cur.lastSignal.kind, barsAgo: cur.lastSignal.barsAgo, invalidated: cur.lastSignal.invalidated } : null,
     nextCloseNeeded: cur.nextCloseNeeded,
     tdstResistance: cur.tdstResistance,
@@ -260,9 +260,17 @@ function watchOf(r: TdBriefRow): string[] {
   if (n?.thirteen && !n.thirteen.invalidated && n.thirteen.barsAgo <= FRESH13)
     out.push(`收盘${crossWord(n.side)} ${price(n.thirteen.riskLevel)}（13 的风险位），这个 13 就算失败。`);
   if (n && n.countdown != null) {
-    const cancel = n.side === "sell" ? d.tdstSupport : d.tdstResistance;
+    const cancel = d.countdown?.cancelLevel ?? (n.side === "sell" ? d.tdstSupport : d.tdstResistance);
+    const how = d.countdown?.cancelByBar
+      ? n.side === "sell"
+        ? "整根 K 线跌到 TDST"
+        : "整根 K 线站到 TDST"
+      : n.side === "sell"
+        ? "收盘跌破 TDST"
+        : "收盘突破 TDST";
+    const tail = d.countdown?.cancelByBar ? (n.side === "sell" ? "之下（最高价也低于它）" : "之上（最低价也高于它）") : "";
     out.push(
-      `${n.countdown === 0 ? `${sideName(n.side)} 13 计数刚开始，要数满 ${d.countdownLength} 根` : `${sideName(n.side)} 13 计数还差 ${d.countdownLength - n.countdown} 根`}${cancel != null ? `；收盘${n.side === "sell" ? "跌破" : "突破"} TDST ${price(cancel)} 会取消这次计数` : ""}。`,
+      `${n.countdown === 0 ? `${sideName(n.side)} 13 计数刚开始，要数满 ${d.countdownLength} 根` : `${sideName(n.side)} 13 计数还差 ${d.countdownLength - n.countdown} 根`}${cancel != null ? `；${how} ${price(cancel)}${tail}会取消这次计数` : ""}。`,
     );
   }
   if (d.setupSide && d.setupCount < d.setupLength && d.nextCloseNeeded != null)

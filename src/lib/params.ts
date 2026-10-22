@@ -126,8 +126,8 @@ export const PARAM_MODULES: ParamModule[] = [
           b(
             "td.classicCancel",
             "按 DeMark 原版取消 Countdown",
-            false,
-            "打开后，Countdown 只看开始这一轮的那次 Setup 的 TDST，而且要整根 K 线越过（最高价也在支撑之下 / 最低价也在阻力之上）才取消；关闭时看最新一次同向 Setup 的 TDST、收盘越过就取消。原版与 TradingSignal 等网站一致。",
+            true,
+            "打开时（默认），Countdown 只看开始这一轮的那次 Setup 的 TDST，而且要整根 K 线越过（最高价也在支撑之下 / 最低价也在阻力之上）才取消；关闭时看最新一次同向 Setup 的 TDST、收盘越过就取消。原版与 TradingSignal 等网站一致；2026-10-22 研究对比（10 个币，1 小时 / 4 小时 / 日线）两种写法的 9、13 对随机都没有可证明的优势，结论没有变化。",
           ),
         ],
       },

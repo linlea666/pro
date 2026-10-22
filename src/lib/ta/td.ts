@@ -8,9 +8,9 @@ import { DEFAULT_ENGINE_PARAMS, type EngineParams } from "../params.ts";
  * Simplification: a new same-direction setup during an active countdown does
  * not recycle it; the countdown keeps running.
  *
- * Cancellation by TDST: by default a close beyond the latest same-side setup's TDST;
- * with `classicCancel`, DeMark's rule — the TDST of the setup that started this
- * countdown, crossed by a whole bar (low above resistance / high below support).
+ * Cancellation by TDST: with `classicCancel` (the default), DeMark's rule — the TDST of the setup that started this
+ * countdown, crossed by a whole bar (low above resistance / high below support);
+ * without it, a close beyond the latest same-side setup's TDST.
  */
 
 export type TdSide = "buy" | "sell";
@@ -38,7 +38,8 @@ export interface TdState {
     setupCount: number;
     /** close needed on next bar to keep counting */
     nextCloseNeeded: number | null;
-    countdown: { side: TdSide; count: number; startedAt: number } | null;
+    /** cancelLevel: the TDST whose crossing cancels this countdown; cancelByBar: crossed by a whole bar (classic) rather than a close */
+    countdown: { side: TdSide; count: number; startedAt: number; cancelLevel: number; cancelByBar: boolean } | null;
     /** TDST resistance from the last buy setup, support from the last sell setup */
     tdstResistance: number | null;
     tdstSupport: number | null;
@@ -167,9 +168,9 @@ export function computeTd(c: Candle[], tp: EngineParams["td"] = DEFAULT_ENGINE_P
   // the next bar is compared with the close LB bars before it
   const nextCloseNeeded = setupSide && L + 1 - LB >= 0 ? c[L + 1 - LB].c : null;
   const countdown = bcd
-    ? { side: "buy" as const, count: bcd.count, startedAt: bcd.start }
+    ? { side: "buy" as const, count: bcd.count, startedAt: bcd.start, cancelLevel: tp.classicCancel ? bcd.tdst : lastBuySetupHigh, cancelByBar: tp.classicCancel }
     : scd
-      ? { side: "sell" as const, count: scd.count, startedAt: scd.start }
+      ? { side: "sell" as const, count: scd.count, startedAt: scd.start, cancelLevel: tp.classicCancel ? scd.tdst : lastSellSetupLow, cancelByBar: tp.classicCancel }
       : null;
 
   const ev = events[events.length - 1];

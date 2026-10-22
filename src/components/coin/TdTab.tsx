@@ -204,7 +204,7 @@ function TdRow({ m, active, onTf, pro }: { m: LightSummary; active: boolean; onT
               ) : n.countdown != null ? (
                 <CountdownBar count={n.countdown} length={d.countdownLength} color={sideColor(n.side)} />
               ) : (
-                <div className="text-xs text-ink-3">13 计数已取消（收盘越过 TDST，或出现了反向的 9）</div>
+                <div className="text-xs text-ink-3">13 计数已取消（整根 K 线越过 TDST，或出现了反向的 9）</div>
               )}
             </>
           ) : (
