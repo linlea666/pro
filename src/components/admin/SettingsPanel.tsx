@@ -96,8 +96,115 @@ export function SettingsPanel() {
 
       {s && <OpinionZonesForm value={String(s["spot.opinionZones"]?.value ?? "")} fallback={String(s["spot.opinionZones"]?.default ?? "")} onSaved={(b) => setS(b as Settings)} />}
       <MailForm />
+      <WatchAlertForm />
       <PasswordForm />
     </div>
+  );
+}
+
+type WatchAlertConfig = { enabled: boolean; coins: string[]; turned: boolean; falling: boolean; to: string[]; dailyCap: number; siteUrl: string };
+type WatchAlertBody = { config: WatchAlertConfig; coins: string[]; mailTo: string[] };
+
+/** Watch alerts by mail: which coins, which states, who gets them; uses the SMTP settings above. */
+function WatchAlertForm() {
+  const [b, setB] = useState<WatchAlertBody | null>(null);
+  const [form, setForm] = useState({ enabled: false, coins: [] as string[], turned: true, falling: false, to: "", dailyCap: 20, siteUrl: "" });
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = (x: WatchAlertBody) => {
+    setB(x);
+    const c = x.config;
+    setForm({ enabled: c.enabled, coins: c.coins, turned: c.turned, falling: c.falling, to: c.to.join("\n"), dailyCap: c.dailyCap, siteUrl: c.siteUrl || (typeof window !== "undefined" ? window.location.origin : "") });
+  };
+  useEffect(() => {
+    fetch("/api/admin/watch-alert")
+      .then((r) => r.json())
+      .then(load);
+  }, []);
+
+  const post = async (action: "save" | "test") => {
+    setBusy(true);
+    setMsg(null);
+    const r = await fetch("/api/admin/watch-alert", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, ...form }) });
+    const x = await r.json();
+    setBusy(false);
+    if (!r.ok) return setMsg({ ok: false, text: x.error });
+    if (action === "save") load(x);
+    setMsg({ ok: true, text: x.message });
+  };
+
+  const set = (k: keyof typeof form, v: unknown) => setForm({ ...form, [k]: v });
+  const toggleCoin = (id: string) => set("coins", form.coins.includes(id) ? form.coins.filter((x) => x !== id) : [...form.coins, id]);
+  const row = "grid gap-2 sm:grid-cols-[200px_1fr] sm:items-center";
+  return (
+    <section className="card p-4">
+      <h2 className="mb-1 text-[15px] font-semibold">盯盘邮件提醒</h2>
+      <p className="mb-3 text-xs text-ink-3">
+        每根 15 分钟 K 线收盘后约 20 秒，服务器把选中的币都算一遍实时盯盘；出现“已转强 / 已转弱”时发邮件，写明关键位、入场参考、止损和按止损算的仓位。同一次转强只发一封，同一根 K 线收盘时几个币一起触发合成一封。刚开启时的第一轮只记下当前状态，不发信。用上面“邮件与告警”的 SMTP 设置。
+      </p>
+      {!b ? (
+        <div className="h-32 animate-pulse rounded bg-panel-2" />
+      ) : (
+        <div className="space-y-3">
+          <div className={row}>
+            <span className="text-sm">提醒哪些情况</span>
+            <div className="space-y-1 text-sm">
+              <label className="flex cursor-pointer items-center gap-2">
+                <input type="checkbox" checked={form.turned} onChange={(e) => set("turned", e.target.checked)} />
+                已转强（做多一侧）/ 已转弱（做空一侧）
+              </label>
+              <label className="flex cursor-pointer items-start gap-2">
+                <input type="checkbox" className="mt-1" checked={form.falling} onChange={(e) => set("falling", e.target.checked)} />
+                <span>
+                  别接：碰到 / 跌破关键位后还在创新低（新高）
+                  <span className="block text-xs text-ink-3">默认关：碰到之后往往还会继续走，邮件会多不少，也不是该动手的时候。</span>
+                </span>
+              </label>
+            </div>
+          </div>
+          <div className={row}>
+            <span className="text-sm">盯哪些币</span>
+            <div>
+              <div className="flex flex-wrap gap-1.5">
+                {b.coins.map((id) => (
+                  <button key={id} type="button" className="chip" data-active={form.coins.includes(id)} onClick={() => toggleCoin(id)}>{id}</button>
+                ))}
+              </div>
+              <span className="mt-1 block text-xs text-ink-3">{form.coins.length ? `已选 ${form.coins.length} 个` : "一个都不选 = 网站上显示的全部币"}</span>
+            </div>
+          </div>
+          <div className={row}>
+            <label className="text-sm" htmlFor="wa-to">收件邮箱</label>
+            <textarea id="wa-to" rows={2} className={inputCls} placeholder={b.mailTo.length ? `留空 = 告警收件人（${b.mailTo.join("、")}）` : "每行一个，最多 10 个"} value={form.to} onChange={(e) => set("to", e.target.value)} />
+          </div>
+          <div className={row}>
+            <label className="text-sm" htmlFor="wa-cap">每天最多</label>
+            <div className="flex items-center gap-2">
+              <input id="wa-cap" type="number" className={`${inputCls} max-w-24`} value={form.dailyCap} onChange={(e) => set("dailyCap", Math.round(+e.target.value))} />
+              <span className="text-xs text-ink-3">封（北京时间按天算，1–200）</span>
+            </div>
+          </div>
+          <div className={row}>
+            <label className="text-sm" htmlFor="wa-url">网站地址（邮件里的链接）</label>
+            <input id="wa-url" className={inputCls} placeholder="例如 http://1.2.3.4:3000，留空不带链接" value={form.siteUrl} onChange={(e) => set("siteUrl", e.target.value)} />
+          </div>
+          <label className="flex cursor-pointer items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-1" checked={form.enabled} onChange={(e) => set("enabled", e.target.checked)} />
+            <span>
+              开启盯盘邮件提醒
+              <span className="block text-xs text-ink-3">转强只看已收盘的 15 分钟 K 线，从走出来到收到邮件最多约 15 分钟，再加上邮件投递的时间。</span>
+            </span>
+          </label>
+          {msg && <p className={`rounded-lg px-3 py-2 text-[13px] ${msg.ok ? "bg-up-soft text-up" : "bg-down-soft text-down"}`}>{msg.text}</p>}
+          <div className="flex flex-wrap gap-2 border-t border-line pt-4">
+            <button className={btnCls} disabled={busy} onClick={() => post("save")}>保存盯盘提醒</button>
+            <button className={btnGhost} disabled={busy} onClick={() => post("test")}>发一封测试提醒</button>
+          </div>
+          <p className="text-xs text-ink-3">测试提醒按当前表单发，不会保存，内容是选中各币现在的盯盘状态。</p>
+        </div>
+      )}
+    </section>
   );
 }
 

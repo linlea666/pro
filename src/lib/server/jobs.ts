@@ -207,6 +207,7 @@ export function startJobs() {
   process.on("uncaughtException", (e) => logger.error("system", "未捕获的异常", { error: e }));
   setTimeout(tick, 15_000);
   import("./precompute.ts").then((m) => m.startPrecompute()).catch((e) => logger.error("system", "预计算启动失败", { error: e }));
+  import("./watchalert.ts").then((m) => m.startWatchAlerts()).catch((e) => logger.error("system", "盯盘提醒启动失败", { error: e }));
   g.__slJobs = setInterval(tick, 10 * 60 * 1000);
   g.__slJobs.unref?.();
 }

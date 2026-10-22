@@ -13,7 +13,7 @@
   - 内部 import 用**相对路径并带 `.ts` 后缀**，比如 `../ta/risk.ts`；`@/` 别名只在 app / components 里用；
   - **不要使用 TS 的参数属性写法**（`constructor(private x)`），也不要用 enum。
 - 常用命令：
-  - `npm test`：单元测试，目前 144 个（全部不联网，CI 在 `.github/workflows/ci.yml` 里跑类型检查、测试和构建）；
+  - `npm test`：单元测试，目前 147 个（全部不联网，CI 在 `.github/workflows/ci.yml` 里跑类型检查、测试和构建）；
   - `npx tsc --noEmit`：类型检查；
   - `npx next build`：生产构建；
   - `npm run dev`：本地开发；
@@ -49,6 +49,7 @@
   - AI：`ai.ts`，只在用户点击“AI 分析”按钮时生成，只支持 1 小时及以上周期，有每日上限和每 IP 每小时上限；
   - 参数版本：`params-store.ts`；
   - 邮件：`mail.ts`（nodemailer，版本锁定；SMTP 配置存 settings 的 `mail.config`，授权码加密，留空保留）；告警：`alert.ts` 的 `raiseAlert(kind, title, detail)`，类别 datasource / gap / job / ai / db，同类 30 分钟一封，`sendDigest` 每日摘要。新加的故障点直接调用 `raiseAlert`，它不会抛错也不等待发信；
+  - 盯盘邮件提醒（2026-10-22）：`watchalert.ts`，每根 15 分钟收盘后约 20 秒对选中的币跑 `getWatch`，出现“已转强 / 已转弱”（可选“别接”）时发信，写关键位、入场参考、止损、按止损算的仓位。去重键 = 币 + 方向 + 事件开始 + 状态 + 尝试次数（存 `state.watchAlert.seen`），同一收盘的多个币合成一封，每天上限 `dailyCap`（默认 20），刚开启的第一轮只记录不发，超过 1 小时的转强不发。设置存 settings 的 `watch.alertConfig`，后台“系统设置 → 盯盘邮件提醒”编辑（`/api/admin/watch-alert`，含测试按钮），收件人留空用告警收件人；
   - 埋点：`events.ts` + `POST /api/event`，事件名白名单在 `src/lib/event-names.ts`；前端用 `src/components/track.ts` 的 `track(name, onceKey?)`；后台“产品指标”页按 PRD 领域 G 口径计算。
 - `src/lib/trendplan.ts` + `GET /api/plan?coin=&fw=4h|1d[&asOf=&tf=]`：趋势地图和交易计划。`fw=4h` 是默认的“日线定方向、4 小时入场”（地图含周线、日线、4 小时、1 小时），`fw=1d` 是专业模式的“周线定方向、日线入场”。只用已收盘 K 线；证据和计划成绩单读最新的 `plans` 研究报告；实时结果缓存 60 秒。回放时给出之后按页面规则执行的真实结果（已触发的计划直接模拟，等待中的计划找之后 30 根内第一次同类触发；近止损和守位做法也各给一份）。4 小时节奏下还给近止损、守位做法和三档防线，研究数字读最新的 `defend`、`levels` 报告，结论句按 verdict 生成；报告里记下的守位规则和当前参数不一致时隐藏数字。服务器上 `sudo signallight plan [--coin BTC] [--fw 4h] [--at "2026-09-23 20:00"]`（北京时间）打印同样内容。
 - `src/lib/watch.ts` + `GET /api/watch?coin=[&asOf=&tf=]`：实时盯盘。15 分钟只用已收盘的 K 线（正在走的那根只用来标“正在刺穿”和现价），两侧各算一次 `watchState`，页首一句话取进行中的事件、其次最近的“靠近”；上下各 3 个关键位（距离和两级状态）；事件中给七项迹象；24 小时风险环境（当前涨跌、在本币历史里的分位、`move24` 行的波动倍数和按 verdict 生成的方向句、历史最大单日跌幅前 5）；研究数字读最新 `watch` 报告，报告记下的窗口和当前参数不一致时隐藏。实时每币缓存 15 秒，回放按时刻缓存 300 条；现货 15 分钟实时直接请求 Binance 现货（60 秒缓存，不入库），回放时为“数据缺”。不带 coin 时返回 10 个币的精简列表（`/watch` 总览用）。服务器上 `sudo signallight watch [--coin BTC] [--at "2026-10-15 21:45"]`（北京时间，15 分钟 K 线的开盘时刻）打印同样内容。
