@@ -144,6 +144,8 @@ export function AfterBig({ v, mode }: { v: View; mode: Mode }) {
   const base = rows[rows.length - 1];
   const word = dir < 0 ? "跌" : "涨";
   const backWord = dir < 0 ? "收盘更高" : "收盘更低";
+  const onWord = dir < 0 ? "继续跌" : "继续涨";
+  const i1 = REBOUND_DAYS.indexOf(1), i3 = REBOUND_DAYS.indexOf(3);
   const pick = rows.find((r) => r.min === 5 && r.n >= REBOUND_MIN_N) ?? rows.find((r) => r.min === 3 && r.n >= REBOUND_MIN_N);
   const pctCell = (x: number | null) => (x == null ? "—" : `${x.toFixed(0)}%`);
   const label = (r: ReboundRow) => (r.min == null ? "所有日子（对照）" : `单日${word} ${r.min}% 以上`);
@@ -162,27 +164,31 @@ export function AfterBig({ v, mode }: { v: View; mode: Mode }) {
     >
       {pick && (
         <p className="mb-3 text-[13px] leading-relaxed text-ink-2">
-          「{v.periodName}」里单日{word} {pick.min}% 以上 {pick.n} 次：之后 3 天里从当天{dir < 0 ? "最低点最多反弹" : "最高点最多回落"}，一半的时候有{" "}
-          <b className="num text-ink">{pick.bounce?.toFixed(1)}%</b>；3 天后{backWord}的占 <b className="num text-ink">{pctCell(pick.back[0])}</b>。作为对照，随便哪一天之后 3 天{dir < 0 ? "反弹" : "回落"}也有{" "}
-          {base.bounce?.toFixed(1)}%、{backWord}的占 {pctCell(base.back[0])}。
+          「{v.periodName}」里单日{word} {pick.min}% 以上 {pick.n} 次：第二天{backWord}的占 <b className="num text-ink">{pctCell(pick.back[i1])}</b>、{onWord}的占{" "}
+          <b className="num text-ink">{pctCell(pick.on[i1])}</b>（随便哪一天之后是 {pctCell(base.back[i1])} / {pctCell(base.on[i1])}）；3 天后{backWord}的占{" "}
+          <b className="num text-ink">{pctCell(pick.back[i3])}</b>（平时 {pctCell(base.back[i3])}）。之后 3 天里从当天{dir < 0 ? "最低点最多反弹" : "最高点最多回落"}一半的时候有 {pick.bounce?.toFixed(1)}%，平时也有 {base.bounce?.toFixed(1)}%。
         </p>
       )}
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[460px] text-[13px]">
+        <table className="w-full min-w-[560px] text-[13px]">
           <thead>
             <tr className="text-left text-[11px] text-ink-3">
               <th className="pb-1.5 font-normal">那一天</th>
               <th className="pb-1.5 font-normal">次数</th>
               <th className="pb-1.5 font-normal">3 天内{dir < 0 ? "从最低点反弹" : "从最高点回落"}（中位）</th>
               {REBOUND_DAYS.map((k) => (
-                <th key={k} className="pb-1.5 font-normal">
-                  {k} 天后{backWord}
-                </th>
+                <Fragment key={k}>
+                  <th className="pb-1.5 font-normal">
+                    {k === 1 ? "第二天" : `${k} 天后`}
+                    {backWord}
+                  </th>
+                  {k === 1 && <th className="pb-1.5 font-normal">第二天{onWord}</th>}
+                </Fragment>
               ))}
               {mode === "pro" &&
                 REBOUND_DAYS.map((k) => (
                   <th key={`m${k}`} className="pb-1.5 font-normal">
-                    {k} 天后涨跌（中位）
+                    {k === 1 ? "第二天" : `${k} 天后`}涨跌（中位）
                   </th>
                 ))}
             </tr>
@@ -199,9 +205,10 @@ export function AfterBig({ v, mode }: { v: View; mode: Mode }) {
                   </td>
                   <td className="py-1.5 pr-2">{r.bounce == null ? "—" : `${r.bounce.toFixed(1)}%`}</td>
                   {r.back.map((x, k) => (
-                    <td key={k} className="py-1.5 pr-2">
-                      {pctCell(x)}
-                    </td>
+                    <Fragment key={k}>
+                      <td className="py-1.5 pr-2">{pctCell(x)}</td>
+                      {REBOUND_DAYS[k] === 1 && <td className="py-1.5 pr-2">{pctCell(r.on[k])}</td>}
+                    </Fragment>
                   ))}
                   {mode === "pro" &&
                     r.med.map((x, k) => (
@@ -217,7 +224,7 @@ export function AfterBig({ v, mode }: { v: View; mode: Mode }) {
       </div>
       <div className="mt-2 space-y-1 text-[11px] leading-relaxed text-ink-3">
         <p>
-          怎么看：拿每一行和最后一行“所有日子”比。{dir < 0 ? "反弹" : "回落"}几乎每次都会有，平常的日子也一样；真正要看的是几天后{backWord}的比例比平时高多少。差不到 10 个百分点，就当作和平时一样。
+          怎么看：拿每一行和最后一行“所有日子”比。{dir < 0 ? "反弹" : "回落"}几乎每次都会有，平常的日子也一样；真正要看的是之后{backWord}的比例比平时高多少。“第二天”是那一天收盘之后的下一根日线（UTC 0 点到 0 点），收盘不变的天两边都不算。差不到 10 个百分点，就当作和平时一样。
         </p>
         <p>
           大{word}之后{dir < 0 ? "反弹" : "回落"}的幅度往往更大，是因为大{word}之后波动本来就更大，往两个方向都走得更远。每次至少隔 7 天，同一轮行情只算一次；次数少于 {REBOUND_MIN_N} 的行灰色显示，没有做显著性检验。

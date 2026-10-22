@@ -316,7 +316,7 @@ export function priceLadder(ex: Excursion[], ref: number, sofar: number, dir: 1 
 /** Day sizes for the rebound table: a daily drop (rise) of at least this many %. */
 export const REBOUND_MINS = [3, 5, 8, 10];
 /** Days after the move that the rebound table looks at. */
-export const REBOUND_DAYS = [3, 7];
+export const REBOUND_DAYS = [1, 3, 7];
 /** Below this many cases a row says 样本太少. */
 export const REBOUND_MIN_N = 20;
 
@@ -328,6 +328,8 @@ export interface ReboundRow {
   bounce: number | null;
   /** for each REBOUND_DAYS: share of cases whose close k days later was back against the move (above for drops), % */
   back: (number | null)[];
+  /** for each REBOUND_DAYS: share whose close k days later went further the same way (lower for drops), %; unchanged closes count in neither */
+  on: (number | null)[];
   /** for each REBOUND_DAYS: median change of the close k days later, % */
   med: (number | null)[];
 }
@@ -362,6 +364,7 @@ export function rebounds(d: Candle[], dir: 1 | -1, mins = REBOUND_MINS, ks = REB
       n: bounce.length,
       bounce: med(bounce),
       back: back.map((a) => (a.length ? Math.round((a.filter((x) => x * dir < 0).length / a.length) * 1000) / 10 : null)),
+      on: back.map((a) => (a.length ? Math.round((a.filter((x) => x * dir > 0).length / a.length) * 1000) / 10 : null)),
       med: back.map(med),
     };
   };
