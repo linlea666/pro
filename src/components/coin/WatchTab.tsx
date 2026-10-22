@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import type { WatchSideView, WatchView } from "@/lib/watch";
 import type { KeyLevelKind } from "@/lib/ta/watch";
 import { MMR, sizePosition } from "@/lib/ta/plan";
@@ -427,7 +428,16 @@ function RiskCard({ v }: { v: WatchView }) {
               </ul>
             </div>
           )}
-          <p className="text-[11px] text-ink-3">这些只描述现在的波动有多大，用来定止损距离和仓位，不说明接下来往哪走。</p>
+          <p className="text-[11px] text-ink-3">这些只描述现在的波动有多大，用来定止损距离和仓位，不说明接下来往哪走。
+            {(v.coin === "BTC" || v.coin === "ETH") && (
+              <>
+                {" "}
+                <Link href={`/moves?coin=${v.coin}`} className="underline">
+                  看完整的涨跌统计
+                </Link>
+              </>
+            )}
+          </p>
         </div>
       )}
     </Section>

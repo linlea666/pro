@@ -33,18 +33,19 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ErrorReporter />
         <Tracker />
         <header className="sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur">
-          <div className="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4 sm:gap-6">
+          <div className="mx-auto flex h-14 max-w-7xl items-center gap-2 px-4 sm:gap-6">
             <Link href="/" className="flex shrink-0 items-center gap-2">
               <Logo />
               <span className="whitespace-nowrap text-[17px] font-semibold tracking-tight">信号灯</span>
               <span className="hidden text-xs text-ink-3 sm:inline">SignalLight</span>
             </Link>
             <nav className="flex items-center gap-0.5 whitespace-nowrap text-[13px] sm:gap-1 sm:text-sm">
-              <Link href="/" className="rounded-lg px-2 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink"><span className="hidden sm:inline">今日</span>看盘</Link>
-              <Link href="/coin/BTC" className="rounded-lg px-2 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink">分析<span className="hidden sm:inline">工作台</span></Link>
-              <Link href="/watch" className="rounded-lg px-2 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink"><span className="hidden sm:inline">实时</span>盯盘</Link>
-              <Link href="/spot" className="rounded-lg px-2 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink">囤币</Link>
-              <Link href="/learn" className="rounded-lg px-2 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink"><span className="hidden sm:inline">新手</span>学堂</Link>
+              <Link href="/" className="rounded-lg px-1.5 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink"><span className="hidden sm:inline">今日</span>看盘</Link>
+              <Link href="/coin/BTC" className="rounded-lg px-1.5 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink">分析<span className="hidden sm:inline">工作台</span></Link>
+              <Link href="/watch" className="rounded-lg px-1.5 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink"><span className="hidden sm:inline">实时</span>盯盘</Link>
+              <Link href="/moves" className="rounded-lg px-1.5 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink">涨跌<span className="hidden sm:inline">统计</span></Link>
+              <Link href="/spot" className="rounded-lg px-1.5 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink">囤币</Link>
+              <Link href="/learn" className="rounded-lg px-1.5 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink"><span className="hidden sm:inline">新手</span>学堂</Link>
             </nav>
             <div className="ml-auto">
               <ThemeToggle />
