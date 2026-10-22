@@ -136,3 +136,12 @@ test("classic cancellation reproduces another site's countdown marks on the same
   assert.equal(thirteens.length, 1);
   assert.equal(Math.round(thirteens[0].riskLevel * 10) / 10, f.risk13);
 });
+
+test("a fresh 13 meeting a larger timeframe's running count quotes E25 instead of calling it a relay", () => {
+  const m15: TdDetail = { ...base, nine: { side: "buy", barsAgo: 5, perfected: true, countdown: null, thirteen: { barsAgo: 2, riskLevel: 81000, invalidated: false, roomPct: 0.8 } } };
+  const h1: TdDetail = { ...base, countdown: { side: "buy", count: 11 }, nine: { side: "buy", barsAgo: 20, perfected: true, countdown: 11, thirteen: null } };
+  const b = tdBrief([{ tf: "15m", d: m15 }, { tf: "1h", d: h1 }], "15m", null, []);
+  assert.match(b.alignment ?? "", /1小时的跌势 13 还在数（11\/13）/);
+  assert.match(b.alignment ?? "", /比随机差/);
+  assert.equal(forbiddenPhrase(b.alignment ?? ""), null);
+});

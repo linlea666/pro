@@ -223,14 +223,51 @@ function conclusionOf(r: TdBriefRow): string {
   return `${label}目前没有接近完成的计数，TD 这时没什么可说的。`;
 }
 
+/**
+ * E25 (2026-10-22, offline, Binance perp archive, 10 coins; 15m→1h, 1h→4h, 4h→1d; a 13 traded as a reversal
+ * over the page horizon, against random entries of the same side): no combination with a larger timeframe
+ * has a provable edge. Numbers are in-sample edge vs random, R = 1 ATR.
+ */
+export const E25_FACTS = {
+  multi: "几个周期同时数到 9 或 13，研究里（E25，10 个币，15 分钟到日线）也没有比单个周期更灵。",
+  relay:
+    "小周期走完 13、大一级周期同方向还在数 13（有的网站叫“接力衰竭”）：E25 里按 13 反着做，15 分钟涨势 13 比随机差 0.20R、1 小时跌势 13 差 0.58R，其他组合和随机差不多，没有一组更灵。",
+  against: "小周期走完 13、大一级周期在数反方向（有的网站叫“回调买点”）：E25 里顺着大周期做和随机差不多（−0.03R 到 −0.43R），没有可证明的优势。",
+  both13: "相邻两个周期都刚走完同方向的 13：E25 里样本只有几十到几百笔，和随机差不多，没有可证明的优势。",
+} as const;
+
+/** larger timeframe paired with each smaller one, as in E25 (5m borrows the 15m→1h result) */
+const NEXT_TF: Partial<Record<Timeframe, Timeframe>> = { "5m": "15m", "15m": "1h", "1h": "4h", "4h": "1d" };
+
+const live13 = (d: TdDetail) => (d.nine?.thirteen && !d.nine.thirteen.invalidated && d.nine.thirteen.barsAgo <= FRESH13 ? d.nine.side : null);
+
+/** What a fresh 13 on a small timeframe meets on the next larger one, with the E25 sentence for it. */
+function pairOf(rows: TdBriefRow[]): string | null {
+  for (const r of rows) {
+    const side = live13(r.d);
+    const big = NEXT_TF[r.tf] && rows.find((x) => x.tf === NEXT_TF[r.tf]);
+    if (!side || !big) continue;
+    const pair = `${TF_LABEL[r.tf]}刚走完${sideName(side)} 13，${TF_LABEL[big.tf]}`;
+    if (live13(big.d) === side) return `${pair}也刚走完${sideName(side)} 13。${E25_FACTS.both13}`;
+    const cd = big.d.countdown;
+    if (cd && cd.side === side) return `${pair}的${sideName(side)} 13 还在数（${cd.count}/${big.d.countdownLength}）。${E25_FACTS.relay}`;
+    if (cd && cd.side !== side) return `${pair}在数${sideName(cd.side)} 13（${cd.count}/${big.d.countdownLength}）。${E25_FACTS.against}`;
+  }
+  return null;
+}
+
 function alignmentOf(rows: TdBriefRow[]): string | null {
+  const pair = pairOf(rows);
   const lean = rows.map((r) => ({ tf: r.tf, s: leaning(r.d) })).filter((x): x is { tf: Timeframe; s: TdSide } => x.s != null);
-  if (rows.length < 2 || lean.length < 2) return null;
+  if (rows.length < 2 || lean.length < 2) return pair;
   const sells = lean.filter((x) => x.s === "sell").map((x) => TF_LABEL[x.tf]);
   const buys = lean.filter((x) => x.s === "buy").map((x) => TF_LABEL[x.tf]);
-  if (!buys.length) return `${sells.join("、")}都在数“涨了很久”。几个周期同时数到 9 或 13 是否更灵，还没有研究数字。`;
-  if (!sells.length) return `${buys.join("、")}都在数“跌了很久”。几个周期同时数到 9 或 13 是否更灵，还没有研究数字。`;
-  return `周期之间不一致：${sells.join("、")}在数“涨了很久”，${buys.join("、")}在数“跌了很久”。小周期的计数只说明最近几根，先看大周期在走什么。`;
+  const base = !buys.length
+    ? `${sells.join("、")}都在数“涨了很久”。${E25_FACTS.multi}`
+    : !sells.length
+      ? `${buys.join("、")}都在数“跌了很久”。${E25_FACTS.multi}`
+      : `周期之间不一致：${sells.join("、")}在数“涨了很久”，${buys.join("、")}在数“跌了很久”。小周期的计数只说明最近几根，先看大周期在走什么。`;
+  return pair ? `${base}${pair}` : base;
 }
 
 function reviewOf(focus: TdBriefRow, rows: TdBriefRow[], last: TdLastSignal | null): string[] {
