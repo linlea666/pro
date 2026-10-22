@@ -1,3 +1,5 @@
+import { weekLine, type WeekLine } from "../ta/weekline.ts";
+
 /**
  * Long-horizon valuation rulers for BTC spot (the 现货囤币 page), ported from research E23a.
  * Pure: no database, no network; runs on the server, in the CLI and in the browser.
@@ -160,6 +162,13 @@ export function reserveSignal(r: Rulers, opts: { wma?: boolean; mvrv?: boolean }
 
 // ---------------------------------------------------------------- now
 
+/** Every 7th close back from the latest, oldest first: the same weeks the 200-week average uses. */
+export function weeklyCloses(p: number[]): number[] {
+  const out: number[] = [];
+  for (let i = p.length - 1; i >= 0; i -= 7) out.push(p[i]);
+  return out.reverse();
+}
+
 export interface RulerNow {
   value: number | null;
   /** expanding percentile, 0–1 */
@@ -200,6 +209,8 @@ export interface SpotNow {
   high52w: { price: number; day: string; distPct: number };
   /** whether the plan's reserve bucket would fire today */
   reserve: boolean;
+  /** the 50-week average of weekly closes (every 7th day back from today), described only (E24) */
+  week50: WeekLine | null;
 }
 
 const r1 = (x: number) => Math.round(x * 10) / 10;
@@ -251,6 +262,7 @@ export function spotNow(s: SpotSeries, r: Rulers = rulers(s)): SpotNow {
     ],
     high52w: { price: s.price[hi], day: s.day[hi], distPct: r1((P / s.price[hi] - 1) * 100) },
     reserve: reserveSignal(r)[L],
+    week50: weekLine(weeklyCloses(s.price)),
   };
 }
 

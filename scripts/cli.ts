@@ -30,6 +30,7 @@ import { dbPath, getDb, migrate, SCHEMA_VERSION } from "../src/lib/server/db.ts"
 import { adminCount, upsertAdmin, validatePassword } from "../src/lib/server/auth.ts";
 import { backupNow } from "../src/lib/server/jobs.ts";
 import type { ResearchReport } from "../src/lib/research/run.ts";
+import { weekLineText } from "../src/lib/ta/weekline.ts";
 
 const [cmd, ...rest] = process.argv.slice(2);
 const opt = (name: string) => {
@@ -275,6 +276,7 @@ async function main() {
       console.log(`收盘价 ${fp(p.closedPrice)}，ATR ${fp(p.atr)}，数据源 ${p.source}${p.calibrated ? "" : "，缓冲用默认值"}`);
       console.log(`\n${p.headline}\n${p.bias}`);
       for (const m of p.map) console.log(`  ${m.tf.padEnd(3)} ${m.view.label}：${m.view.position}`);
+      if (p.week50) console.log(`  周线${weekLineText(p.week50)}，均线 ${fp(p.week50.sma)}（只描述长期趋势，不预测涨跌）`);
       for (const s of [p.long, p.short]) {
         console.log(`\n【${s.side === "long" ? "多" : "空"}】${s.headline}`);
         if (s.trigger) console.log(`  触发：${s.trigger}`);
@@ -383,6 +385,7 @@ async function main() {
       console.log(`  ${line("mvrv1")}`);
       console.log(`Mayer 倍数 ${fp(n.mayer.value)}，200 日均线 ${fp(n.mayer.ma200)}，历史分位 ${pc(n.mayer.pct)}${zoneOf(n.mayer.zone)}`);
       console.log(`  ${line("mayer08")}`);
+      if (n.week50) console.log(`${weekLineText(n.week50)}，50 周均线 ${fp(n.week50.sma)}（只描述，跌破不是卖出信号）`);
       console.log(`总市值 ${n.marketCap ? cap(n.marketCap) : "—"}，流通 ${fp(n.supply)} 枚`);
       const g = v.fngBlock(fngPoints("BTC"));
       console.log(g ? `恐惧贪婪 ${g.value}（${g.label}，${g.day}），7 天前 ${g.ago7 ?? "—"}，30 天前 ${g.ago30 ?? "—"}，历史分位 ${pc(g.pct)}` : "恐惧贪婪：还没有数据");

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { SpotPage } from "@/lib/spot/page";
 import { FNG_BANDS, type LowLine, type ZoneLabel } from "@/lib/spot/valuation";
+import { WEEK_LINE_FACTS, weekLineText } from "@/lib/ta/weekline";
 import { Term } from "../Term";
 import { Card, fmtBj, fmtCap, fmtMult, fmtSigned, fmtSpan, fmtUsd, LIVE_SOURCE, OpinionTag, ZoneChip, type Mode } from "./spot-ui";
 
@@ -119,6 +120,20 @@ export function NowTiles({ d, mode }: { d: SpotPage; mode: Mode }) {
           ))}
         </ul>
       </div>
+      {n.week50 && (
+        <div className="mt-2 rounded-lg bg-panel-2 px-3 py-2 text-[12px] leading-relaxed text-ink-2">
+          <div className="num">
+            <span className="font-medium text-ink">长期趋势：</span>
+            {weekLineText(n.week50)}，50 周均线 ≈ <b className="text-ink">{fmtUsd(n.week50.sma)}</b>
+            <span className="text-ink-3">（离现价 {fmtSigned((n.week50.sma / d.live.price - 1) * 100)}）</span>
+          </div>
+          <p className="mt-0.5 text-ink-3">
+            {WEEK_LINE_FACTS.general}
+            {WEEK_LINE_FACTS.spot}
+            {mode === "pro" && WEEK_LINE_FACTS.risk}
+          </p>
+        </div>
+      )}
     </Card>
   );
 }

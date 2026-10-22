@@ -11,6 +11,7 @@ import { liveDefends, lowerReady, LOWER_WARMUP, nearStop, planNearStop, type Low
 import { buildPlans, findEntries, higherDirection, MAX_HOLD_BARS, stopOption, type DefendPlan, type EntryKind, type NearFarStats, type PlanEvidence, type SidePlan } from "./ta/plan.ts";
 import { atrSeries, bufferAtr } from "./ta/risk.ts";
 import { defenseTiers, type DefenseLine } from "./ta/tiers.ts";
+import { weekLine, type WeekLine } from "./ta/weekline.ts";
 import { describeStructure, structureDirection, structureSeries, swings, type StructureState, type StructureView, type Swing } from "./ta/structure.ts";
 import { TF_LABEL, TF_SECONDS, type Candle, type Timeframe } from "./types.ts";
 
@@ -158,6 +159,8 @@ export interface TrendPlan {
   lessons: ScoreRow[];
   /** near / mid / far lines of defence for a long (below) and a short (above), described only */
   defenses: { long: DefenseLine[]; short: DefenseLine[] };
+  /** closed weekly closes against their 50-week average, described only (E24); null under 50 weeks */
+  week50: WeekLine | null;
   /** research on defended levels and near stops: rows the lessons quote, and a line per stall sign */
   defendLessons: ScoreRow[];
   defendChecks: Record<"flow" | "oi" | "turn", string> | null;
@@ -490,6 +493,7 @@ export async function computeTrendPlan(coin: string, fw: Framework, ep: EnginePa
     costPct: ep.stats.costPct,
     scorecard: report ? scorecardOf(report, rows, F.tf) : null,
     lessons: LESSON_KEYS.map((k) => rows.get(k)).filter((x): x is ResearchRow => !!x).map(scoreRow),
+    week50: weekLine((frames.get("1w")?.c ?? []).map((x) => x.c)),
     defenses: (() => {
       const tierIn = { tf: F.tf, c: E.c, atr: E.atr, sw: E.sw, higherTf: F.filter, higher: H.ss[H.ss.length - 1] ?? null, daily: frames.get("1d")?.c ?? [], endSec: E.c[L].t + TF_SECONDS[F.tf], live };
       return { long: defenseTiers(tierIn, 1), short: defenseTiers(tierIn, -1) };

@@ -2,6 +2,8 @@
 
 import type { TrendMapRow, TrendPlan } from "@/lib/trendplan";
 import { TF_LABEL } from "@/lib/types";
+import { WEEK_LINE_FACTS, weekLineText } from "@/lib/ta/weekline";
+import { fmtPrice } from "./format";
 import { Term } from "../Term";
 import type { Mode } from "./CoinView";
 
@@ -59,6 +61,11 @@ export function TrendMap({ p, mode, compact = false, onOpen }: { p: TrendPlan; m
                 <BreachBadge breach={m.view.breach} />
               </div>
               {m.view.position && <p className="mt-0.5 text-[13px] leading-relaxed text-ink-2">{m.view.position}</p>}
+              {m.tf === "1w" && p.week50 && (
+                <p className="num mt-0.5 text-[12px] leading-relaxed text-ink-3" title={`${WEEK_LINE_FACTS.general}${WEEK_LINE_FACTS.risk}`}>
+                  {weekLineText(p.week50)}，均线约 {fmtPrice(p.week50.sma)}。{mode === "pro" ? WEEK_LINE_FACTS.general : "只描述长期趋势，不预测涨跌。"}
+                </p>
+              )}
             </div>
           </li>
         ))}

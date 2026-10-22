@@ -13,7 +13,7 @@
   - 内部 import 用**相对路径并带 `.ts` 后缀**，比如 `../ta/risk.ts`；`@/` 别名只在 app / components 里用；
   - **不要使用 TS 的参数属性写法**（`constructor(private x)`），也不要用 enum。
 - 常用命令：
-  - `npm test`：单元测试，目前 126 个（全部不联网，CI 在 `.github/workflows/ci.yml` 里跑类型检查、测试和构建）；
+  - `npm test`：单元测试，目前 129 个（全部不联网，CI 在 `.github/workflows/ci.yml` 里跑类型检查、测试和构建）；
   - `npx tsc --noEmit`：类型检查；
   - `npx next build`：生产构建；
   - `npm run dev`：本地开发；
@@ -38,6 +38,7 @@
   - `defend.ts`（v1.3.1）：守位做法 `findDefends`——价格来到没被收盘越过的摆动点、被突破过的位或 50 根新高 / 新低，扫过后收回或留下长影线，之后第一次收盘拐回时入场；三项止跌 / 止涨迹象（主动成交、持仓量骤降、1 小时转强）；近止损 `nearStop`（1 小时极点外加 1 小时 p80 缓冲，至少 0.5 倍入场周期 ATR）。页面用 `liveDefends`、`planNearStop`、`lowerReady`（1 小时数据要预热、入场收盘那根要在）。研究和页面共用；规则参数在 `params.ts` 的“交易计划 → 守位做法”；
   - `tiers.ts`：价格梯的近 / 中 / 远三档防线（近：4 小时离现价 ≥0.5 ATR 的第一个摆动点；中：被测试 ≥2 次的结构点或上周高低；远：日线保护位或上月高低），只做描述。
   - `watch.ts`（v1.4）：实时盯盘的规则，**研究和页面共用这一份**。关键位 `keyLevelCandidates` / `levelSource`（前一日 / 上周 / 上月高低，4 小时和日线还没被收盘越过的摆动点；`prevPeriodHL` 从末尾往回找上一个完整周期）；事件 `scanEvents`：价格从上方来、第一次碰到关键位，窗口 3 天（`watch.windowBars` 288 根 15 分钟），同一方向同时只有一个，朝交易方向离开关键位 3 倍 1 小时 ATR 就结束；触发 `eventTriggers`：A 碰到就进、B 扫过后收回、C 15 分钟转强（`turnAt`：极点之后走出更高的低点，并收盘站上最近的反弹高点 0.1 倍 ATR）、C1 1 小时转强；止损 `stopBeyond` = 最新极点外 p80 扫损缓冲 × 1 小时 ATR。`watchState` 给一侧的状态：远离 / 靠近（1.5 倍 1 小时 ATR 内，`watch.nearAtr`）/ 别接（还在创新低，或收盘在位下 0.1 ATR 以上）/ 观察 / 已转强；转强后又创新低回到“别接”，尝试次数加 1；
+  - `weekline.ts`（2026-10-22，E24）：50 周均线描述 `weekLine`（站上 / 跌破、第几周、离线多远），趋势地图周线行（`TrendPlan.week50`，用已收盘周线）和囤币页（`SpotNow.week50`，每 7 天取一个收盘，同 200 周均线）共用；E24 没有达标，**只描述，不叫牛熊分界线**，文案在 `WEEK_LINE_FACTS`。研究在项目文件夹 e24/（还比了 20 周、200 日、金叉、MVRV>1、算力带、恐惧贪婪 × 趋势，都不能稳定预测）。
   - `watchsigns.ts`：盯盘的七项迹象 `signsAt`（动能衰竭、主动成交背离、现货承接、放量后缩量、持仓量骤降、资金费率拥挤、1 小时也已转强），研究和页面共用。
   - `patterns.ts`（v1.5）：裸 K 五种形态 `findPatterns`（长影线、吞没、孕线突破、假突破 2B、突破回踩），给出触发价、极点、止损（极点外 p80 扫损缓冲）、风险 ATR（0.3–8 倍才做）、顺势 / 逆势 / 区间、关键位 / 中间（`locateSetup`，关键位来自 `paLevelSource`：本周期没被越过和被突破过的摆动点、`PA_HIGHER` 大周期摆动点、`PA_PERIODS` 前一日 / 上周 / 上月高低）；阈值在 `PA_RULES`，记进报告的 `rules`。**研究和页面共用这一份，不要改行为。**
 - `src/lib/server/`：
