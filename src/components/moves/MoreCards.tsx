@@ -143,91 +143,151 @@ export function AfterBig({ v, mode }: { v: View; mode: Mode }) {
   const rows = dir < 0 ? v.afterDrops : v.afterRises;
   const base = rows[rows.length - 1];
   const word = dir < 0 ? "跌" : "涨";
-  const backWord = dir < 0 ? "收盘更高" : "收盘更低";
-  const onWord = dir < 0 ? "继续跌" : "继续涨";
-  const i1 = REBOUND_DAYS.indexOf(1), i3 = REBOUND_DAYS.indexOf(3);
+  const backName = dir < 0 ? "涨回去" : "跌回去";
+  const onName = dir < 0 ? "继续跌" : "继续涨";
+  const when = (k: number) => (k === 1 ? "第二天" : `${k} 天后`);
+  const i1 = REBOUND_DAYS.indexOf(1);
   const pick = rows.find((r) => r.min === 5 && r.n >= REBOUND_MIN_N) ?? rows.find((r) => r.min === 3 && r.n >= REBOUND_MIN_N);
-  const pctCell = (x: number | null) => (x == null ? "—" : `${x.toFixed(0)}%`);
-  const label = (r: ReboundRow) => (r.min == null ? "所有日子（对照）" : `单日${word} ${r.min}% 以上`);
+  const times = (r: ReboundRow, x: number | null) => (x == null ? 0 : Math.round((r.n * x) / 100));
+  const label = (r: ReboundRow) => (r.min == null ? "随便哪一天（对比用）" : `单日${word} ${r.min}% 以上`);
+  let verdict = "";
+  if (pick && pick.back[i1] != null && base.back[i1] != null) {
+    const diff = pick.back[i1]! - base.back[i1]!;
+    verdict =
+      Math.abs(diff) < 10
+        ? `和随便哪一天差不多（平时 ${Math.round(base.back[i1]!)}% ${backName}），看不出“${word}多了就会${dir < 0 ? "反弹" : "回落"}”。`
+        : `比平时${diff > 0 ? "多" : "少"} ${Math.abs(Math.round(diff))} 个百分点，但只有 ${pick.n} 次、没有做显著性检验，不要当成规律。`;
+  }
   return (
     <Card
-      title={dir < 0 ? "大跌之后：反弹了多少" : "大涨之后：回落了多少"}
+      title={dir < 0 ? "大跌之后：是涨回去，还是继续跌？" : "大涨之后：是跌回去，还是继续涨？"}
       extra={
         <div className="flex items-center gap-1 rounded-full border border-line p-0.5 text-[12px]">
           {([-1, 1] as const).map((k) => (
             <button key={k} onClick={() => setDir(k)} className={`rounded-full px-2.5 py-0.5 ${dir === k ? "bg-ink text-bg" : "text-ink-2"}`}>
-              {k < 0 ? "跌后反弹" : "涨后回落"}
+              {k < 0 ? "大跌之后" : "大涨之后"}
             </button>
           ))}
         </div>
       }
     >
+      <p className="text-[13px] leading-relaxed text-ink-2">
+        拿大{word}那天的<b className="text-ink">收盘价</b>当起点，看第二天、3 天后、7 天后的收盘价：比起点{dir < 0 ? "高" : "低"}就算「{backName}」，比起点{dir < 0 ? "低" : "高"}就算「{onName}」。最后一行是随便哪一天的情况，用来对比。
+      </p>
       {pick && (
-        <p className="mb-3 text-[13px] leading-relaxed text-ink-2">
-          「{v.periodName}」里单日{word} {pick.min}% 以上 {pick.n} 次：第二天{backWord}的占 <b className="num text-ink">{pctCell(pick.back[i1])}</b>、{onWord}的占{" "}
-          <b className="num text-ink">{pctCell(pick.on[i1])}</b>（随便哪一天之后是 {pctCell(base.back[i1])} / {pctCell(base.on[i1])}）；3 天后{backWord}的占{" "}
-          <b className="num text-ink">{pctCell(pick.back[i3])}</b>（平时 {pctCell(base.back[i3])}）。之后 3 天里从当天{dir < 0 ? "最低点最多反弹" : "最高点最多回落"}一半的时候有 {pick.bounce?.toFixed(1)}%，平时也有 {base.bounce?.toFixed(1)}%。
+        <p className="mt-2 rounded-lg bg-panel-2 px-3 py-2 text-[13px] leading-relaxed text-ink">
+          「{v.periodName}」里单日{word} {pick.min}% 以上一共 {pick.n} 次：第二天{backName}的 <b className="num">{times(pick, pick.back[i1])}</b> 次、{onName}的{" "}
+          <b className="num">{times(pick, pick.on[i1])}</b> 次。{verdict}
         </p>
       )}
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[560px] text-[13px]">
-          <thead>
-            <tr className="text-left text-[11px] text-ink-3">
-              <th className="pb-1.5 font-normal">那一天</th>
-              <th className="pb-1.5 font-normal">次数</th>
-              <th className="pb-1.5 font-normal">3 天内{dir < 0 ? "从最低点反弹" : "从最高点回落"}（中位）</th>
-              {REBOUND_DAYS.map((k) => (
-                <Fragment key={k}>
-                  <th className="pb-1.5 font-normal">
-                    {k === 1 ? "第二天" : `${k} 天后`}
-                    {backWord}
-                  </th>
-                  {k === 1 && <th className="pb-1.5 font-normal">第二天{onWord}</th>}
-                </Fragment>
-              ))}
-              {mode === "pro" &&
-                REBOUND_DAYS.map((k) => (
-                  <th key={`m${k}`} className="pb-1.5 font-normal">
-                    {k === 1 ? "第二天" : `${k} 天后`}涨跌（中位）
+
+      {mode === "beginner" ? (
+        <div className="mt-3 space-y-3">
+          {rows.filter((r) => r.min == null || r.n >= 5).map((r) => {
+            const few = r.min != null && r.n < REBOUND_MIN_N;
+            return (
+              <div key={r.min ?? "base"} className={`rounded-lg border border-line p-3 ${r.min == null ? "bg-panel-2" : ""} ${few ? "opacity-60" : ""}`}>
+                <div className="mb-2 flex flex-wrap items-baseline gap-x-2 text-[13px]">
+                  <span className="font-medium">{label(r)}</span>
+                  <span className="num text-[12px] text-ink-3">共 {r.n} 次</span>
+                  {few && <span className="text-[11px] text-ink-3">次数太少，看看就好</span>}
+                </div>
+                <div className="space-y-1.5">
+                  {REBOUND_DAYS.map((k, m) => {
+                    const back = r.back[m], on = r.on[m];
+                    if (back == null || on == null) return null;
+                    // green = closed higher, red = closed lower, whichever side the move was
+                    const up = dir < 0 ? back : on, down = dir < 0 ? on : back;
+                    const upName = dir < 0 ? backName : onName, downName = dir < 0 ? onName : backName;
+                    return (
+                      <div key={k} className="grid grid-cols-[3.5rem_1fr] items-center gap-2 text-[12px]">
+                        <span className="text-ink-3">{when(k)}</span>
+                        <div className="min-w-0">
+                          <div className="flex h-2 overflow-hidden rounded-full bg-panel-2">
+                            <div className="bg-up" style={{ width: `${up}%` }} />
+                            <div className="ml-auto bg-down" style={{ width: `${down}%` }} />
+                          </div>
+                          <div className="num mt-0.5 flex justify-between gap-2 whitespace-nowrap">
+                            <span className="text-up">
+                              {upName} {times(r, up)} 次（{Math.round(up)}%）
+                            </span>
+                            <span className="text-down">
+                              {downName} {times(r, down)} 次（{Math.round(down)}%）
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+          {rows.some((r) => r.min != null && r.n < 5) && (
+            <p className="text-[12px] text-ink-3">
+              {rows
+                .filter((r) => r.min != null && r.n < 5)
+                .map((r) => `单日${word} ${r.min}% 以上只有 ${r.n} 次`)
+                .join("、")}
+              ，太少了不列出（专业模式能看到）。
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full min-w-[640px] text-[13px]">
+            <thead>
+              <tr className="text-left text-[11px] text-ink-3">
+                <th className="pb-1.5 font-normal">那一天</th>
+                <th className="pb-1.5 font-normal">次数</th>
+                {REBOUND_DAYS.map((k) => (
+                  <th key={k} className="pb-1.5 font-normal">
+                    {when(k)}：{backName} / {onName}
                   </th>
                 ))}
-            </tr>
-          </thead>
-          <tbody className="num">
-            {rows.map((r) => {
-              const few = r.min != null && r.n < REBOUND_MIN_N;
-              return (
-                <tr key={r.min ?? "base"} className={`border-t border-line ${r.min == null ? "bg-panel-2" : ""} ${few ? "text-ink-3" : ""}`}>
-                  <td className="py-1.5 pr-2">{label(r)}</td>
-                  <td className="py-1.5 pr-2">
-                    {r.n}
-                    {few && <span className="ml-1 text-[10px]">样本太少</span>}
-                  </td>
-                  <td className="py-1.5 pr-2">{r.bounce == null ? "—" : `${r.bounce.toFixed(1)}%`}</td>
-                  {r.back.map((x, k) => (
-                    <Fragment key={k}>
-                      <td className="py-1.5 pr-2">{pctCell(x)}</td>
-                      {REBOUND_DAYS[k] === 1 && <td className="py-1.5 pr-2">{pctCell(r.on[k])}</td>}
-                    </Fragment>
-                  ))}
-                  {mode === "pro" &&
-                    r.med.map((x, k) => (
+                <th className="pb-1.5 font-normal">3 天内{dir < 0 ? "从最低点最多反弹" : "从最高点最多回落"}（中位）</th>
+                {REBOUND_DAYS.map((k) => (
+                  <th key={`m${k}`} className="pb-1.5 font-normal">
+                    {when(k)}涨跌（中位）
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="num">
+              {rows.map((r) => {
+                const few = r.min != null && r.n < REBOUND_MIN_N;
+                return (
+                  <tr key={r.min ?? "base"} className={`border-t border-line ${r.min == null ? "bg-panel-2" : ""} ${few ? "text-ink-3" : ""}`}>
+                    <td className="py-1.5 pr-2">{label(r)}</td>
+                    <td className="py-1.5 pr-2">
+                      {r.n}
+                      {few && <span className="ml-1 text-[10px]">样本太少</span>}
+                    </td>
+                    {r.back.map((x, k) => (
+                      <td key={k} className="py-1.5 pr-2">
+                        {x == null ? "—" : `${Math.round(x)}% / ${Math.round(r.on[k] ?? 0)}%`}
+                      </td>
+                    ))}
+                    <td className="py-1.5 pr-2">{r.bounce == null ? "—" : `${r.bounce.toFixed(1)}%`}</td>
+                    {r.med.map((x, k) => (
                       <td key={`m${k}`} className="py-1.5 pr-2">
                         {signed(x, 1)}
                       </td>
                     ))}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
       <div className="mt-2 space-y-1 text-[11px] leading-relaxed text-ink-3">
         <p>
-          怎么看：拿每一行和最后一行“所有日子”比。{dir < 0 ? "反弹" : "回落"}几乎每次都会有，平常的日子也一样；真正要看的是之后{backWord}的比例比平时高多少。“第二天”是那一天收盘之后的下一根日线（UTC 0 点到 0 点），收盘不变的天两边都不算。差不到 10 个百分点，就当作和平时一样。
+          怎么看：拿上面每一行和“随便哪一天”比。{backName}的比例比平时高不到 10 个百分点，就当作和平时一样。收盘价正好不变的天两边都不算，所以两边加起来可能差一点到 100%。
         </p>
         <p>
-          大{word}之后{dir < 0 ? "反弹" : "回落"}的幅度往往更大，是因为大{word}之后波动本来就更大，往两个方向都走得更远。每次至少隔 7 天，同一轮行情只算一次；次数少于 {REBOUND_MIN_N} 的行灰色显示，没有做显著性检验。
+          同一轮行情只算一次（每次至少隔 7 天）；次数少于 {REBOUND_MIN_N} 的灰色显示，没有做显著性检验。
+          {mode === "pro" && ` 大${word}之后${dir < 0 ? "反弹" : "回落"}的幅度往往更大，是因为大波动之后往两个方向都走得更远，不说明方向。`}
         </p>
       </div>
     </Card>

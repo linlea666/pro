@@ -210,10 +210,14 @@ function NowTiles({ v, mode }: { v: View; mode: Mode }) {
         <Tile key={w.key} label={WIN_NAME[w.key]} value={signed(w.pct)} valueClass={tone(w.pct)} chip={<Band b={w.band} />}>
           {w.rank != null && (
             <p>
-              比 <b className="num text-ink-2">{w.rank}%</b> 的时候大{mode === "pro" && v.period !== "all" && w.rankAll != null && <>（全部历史 {w.rankAll}%）</>}
+              比 <b className="num text-ink-2">{w.rank}%</b> 的时候都大{mode === "pro" && v.period !== "all" && w.rankAll != null && <>（全部历史 {w.rankAll}%）</>}
             </p>
           )}
-          {w.freq && w.pct != null && <p>{every(w.freq.everySec)}</p>}
+          {w.freq && w.pct != null && (
+            <p>
+              {w.pct < 0 ? "跌" : "涨"}这么多：{every(w.freq.everySec)}
+            </p>
+          )}
         </Tile>
       ))}
       <Tile label="24 小时振幅" value={v.range24 ? `${v.range24.pct.toFixed(2)}%` : "—"} chip={<Band b={v.range24?.band ?? null} />}>
@@ -270,6 +274,16 @@ function Buckets({ v, mode }: { v: View; mode: Mode }) {
       title="单日涨跌幅分档：各占多少天"
       extra={v.periodName}
     >
+      {(() => {
+        const r = b.rows.find((x) => x.lo === 2);
+        return (
+          r && (
+            <p className="mb-3 text-[13px] leading-relaxed text-ink-2">
+              每天收盘比前一天跌（涨）了多少，落在哪一档。例如 2–3% 那一行：跌了 2–3% 的日子占 <b className="num text-down">{r.down.share.toFixed(1)}%</b>，也就是{every(r.down.everySec)}。
+            </p>
+          )
+        );
+      })()}
       <table className="w-full text-[13px]">
         <thead>
           <tr className="text-left text-[11px] text-ink-3">
@@ -406,6 +420,7 @@ function Extremes({ v, mode }: { v: View; mode: Mode }) {
   const s = v.swing;
   return (
     <Card title={`「${v.periodName}」里最大的单日涨跌`} extra="每次至少隔 3 天，同一轮暴跌只算一次">
+      <p className="mb-3 text-[13px] leading-relaxed text-ink-2">“之后 1 天 / 3 天 / 7 天”= 那时的收盘价比大涨大跌那天的收盘价高了（绿）还是低了（红）多少。</p>
       <div className="grid gap-4 lg:grid-cols-2">
         <div>
           <h3 className="mb-1 text-[13px] font-medium text-down">跌得最多的 {n} 天</h3>
@@ -444,16 +459,27 @@ function levCell(s: LevSide) {
 function Leverage({ v, mode }: { v: View; mode: Mode }) {
   return (
     <Card title="开几倍杠杆，多常被一根影线打爆" extra={`${v.periodName} · 逐仓、不算手续费和资金费`}>
+      {(() => {
+        const r = v.leverage.find((x) => x.lev === 10);
+        return (
+          r && (
+            <p className="mb-3 rounded-lg bg-panel-2 px-3 py-2 text-[13px] leading-relaxed text-ink">
+              这张表回答：在某天开盘时开仓、不设止损，历史上有多少天会被一根影线打爆。例如开 <b>10 倍多单</b>，价格反向走 {r.liqPct.toFixed(1)}% 就爆仓：当天就被打爆的日子占{" "}
+              <b className="num">{r.day.long.share.toFixed(1)}%</b>（{every(r.day.long.everySec)}），拿 {HOLD_DAYS} 天的话占 <b className="num">{r.week.long.share.toFixed(1)}%</b>。
+            </p>
+          )
+        );
+      })()}
       <div className="overflow-x-auto">
         <table className="w-full min-w-[520px] text-[13px]">
           <thead>
             <tr className="text-left text-[11px] text-ink-3">
               <th className="pb-1.5 font-normal">杠杆</th>
-              <th className="pb-1.5 font-normal">反向走多少爆仓</th>
-              <th className="pb-1.5 font-normal">当天内 · 做多</th>
-              <th className="pb-1.5 font-normal">当天内 · 做空</th>
-              <th className="pb-1.5 font-normal">拿 {HOLD_DAYS} 天 · 做多</th>
-              <th className="pb-1.5 font-normal">拿 {HOLD_DAYS} 天 · 做空</th>
+              <th className="pb-1.5 font-normal">反着走多少就爆仓</th>
+              <th className="pb-1.5 font-normal">做多：当天被打爆</th>
+              <th className="pb-1.5 font-normal">做空：当天被打爆</th>
+              <th className="pb-1.5 font-normal">做多：拿 {HOLD_DAYS} 天内被打爆</th>
+              <th className="pb-1.5 font-normal">做空：拿 {HOLD_DAYS} 天内被打爆</th>
             </tr>
           </thead>
           <tbody>
