@@ -14,6 +14,7 @@ import { PATTERN_GUIDE, PatternSketch } from "./pa-ui";
 import { fmtR, fmtWhen, readPref, writePref } from "./plan-ui";
 import { ReplayContext, useReplay } from "./replay";
 import { Section } from "./shared";
+import { FamilyTag, paLevelFamily } from "./level-tags";
 
 /**
  * 裸 K: three steps on one screen — ① the trend (structure), ② the location (support / resistance / middle),
@@ -102,12 +103,12 @@ function NearestTwo({ levels }: { levels: PaLevelRow[] }) {
     <ul className="num mt-1.5 space-y-0.5 text-[12px] text-ink-2">
       {r && (
         <li>
-          上方阻力 <b className="text-ink">{fmtPrice(r.price)}</b> <span className="text-ink-3">{r.name}，{Math.abs(r.distAtr).toFixed(1)} 倍 ATR</span>
+          上方阻力 <b className="text-ink">{fmtPrice(r.price)}</b> <FamilyTag family={paLevelFamily(r.kind)}>{r.name}</FamilyTag> <span className="text-ink-3">{Math.abs(r.distAtr).toFixed(1)} 倍 ATR</span>
         </li>
       )}
       {s && (
         <li>
-          下方支撑 <b className="text-ink">{fmtPrice(s.price)}</b> <span className="text-ink-3">{s.name}，{Math.abs(s.distAtr).toFixed(1)} 倍 ATR</span>
+          下方支撑 <b className="text-ink">{fmtPrice(s.price)}</b> <FamilyTag family={paLevelFamily(s.kind)}>{s.name}</FamilyTag> <span className="text-ink-3">{Math.abs(s.distAtr).toFixed(1)} 倍 ATR</span>
         </li>
       )}
     </ul>

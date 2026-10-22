@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { WatchSideView, WatchView } from "@/lib/watch";
+import type { KeyLevelKind } from "@/lib/ta/watch";
 import { MMR, sizePosition } from "@/lib/ta/plan";
 import type { Timeframe } from "@/lib/types";
 import { PriceChart, type MarkerSpec, type PriceLineSpec } from "../PriceChart";
@@ -12,6 +13,7 @@ import { ago, fmtPrice } from "./format";
 import { fmtR, fmtWhen, readPref, writePref } from "./plan-ui";
 import { ReplayContext, useReplay } from "./replay";
 import { Section } from "./shared";
+import { FamilyTag, watchLevelFamily } from "./level-tags";
 import { BreachBadge } from "./TrendMap";
 import { fmtAtr, ruleLine, sideName, StatePill, stateWord } from "./watch-ui";
 
@@ -359,7 +361,7 @@ function WatchChart({ v, s, onPick }: { v: WatchView; s: WatchSideView; onPick: 
 
 function LevelsCard({ v }: { v: WatchView }) {
   const rows = useMemo(() => {
-    const out: { price: number; name: string; dist: number | null; state: "none" | "pierced" | "broken"; now?: boolean }[] = v.levels.map((l) => ({ price: l.price, name: l.name, dist: l.distAtr, state: l.state }));
+    const out: { price: number; name: string; kind?: KeyLevelKind; dist: number | null; state: "none" | "pierced" | "broken"; now?: boolean }[] = v.levels.map((l) => ({ price: l.price, name: l.name, kind: l.kind, dist: l.distAtr, state: l.state }));
     out.push({ price: v.closedPrice, name: v.replay ? "回放时的收盘价" : "最近收盘价", dist: null, state: "none", now: true });
     return out.sort((a, b) => b.price - a.price);
   }, [v]);
@@ -372,7 +374,7 @@ function LevelsCard({ v }: { v: WatchView }) {
           {rows.map((r, k) => (
             <li key={`${r.name}${r.price}${k}`} className={`flex items-center gap-2 rounded-md px-2 py-1 ${r.now ? "bg-panel-2 font-medium" : ""}`}>
               <span className="num w-20 shrink-0">{fmtPrice(r.price)}</span>
-              <span className="min-w-0 flex-1 truncate text-ink-2">{r.name}</span>
+              <span className="min-w-0 flex-1 truncate text-ink-2">{r.kind ? <FamilyTag family={watchLevelFamily(r.kind)}>{r.name}</FamilyTag> : r.name}</span>
               {r.state !== "none" && <BreachBadge breach={r.state} level />}
               {r.dist != null && <span className="num shrink-0 text-[11px] text-ink-3">{fmtAtr(r.dist).replace(" 倍 ATR", "")} ATR</span>}
             </li>

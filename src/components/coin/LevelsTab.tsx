@@ -6,7 +6,8 @@ import { BEGINNER_TIMEFRAMES, TF_LABEL, TIMEFRAMES, type Timeframe } from "@/lib
 import { PriceChart, type PriceLineSpec } from "../PriceChart";
 import { Term } from "../Term";
 import { fmtPct, fmtPrice } from "./format";
-import { Explainer, MethodChips, Section } from "./shared";
+import { Explainer, MethodChips, Section, tfsLargestFirst } from "./shared";
+import { FamilyLegend, METHOD_FAMILY, familyColor } from "./level-tags";
 import { MtfStrip } from "./MtfStrip";
 import type { TabProps } from "./CoinView";
 
@@ -83,7 +84,7 @@ export function LevelsTab({ a, mtf, mode, onTf }: TabProps) {
             <Term k="支撑">支撑</Term>是“跌到这里容易有人买”的价位，<Term k="阻力">阻力</Term>是“涨到这里容易有人卖”的价位。它们来自过去的高低点、成交密集区、均线等。
           </p>
           <p>
-            <b className="text-ink">我们怎么算：</b>用 14 种公开方法在多个周期上各自算出候选价位，再把距离很近的合并。被越多方法、越多周期同时指向的价位排得越靠前，这只说明很多人可能盯着它；历史研究里，这样的价位并不比随机画的价格线更守得住。点击每个价位下面的方法标签，可以看到这种方法是什么、为什么这里有它。
+            <b className="text-ink">我们怎么算：</b>用 14 种公开方法在多个周期上各自算出候选价位，再把距离很近的合并。被越多方法、越多周期同时指向的价位排得越靠前，这只说明很多人可能盯着它；历史研究里，这样的价位并不比随机画的价格线更守得住。方法标签按家族上色（同一种颜色是同一类方法），★ 是这个价位上贡献最多的方法，“×3”表示这种方法在这里给了 3 条；点击标签可以看到这种方法是什么、在这里给了哪几条。
           </p>
           <p>
             <b className="text-ink">怎么用：</b>关键位适合用来放认错位、观察价格到这里的反应，不是碰到就买卖的理由：历史研究里，碰到支撑就买比随机入场还差，等价格在这里止跌转强再考虑（见“实时盯盘”）。止损放在支撑外一点。支撑被收盘有效跌破后，很多人会把它当成新的阻力。
@@ -110,6 +111,9 @@ export function LevelsTab({ a, mtf, mode, onTf }: TabProps) {
           </p>
         </Section>
         <Section title="关键价位（按价格）">
+          <div className="mb-2.5">
+            <FamilyLegend families={all.flatMap((l) => l.methodIds.map((id) => METHOD_FAMILY[id]))} />
+          </div>
           <ul className="space-y-2">
             {all.map((l) => {
               const isRes = l.side === "resistance";
@@ -134,10 +138,25 @@ export function LevelsTab({ a, mtf, mode, onTf }: TabProps) {
                   </div>
                   <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-ink-3">
                     <span>{l.methods.length} 种方法 · {l.contributions} 个贡献</span>
-                    <span>· {l.timeframes.map((t) => TF_LABEL[t]).join(" / ")}</span>
+                    <span>· {tfsLargestFirst(l.timeframes).map((t) => TF_LABEL[t]).join(" / ")}</span>
                   </div>
-                  <MethodChips level={l} max={mode === "pro" ? 8 : 3} />
-                  {mode === "pro" && <p className="mt-1.5 text-[11px] leading-relaxed text-ink-3">{l.labels.join(" · ")}</p>}
+                  <MethodChips level={l} max={mode === "pro" ? undefined : 3} />
+                  {mode === "pro" && (
+                    <details className="mt-1.5 text-[11px] text-ink-3">
+                      <summary className="cursor-pointer select-none hover:text-ink">看 {l.contributions} 条明细</summary>
+                      <ul className="mt-1 space-y-0.5 leading-relaxed">
+                        {l.methodIds.map((id, k) => (
+                          <li key={id} className="flex gap-1.5">
+                            <span className="mt-[5px] inline-block h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: familyColor(METHOD_FAMILY[id]) }} aria-hidden="true" />
+                            <span>
+                              <span className="text-ink-2">{l.methods[k]}：</span>
+                              {(l.labelsByMethod[id] ?? []).join("、")}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
                 </li>
               );
             })}

@@ -3,11 +3,12 @@
 import { useState } from "react";
 import type { Level } from "@/lib/ta/levels";
 import type { SignalStats } from "@/lib/ta/stats";
-import { TF_LABEL, type Timeframe } from "@/lib/types";
+import { TF_LABEL, TIMEFRAMES, type Timeframe } from "@/lib/types";
 import { LightPill } from "../Light";
 import { Term } from "../Term";
 import { Explain } from "../Explain";
 import { fmtPct, fmtPrice } from "./format";
+import { METHOD_FAMILY, familyStyle } from "./level-tags";
 
 export function Section({ title, extra, children, className = "" }: { title: React.ReactNode; extra?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
@@ -132,8 +133,8 @@ export function LevelsList({ supports, resistances, price, mode, onHover }: { su
         </div>
         <div className="truncate text-[11px] text-ink-3" title={l.labels.join("、")}>
           {mode === "pro"
-            ? `方法 ${l.methods.length} · 贡献 ${l.contributions} · ${l.timeframes.map((t) => TF_LABEL[t]).join("/")}`
-            : `${l.methods.length} 种方法同时指向这里 · ${l.timeframes.map((t) => TF_LABEL[t]).join("/")}`}
+            ? `方法 ${l.methods.length} · 贡献 ${l.contributions} · ${tfsLargestFirst(l.timeframes).map((t) => TF_LABEL[t]).join("/")}`
+            : `${l.methods.length} 种方法同时指向这里 · ${tfsLargestFirst(l.timeframes).map((t) => TF_LABEL[t]).join("/")}`}
         </div>
         <MethodChips level={l} max={mode === "pro" ? 4 : 2} small />
       </div>
@@ -152,27 +153,54 @@ export function LevelsList({ supports, resistances, price, mode, onHover }: { su
   );
 }
 
-/** Clickable method badges for a level; each opens the method's explanation. */
-export function MethodChips({ level, max = 3, small = false }: { level: Level; max?: number; small?: boolean }) {
+/** Largest timeframe first: 周线 / 日线 / 4小时 / … */
+export function tfsLargestFirst(tfs: Timeframe[]): Timeframe[] {
+  return [...tfs].sort((a, b) => TIMEFRAMES.indexOf(b) - TIMEFRAMES.indexOf(a));
+}
+
+/**
+ * Clickable method badges for a level, colored by method family; each opens the method's explanation and the
+ * contributions it gave here. Methods past `max` hide behind a "还有 N 种" button.
+ */
+export function MethodChips({ level, max, small = false }: { level: Level; max?: number; small?: boolean }) {
+  const [all, setAll] = useState(false);
+  const shown = all || max == null ? level.methodIds : level.methodIds.slice(0, max);
+  const hidden = level.methodIds.length - shown.length;
+  const size = small ? "py-0 text-[10px]" : "py-0.5 text-[11px]";
   return (
-    <div className={`flex flex-wrap gap-1 ${small ? "mt-1" : "mt-1.5"}`}>
-      {level.methodIds.slice(0, max).map((id, k) => (
-        <Explain
-          key={id}
-          k={`lvl:${id}`}
-          variant="plain"
-          className={`rounded border border-line px-1.5 ${small ? "py-0 text-[10px]" : "py-0.5 text-[11px]"} text-ink-2 hover:border-ink-3 hover:text-ink`}
-          now={
-            <>
-              这个价位（{fmtPrice(level.price)}，距现价 {fmtPct(level.distancePct, 1)}）由 {(level.labelsByMethod[id] ?? []).join("、")} 给出，同时还有 {level.methods.length - 1} 种其他方法指向这里。
-            </>
-          }
-        >
-          {k === 0 ? "★ " : ""}
-          {level.methods[k]}
-        </Explain>
-      ))}
-      {level.methodIds.length > max && <span className={`${small ? "text-[10px]" : "text-[11px]"} text-ink-3`}>+{level.methodIds.length - max}</span>}
+    <div className={`flex flex-wrap items-center gap-1 ${small ? "mt-1" : "mt-1.5"}`}>
+      {shown.map((id, k) => {
+        const own = level.labelsByMethod[id] ?? [];
+        return (
+          <span key={id} title={k === 0 ? "★ 这个价位上贡献最多的方法" : undefined} className="inline-flex">
+            <Explain
+              k={`lvl:${id}`}
+              variant="plain"
+              className={`rounded border px-1.5 ${size} hover:brightness-125`}
+              style={familyStyle(METHOD_FAMILY[id])}
+              now={
+                <>
+                  这个价位（{fmtPrice(level.price)}，距现价 {fmtPct(level.distancePct, 1)}）上，{level.methods[k]}给了 {own.length} 条：{own.join("、")}。同时还有 {level.methods.length - 1} 种其他方法指向这里。
+                </>
+              }
+            >
+              {k === 0 ? "★ " : ""}
+              {level.methods[k]}
+              {own.length > 1 && <span className="num ml-1 opacity-70">×{own.length}</span>}
+            </Explain>
+          </span>
+        );
+      })}
+      {hidden > 0 && (
+        <button className={`rounded border border-dashed border-line px-1.5 ${size} text-ink-3 hover:text-ink`} onClick={() => setAll(true)}>
+          还有 {hidden} 种
+        </button>
+      )}
+      {all && max != null && level.methodIds.length > max && (
+        <button className={`px-1 ${size} text-ink-3 hover:text-ink`} onClick={() => setAll(false)}>
+          收起
+        </button>
+      )}
     </div>
   );
 }

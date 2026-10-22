@@ -28,11 +28,12 @@ interface Props {
   now?: React.ReactNode;
   stats?: ExplainStats;
   className?: string;
+  style?: React.CSSProperties;
 }
 
 const CARD_W = 340;
 
-export function Explain({ k, children, variant = "term", now, stats, className = "" }: Props) {
+export function Explain({ k, children, variant = "term", now, stats, className = "", style }: Props) {
   const kn = getKnowledge(k);
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top: number; left: number; mobile: boolean } | null>(null);
@@ -135,6 +136,7 @@ export function Explain({ k, children, variant = "term", now, stats, className =
         ref={trigger}
         type="button"
         className={`${triggerCls} ${className}`}
+        style={style}
         onClick={(e) => {
           e.stopPropagation();
           if (!open) track("open_explain");
