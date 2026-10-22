@@ -18,6 +18,7 @@ import { bufferAtr, structureAnchors } from "./ta/risk.ts";
 import { getCalibration } from "./server/riskcalib.ts";
 import { buildVerdict, type Verdict } from "./ta/verdict.ts";
 import { indicatorFlips, signalEvents } from "./ta/signals.ts";
+import { tdDetailOf, type TdDetail } from "./tdbrief.ts";
 
 /**
  * Everything the coin page needs for one symbol/timeframe, computed on the
@@ -441,26 +442,7 @@ export interface LightSummary {
   trendScore: number;
   /** short TD text, e.g. "涨 5/9" */
   td: string;
-  tdDetail: {
-    setupSide: TdState["current"]["setupSide"];
-    setupCount: number;
-    setupLength: number;
-    countdownLength: number;
-    countdown: { side: "buy" | "sell"; count: number } | null;
-    last: { side: "buy" | "sell"; kind: TdEvent["kind"]; barsAgo: number; invalidated: boolean } | null;
-    /** close the next bar needs to keep the current setup counting */
-    nextCloseNeeded: number | null;
-    tdstResistance: number | null;
-    tdstSupport: number | null;
-    /** the latest 9 (either side) and what its countdown did since: still counting, a 13 (failed once a close passed its risk level), or neither (cancelled) */
-    nine: {
-      side: "buy" | "sell";
-      barsAgo: number;
-      perfected: boolean;
-      countdown: number | null;
-      thirteen: { barsAgo: number; riskLevel: number; invalidated: boolean } | null;
-    } | null;
-  };
+  tdDetail: TdDetail;
   votes: { bull: number; bear: number; total: number };
   s1: { price: number; distancePct: number } | null;
   r1: { price: number; distancePct: number } | null;
@@ -477,9 +459,6 @@ export function summarize(a: Analysis): LightSummary {
   const lvl = (l?: Level) => (l ? { price: l.price, distancePct: Math.round(l.distancePct * 100) / 100 } : null);
   const closed = a.forming ? a.candles.slice(0, -1) : a.candles;
   const lastClosed = closed[closed.length - 1];
-  const barsSince = (t: number) => closed.length - 1 - closed.findIndex((x) => x.t === t);
-  const nineEv = a.td.events.findLast((e) => e.kind === "setup9");
-  const thirteenEv = nineEv && a.td.events.findLast((e) => e.kind === "countdown13" && e.side === nineEv.side && e.i >= nineEv.i);
   return {
     tf: a.tf,
     close: lastClosed.c,
@@ -490,32 +469,7 @@ export function summarize(a: Analysis): LightSummary {
     trend: a.trend.label,
     trendScore: a.trend.current,
     td: cur.setupSide ? `${cur.setupSide === "buy" ? "跌" : "涨"} ${Math.min(cur.setupCount, cur.setupLength)}/${cur.setupLength}` : "—",
-    tdDetail: {
-      setupSide: cur.setupSide,
-      setupCount: cur.setupCount,
-      setupLength: cur.setupLength,
-      countdownLength: cur.countdownLength,
-      countdown: cur.countdown ? { side: cur.countdown.side, count: cur.countdown.count } : null,
-      last: cur.lastSignal ? { side: cur.lastSignal.side, kind: cur.lastSignal.kind, barsAgo: cur.lastSignal.barsAgo, invalidated: cur.lastSignal.invalidated } : null,
-      nextCloseNeeded: cur.nextCloseNeeded,
-      tdstResistance: cur.tdstResistance,
-      tdstSupport: cur.tdstSupport,
-      nine: nineEv
-        ? {
-            side: nineEv.side,
-            barsAgo: barsSince(nineEv.t),
-            perfected: nineEv.perfected,
-            countdown: cur.countdown && cur.countdown.side === nineEv.side ? cur.countdown.count : null,
-            thirteen: thirteenEv
-              ? {
-                  barsAgo: barsSince(thirteenEv.t),
-                  riskLevel: thirteenEv.riskLevel,
-                  invalidated: closed.some((x) => x.t > thirteenEv.t && (thirteenEv.side === "buy" ? x.c < thirteenEv.riskLevel : x.c > thirteenEv.riskLevel)),
-                }
-              : null,
-          }
-        : null,
-    },
+    tdDetail: tdDetailOf(a.td, closed),
     votes: { bull: cats.reduce((x, k) => x + k.bull, 0), bear: cats.reduce((x, k) => x + k.bear, 0), total: a.indicators.total },
     s1: lvl(a.levels.supports[0]),
     r1: lvl(a.levels.resistances[0]),

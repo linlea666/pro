@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createHash } from "node:crypto";
-import { analyze, multiTimeframe, relevel, type Analysis, type LightSummary } from "../analysis.ts";
+import { analyze, multiTimeframe, relevel, summarize, type Analysis, type LightSummary } from "../analysis.ts";
+import { forbiddenPhrase, tdBrief } from "../tdbrief.ts";
 import { TF_LABEL, type Timeframe } from "../types.ts";
 import { getDb } from "./db.ts";
 import { decrypt, encrypt } from "./crypto.ts";
@@ -83,6 +84,39 @@ const OUTPUT_SCHEMA = {
   required: ["headline", "summary", "timeframes", "levels", "watch", "invalidation", "caution"],
   additionalProperties: false,
 } as const;
+
+/** What the TD tab's interpretation is about; "overview" is the original card. */
+export type AiKind = "overview" | "td";
+
+export const TD_PROMPT = `你是一位做了多年合约的交易员，在「信号灯」网站上给新手讲 TD 序列（DeMark）。
+你会收到系统已经算好的多周期 TD 计数（JSON），其中 template 是按规则写好的解读。请只依据这些数据，用简体中文、像交易员跟新手聊天那样重写一遍。
+
+要求：
+1. TD 在我们的研究里没有可证明的方向优势。它只描述“一段涨跌走了多久”。绝不预测涨跌、反转、目标价或幅度；不说“会冲上”“一大波”“大级别反转”“见顶”“见底”“抄底”这类话。
+2. 可以说的：每个周期数到哪里、13 是否出现或失败、风险位和 TDST 在哪里、下一根收盘到哪里计数继续或取消、上一个信号之后实际走了多少、历史统计（照 stats 原样引用，不要改数字）。
+3. 用到术语（9、13、风险位、TDST）时顺带用半句话解释。
+4. 不给买卖指令和仓位建议。可以说“想用它的人通常会等什么条件”，比如等风险位被守住或被收盘越过。
+5. 快照之外的信息（新闻、链上、宏观、形态如头肩底）一律不要编造。
+6. 简短：conclusion 不超过 40 个字；timeframes、review 各不超过 120 个字；watch 给 2–3 条，每条不超过 40 个字。`;
+
+const TD_SCHEMA = {
+  type: "object",
+  properties: {
+    conclusion: { type: "string", description: "一句话结论" },
+    timeframes: { type: "string", description: "多周期各自数到哪里、是否一致" },
+    review: { type: "string", description: "上一个 9 / 13 之后实际怎么走的，失败与否" },
+    watch: { type: "array", items: { type: "string" }, description: "接下来要盯的 2–3 个收盘价条件" },
+  },
+  required: ["conclusion", "timeframes", "review", "watch"],
+  additionalProperties: false,
+} as const;
+
+export interface TdAiContent {
+  conclusion: string;
+  timeframes: string;
+  review: string;
+  watch: string[];
+}
 
 export interface AiContent {
   headline: string;
@@ -277,7 +311,7 @@ interface CallResult {
   fellBack: boolean;
 }
 
-async function callClaude(c: AiConfig, system: string, user: string, opts: { json: boolean; effort?: Effort }): Promise<CallResult> {
+async function callClaude(c: AiConfig, system: string, user: string, opts: { json: boolean; effort?: Effort; schema?: Record<string, unknown> }): Promise<CallResult> {
   const cl = client(c);
   const fbKey = `${c.revision}|${c.baseUrl}`;
   const useFallback = c.fallback && !fallbackUnsupported.has(fbKey);
@@ -288,7 +322,7 @@ async function callClaude(c: AiConfig, system: string, user: string, opts: { jso
     messages: [{ role: "user", content: user }],
     output_config: {
       effort: opts.effort ?? c.effort,
-      ...(opts.json ? { format: { type: "json_schema", schema: OUTPUT_SCHEMA as unknown as Record<string, unknown> } } : {}),
+      ...(opts.json ? { format: { type: "json_schema", schema: opts.schema ?? (OUTPUT_SCHEMA as unknown as Record<string, unknown>) } } : {}),
     },
   };
   let res: Anthropic.Beta.BetaMessage;
@@ -317,8 +351,8 @@ async function callClaude(c: AiConfig, system: string, user: string, opts: { jso
   };
 }
 
-export interface Interpretation {
-  content: AiContent;
+export interface Interpretation<C = AiContent> {
+  content: C;
   model: string;
   createdAt: number;
   barTime: number;
@@ -326,18 +360,24 @@ export interface Interpretation {
   stale?: boolean;
 }
 
-const pending = new Map<string, Promise<Interpretation>>();
+const pending = new Map<string, Promise<Interpretation<AiContent | TdAiContent>>>();
 
-function latestCached(coin: string, tf: Timeframe): Interpretation | null {
-  const r = getDb().prepare("SELECT * FROM ai_cache WHERE coin = ? AND tf = ? ORDER BY created_at DESC LIMIT 1").get(coin, tf) as
+/** ai_cache keys of the TD card start with "td|"; the original card's keys start with the coin. */
+const kindFilter = (kind: AiKind) => (kind === "td" ? "key LIKE 'td|%'" : "key NOT LIKE 'td|%'");
+
+function latestCached(coin: string, tf: Timeframe, kind: AiKind): Interpretation<AiContent | TdAiContent> | null {
+  const r = getDb().prepare(`SELECT * FROM ai_cache WHERE coin = ? AND tf = ? AND ${kindFilter(kind)} ORDER BY created_at DESC LIMIT 1`).get(coin, tf) as
     | { content: string; model: string; created_at: number; bar_t: number }
     | undefined;
   return r ? { content: JSON.parse(r.content), model: r.model, createdAt: r.created_at, barTime: r.bar_t, cached: true, stale: true } : null;
 }
 
-const cacheKey = (c: AiConfig, coin: string, tf: Timeframe, barTime: number) => `${coin}|${tf}|${barTime}|${c.revision}|${promptHash(c)}`;
+const cacheKey = (c: AiConfig, coin: string, tf: Timeframe, barTime: number, kind: AiKind = "overview") =>
+  kind === "td"
+    ? `td|${coin}|${tf}|${barTime}|${c.revision}|${createHash("sha1").update(`${c.model}|${c.effort}|${TD_PROMPT}`).digest("hex").slice(0, 8)}`
+    : `${coin}|${tf}|${barTime}|${c.revision}|${promptHash(c)}`;
 
-function cachedAt(key: string): Interpretation | null {
+function cachedAt(key: string): Interpretation<AiContent | TdAiContent> | null {
   const hit = getDb().prepare("SELECT content, model, created_at, bar_t FROM ai_cache WHERE key = ?").get(key) as
     | { content: string; model: string; created_at: number; bar_t: number }
     | undefined;
@@ -345,20 +385,39 @@ function cachedAt(key: string): Interpretation | null {
 }
 
 /** The interpretation already generated for the last closed bar, if anyone asked for it. Never calls the model. */
-export async function peekInterpretation(coin: string, tf: Timeframe): Promise<Interpretation | null> {
+export async function peekInterpretation(coin: string, tf: Timeframe, kind: AiKind = "overview"): Promise<Interpretation<AiContent | TdAiContent> | null> {
   const c = getAiConfig();
   if (!c.enabled || !c.apiKeyEnc) return null;
   const a = await analyze(coin, tf);
-  return cachedAt(cacheKey(c, coin, tf, a.lastClosedT));
+  return cachedAt(cacheKey(c, coin, tf, a.lastClosedT, kind));
+}
+
+/** The TD card's input: every timeframe's TD state (the focus one from this analysis) plus the rule-based write-up. */
+export function buildTdSnapshot(a: Analysis, mtf: LightSummary[]) {
+  const focus = summarize(a);
+  const rows = [...mtf.filter((m) => m.tf !== a.tf), focus].sort((x, y) => mtf.findIndex((m) => m.tf === x.tf) - mtf.findIndex((m) => m.tf === y.tf)).map((m) => ({ tf: m.tf, d: m.tdDetail }));
+  const ls = a.td.current.lastSignal;
+  const last = ls ? { side: ls.side, kind: ls.kind, barsAgo: ls.barsAgo, price: ls.price, riskLevel: ls.riskLevel, invalidated: ls.invalidated, changePct: ls.changePct } : null;
+  const stats = a.stats.filter((s) => s.key.startsWith("td_"));
+  return {
+    coin: a.coin,
+    focusTimeframe: TF_LABEL[a.tf],
+    close: a.closedPrice,
+    template: tdBrief(rows, a.tf, last, stats),
+    timeframes: rows.map((r) => ({ timeframe: TF_LABEL[r.tf], ...r.d })),
+    lastSignal: last,
+    stats: stats.map((s) => ({ name: s.name, samples: s.samples, winRatePct: s.winRate, randomPct: s.baseWinRate, reliability: s.reliability })),
+    statsWindow: `信号出现后 ${a.horizonText}`,
+  };
 }
 
 /** Get (or generate once) the interpretation for the last closed bar. */
-export async function interpret(coin: string, tf: Timeframe): Promise<Interpretation> {
+export async function interpret(coin: string, tf: Timeframe, kind: AiKind = "overview"): Promise<Interpretation<AiContent | TdAiContent>> {
   const c = getAiConfig();
   if (!c.enabled || !c.apiKeyEnc) throw new AiError("AI 解读未启用", "disabled");
   const a = await analyze(coin, tf);
   const barTime = a.lastClosedT;
-  const key = cacheKey(c, coin, tf, barTime);
+  const key = cacheKey(c, coin, tf, barTime, kind);
 
   const hit = cachedAt(key);
   if (hit) return hit;
@@ -368,18 +427,20 @@ export async function interpret(coin: string, tf: Timeframe): Promise<Interpreta
   if (callsToday() >= c.dailyLimit) {
     logger.warn("ai", "今日 AI 解读额度已用完", { limit: c.dailyLimit, coin, tf });
     raiseAlert("ai", "今日 AI 解读额度已用完", { 额度: c.dailyLimit });
-    const old = latestCached(coin, tf);
+    const old = latestCached(coin, tf, kind);
     if (old) return old;
     throw new AiError(`今日 AI 解读额度（${c.dailyLimit} 次）已用完，明天会自动恢复`, "quota");
   }
 
-  const job = (async (): Promise<Interpretation> => {
+  const job = (async (): Promise<Interpretation<AiContent | TdAiContent>> => {
     const t0 = Date.now();
     const mtf = await multiTimeframe(coin);
-    const snapshot = buildSnapshot(a, mtf);
     let r: CallResult;
     try {
-      r = await callClaude(c, c.prompt || DEFAULT_PROMPT, `请解读下面这份行情快照：\n${JSON.stringify(snapshot)}`, { json: true });
+      r =
+        kind === "td"
+          ? await callClaude(c, TD_PROMPT, `请解读下面这份多周期 TD 计数：\n${JSON.stringify(buildTdSnapshot(a, mtf))}`, { json: true, schema: TD_SCHEMA as unknown as Record<string, unknown> })
+          : await callClaude(c, c.prompt || DEFAULT_PROMPT, `请解读下面这份行情快照：\n${JSON.stringify(buildSnapshot(a, mtf))}`, { json: true });
     } catch (e) {
       recordUsage(false);
       const err = describeApiError(e);
@@ -392,24 +453,30 @@ export async function interpret(coin: string, tf: Timeframe): Promise<Interpreta
       logger.warn("ai", `AI 拒绝了解读请求 ${coin} ${tf}`, { category: r.refusalCategory, model: r.model });
       throw new AiError("AI 这次没有给出解读，请稍后再试", "refusal");
     }
-    let content: AiContent;
+    let content: AiContent | TdAiContent;
     try {
-      content = JSON.parse(r.text) as AiContent;
-      if (!content.headline || !Array.isArray(content.watch)) throw new Error("字段缺失");
+      content = JSON.parse(r.text) as AiContent | TdAiContent;
+      if (!(kind === "td" ? (content as TdAiContent).conclusion : (content as AiContent).headline) || !Array.isArray(content.watch)) throw new Error("字段缺失");
     } catch (e) {
       logger.error("ai", `AI 返回内容无法解析 ${coin} ${tf}`, { error: (e as Error).message, stopReason: r.stopReason, sample: r.text.slice(0, 300) });
       throw new AiError("AI 返回的内容格式不正确", "bad_output");
+    }
+    // the TD card must not make price calls the research can't back; such a write-up is dropped and the page keeps the template
+    const bad = kind === "td" ? forbiddenPhrase(JSON.stringify(content)) : null;
+    if (bad) {
+      logger.warn("ai", `TD 解读含预测性说法，已丢弃 ${coin} ${tf}`, { phrase: bad, model: r.model });
+      throw new AiError("AI 这次的说法超出了研究能支撑的范围", "bad_output");
     }
     const ms = Date.now() - t0;
     const now = Date.now();
     getDb()
       .prepare("INSERT OR REPLACE INTO ai_cache (key, coin, tf, bar_t, created_at, model, content, input_tokens, output_tokens, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(key, coin, tf, barTime, now, r.model, JSON.stringify(content), r.usage.input_tokens, r.usage.output_tokens, ms);
-    // keep the table small: only the newest 20 per coin/timeframe
+    // keep the table small: only the newest 20 per coin/timeframe/card
     getDb()
-      .prepare("DELETE FROM ai_cache WHERE coin = ? AND tf = ? AND key NOT IN (SELECT key FROM ai_cache WHERE coin = ? AND tf = ? ORDER BY created_at DESC LIMIT 20)")
+      .prepare(`DELETE FROM ai_cache WHERE coin = ? AND tf = ? AND ${kindFilter(kind)} AND key NOT IN (SELECT key FROM ai_cache WHERE coin = ? AND tf = ? AND ${kindFilter(kind)} ORDER BY created_at DESC LIMIT 20)`)
       .run(coin, tf, coin, tf);
-    logger.info("ai", `AI 解读生成 ${coin} ${tf}`, {
+    logger.info("ai", `AI 解读生成 ${coin} ${tf}${kind === "td" ? "（TD）" : ""}`, {
       durationMs: ms,
       model: r.model,
       fellBack: r.fellBack || undefined,

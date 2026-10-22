@@ -10,6 +10,7 @@ import { fmtPct, fmtPrice, spanAgo } from "./format";
 import { Explainer, Section, StatsTable } from "./shared";
 import type { TabProps } from "./CoinView";
 import { useReplay } from "./replay";
+import { TdBriefCard } from "./TdBriefCard";
 
 const UP = "#199e70", DOWN = "#e66767";
 
@@ -53,6 +54,7 @@ export function TdTab({ a, mtf, mode, onTf }: TabProps) {
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div className="min-w-0 space-y-4">
+        <TdBriefCard a={a} mtf={mtf} mode={mode} />
         <section className="card p-3">
           <div className="mb-1 flex flex-wrap items-center gap-3 px-1 text-xs text-ink-3">
             <span>↑9 = 买入 9 · ↓9 = 卖出 9 · ★ = 完美 9 · 13 = 衰竭信号</span>
