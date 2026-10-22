@@ -470,6 +470,34 @@ function Leverage({ v, mode }: { v: View; mode: Mode }) {
           )
         );
       })()}
+      {mode === "beginner" ? (
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+          {v.leverage.map((r) => (
+            <div key={r.lev} className="rounded-lg border border-line p-3">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-[15px] font-semibold">{r.lev} 倍</span>
+                <span className="text-[11px] text-ink-3">反着走 {r.liqPct.toFixed(1)}% 就爆仓</span>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2 text-[12px]">
+                {(
+                  [
+                    ["做多 · 当天", r.day.long],
+                    ["做空 · 当天", r.day.short],
+                    [`做多 · 拿 ${HOLD_DAYS} 天`, r.week.long],
+                    [`做空 · 拿 ${HOLD_DAYS} 天`, r.week.short],
+                  ] as [string, LevSide][]
+                ).map(([k, s]) => (
+                  <div key={k}>
+                    <div className="text-[11px] text-ink-3">{k}被打爆</div>
+                    <div className={`num font-medium ${s.share >= 10 ? "text-down" : ""}`}>{s.share < 0.1 && s.share > 0 ? "<0.1" : s.share.toFixed(1)}%</div>
+                    <div className="text-[10px] text-ink-3">{every(s.everySec)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
       <div className="overflow-x-auto">
         <table className="w-full min-w-[520px] text-[13px]">
           <thead>
@@ -496,6 +524,7 @@ function Leverage({ v, mode }: { v: View; mode: Mode }) {
           </tbody>
         </table>
       </div>
+      )}
       <div className="mt-2 space-y-1 text-[11px] leading-relaxed text-ink-3">
         <p>
           算法：假设每天 UTC 0 点（北京时间 8 点）开盘时开仓，看当天（或之后 {HOLD_DAYS} 天里）的最低价 / 最高价有没有碰到爆仓价，数一数这段时间里有多少天会被打爆。爆仓价按维持保证金率 0.5% 估算，交易所实际档位和手续费会让爆仓更早。
