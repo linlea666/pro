@@ -84,7 +84,7 @@ function LadderSide({ v, dir, mode }: { v: View; dir: 1 | -1; mode: Mode }) {
             <tr className="text-left text-[11px] text-ink-3">
               <th className="pb-1.5 font-normal">{word}</th>
               <th className="pb-1.5 font-normal">价格</th>
-              <th className="pb-1.5 font-normal">一天内到过的日子</th>
+              <th className="pb-1.5 font-normal">历史上有多少天{dir < 0 ? "跌" : "涨"}到过（{dir < 0 ? "最低" : "最高"}价）</th>
               {mode === "pro" && <th className="pb-1.5 font-normal">已{word} {sofar.toFixed(1)}% 的日子里</th>}
               <th className="pb-1.5 font-normal" />
             </tr>
@@ -130,7 +130,7 @@ export function LadderCard({ v, mode }: { v: View; mode: Mode }) {
         <LadderSide v={v} dir={1} mode={mode} />
       </div>
       <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
-        “一天内到过”按 UTC 日线算：从前一天收盘到当天最低（最高）价走了多远，和“24 小时前的价格”是同一个意思。这些是价格的刻度，不是支撑阻力；想看关键位，去实时盯盘。
+        例：“−5% · 6.1%”= 这段时间里有 6.1% 的日子，当天最低价比前一天收盘低了 5% 或更多（影线碰到就算，不管收盘收回多少），平均约 16 天一次。按 UTC 日线算，“前一天收盘”和“24 小时前的价格”是同一个意思。这些是价格的刻度，不是支撑阻力；想看关键位，去实时盯盘。
       </p>
     </Card>
   );
