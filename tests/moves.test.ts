@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { after, atLeast, bandOf, bucketTable, changes, leverageTable, liqPct, pctRank, quantile, sortedAbs, swingAfter, topMoves, worstSpan } from "../src/lib/ta/moves.ts";
 import type { Candle } from "../src/lib/types.ts";
+import * as MV from "../src/lib/ta/moves.ts";
 
 const D = 86400;
 /** Daily bars from closes; open = previous close, high / low 1% around the bar unless given. */
@@ -115,4 +116,49 @@ test("worst span and the swing after the biggest moves", () => {
   assert.ok(Math.abs(s.ratio - Math.round((3 / avg) * 100) / 100) < 1e-9);
   assert.equal(swingAfter(m.slice(0, 50), -1), null);
   assert.deepEqual(sortedAbs([{ t: 0, pct: -3 }, { t: 1, pct: 2 }]), [2, 3]);
+});
+
+test("price ladder: prices from the reference, shares of days, and the share given the move so far", () => {
+  const { excursions, priceLadder } = MV;
+  // four days after the first: lows 2%, 4%, 6% and 1% under the previous close of 100
+  const c: Candle[] = [{ t: 0, o: 100, h: 100, l: 100, c: 100, v: 1 }, ...[98, 96, 94, 99].map((l, i) => ({ t: (i + 1) * D, o: 100, h: 101, l, c: 100, v: 1 }))];
+  const ex = excursions(c);
+  assert.equal(ex.length, 4);
+  const { rows, givenN } = priceLadder(ex, 200, 3, -1, [2, 5]);
+  assert.equal(rows[0].price, 196);
+  assert.equal(rows[0].share, 75);
+  assert.equal(rows[0].reached, true);
+  assert.equal(rows[0].given, null);
+  assert.equal(rows[1].share, 25);
+  // two days fell at least 3%; one of them reached 5%
+  assert.equal(givenN, 2);
+  assert.equal(rows[1].given, 50);
+});
+
+test("rebounds compare big days with every day, one case per week", () => {
+  const { rebounds } = MV;
+  // flat at 100 except a −10% day (low 85) on day 10, then closes 95, 100, 102 … 102
+  const closes = Array.from({ length: 30 }, (_, i) => (i === 10 ? 90 : i === 11 ? 95 : i >= 12 ? 102 : 100));
+  const c = days(closes, { l: closes.map((x, i) => (i === 10 ? 85 : x * 0.99)) });
+  const rows = rebounds(c, -1, [5], [3, 7]);
+  assert.equal(rows.length, 2);
+  const big = rows[0];
+  assert.equal(big.n, 1);
+  assert.ok(Math.abs(big.bounce! - ((102 * 1.01) / 85 - 1) * 100) < 1e-9); // highest high in 3 days from the low
+  assert.deepEqual(big.back, [100, 100]);
+  assert.equal(rows[1].min, null);
+  assert.ok(rows[1].n > 20);
+});
+
+test("realised volatility and streaks", () => {
+  const { realizedVol, streaks } = MV;
+  const flat = days(Array.from({ length: 40 }, () => 100));
+  assert.equal(realizedVol(flat)[0].pct, 0);
+  assert.equal(realizedVol(flat).length, 10);
+  const s = streaks(days([100, 99, 98, 97, 98, 99, 98]));
+  assert.equal(s.longestDown!.n, 3);
+  assert.ok(Math.abs(s.longestDown!.pct + 3) < 1e-9);
+  assert.equal(s.longestUp!.n, 2);
+  assert.equal(s.current!.dir, -1);
+  assert.equal(s.current!.n, 1);
 });

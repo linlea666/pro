@@ -2,58 +2,15 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import type { ExtremeRow, MovesView as View, Period, WindowNow } from "@/lib/moves";
-import { HOLD_DAYS, MOVE_FACTS, type Freq, type LevSide, type MoveBand } from "@/lib/ta/moves";
+import type { ExtremeRow, MovesView as View, WindowNow } from "@/lib/moves";
+import { HOLD_DAYS, MOVE_FACTS, periodName, PERIODS, type Period, type Freq, type LevSide, type MoveBand } from "@/lib/ta/moves";
 import { track } from "../track";
+import { Band, Card, day, every, price, signed, tone, type Mode } from "./moves-ui";
+import { AfterBig, HowTo, LadderCard, PeriodNote, VolStreak } from "./MoreCards";
 
-type Mode = "beginner" | "pro";
 const REFRESH_MS = 30_000;
 const COINS = ["BTC", "ETH"];
 const WIN_NAME: Record<WindowNow["key"], string> = { "1h": "1 小时", "4h": "4 小时", "24h": "24 小时", "7d": "7 天" };
-const PERIOD_NAME: Record<Period, string> = { all: "全部历史", year: "最近 1 年", d90: "最近 90 天" };
-const BAND_CLASS: Record<MoveBand, string> = {
-  平常: "bg-panel-2 text-ink-3",
-  偏大: "bg-panel-2 text-ink-2",
-  大: "bg-warn-soft text-ink",
-  很大: "bg-warn-soft text-ink font-medium",
-  极端: "bg-ink text-bg font-medium",
-};
-
-const day = (t: number | null | undefined) => (t == null ? "—" : new Date(t * 1000).toISOString().slice(0, 10));
-const signed = (x: number | null | undefined, d = 2) => (x == null ? "—" : `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x).toFixed(d)}%`);
-const tone = (x: number | null | undefined) => (x == null || x === 0 ? "" : x < 0 ? "text-down" : "text-up");
-const price = (x: number | null) => (x == null ? "—" : x >= 1000 ? Math.round(x).toLocaleString("en-US") : x.toFixed(2));
-
-/** "约每 5 天一次", from seconds per occurrence. */
-function every(sec: number | null | undefined): string {
-  if (sec == null) return "没出现过";
-  const h = sec / 3600;
-  if (h < 1.5) return "约每小时一次";
-  if (h < 36) return `约每 ${Math.round(h)} 小时一次`;
-  const d = h / 24;
-  if (d < 1.5) return "约每天一次";
-  if (d < 60) return `约每 ${d < 10 ? Math.round(d * 10) / 10 : Math.round(d)} 天一次`;
-  if (d < 365) return `约每 ${Math.round(d / 30)} 个月一次`;
-  return `约每 ${Math.round((d / 365) * 10) / 10} 年一次`;
-}
-
-function Band({ b }: { b: MoveBand | null }) {
-  if (!b) return null;
-  return <span className={`rounded px-1.5 py-0.5 text-[11px] ${BAND_CLASS[b]}`}>{b}</span>;
-}
-
-function Card({ title, extra, children }: { title: React.ReactNode; extra?: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <section className="card min-w-0 p-4">
-      <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1">
-        <h2 className="text-[15px] font-semibold">{title}</h2>
-        {extra && <div className="ml-auto text-[12px] text-ink-3">{extra}</div>}
-      </div>
-      {children}
-    </section>
-  );
-}
-
 function Toggle<T extends string>({ value, options, onChange }: { value: T; options: [T, string][]; onChange: (v: T) => void }) {
   return (
     <div className="flex items-center gap-1 rounded-full border border-line p-1 text-sm">
@@ -72,6 +29,7 @@ export function MovesView() {
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("beginner");
   const [coin, setCoin] = useState("BTC");
+  const [period, setPeriod] = useState<Period>("main");
 
   useEffect(() => {
     try {
@@ -82,9 +40,12 @@ export function MovesView() {
       if (c && COINS.includes(c)) setCoin(c);
     } catch {}
     track("view_moves", "moves");
+  }, []);
+
+  useEffect(() => {
     let alive = true;
     const get = () =>
-      fetch("/api/moves")
+      fetch(`/api/moves?period=${period}`)
         .then(async (r) => {
           const b = await r.json().catch(() => null);
           if (!r.ok || !b || b.error) throw new Error(b?.error || "涨跌统计暂时无法加载，请稍后再试");
@@ -102,7 +63,7 @@ export function MovesView() {
       alive = false;
       clearInterval(id);
     };
-  }, []);
+  }, [period]);
 
   const save = (k: string, v: string) => {
     try {
@@ -129,6 +90,18 @@ export function MovesView() {
               save("sl-moves-coin", c);
             }}
           />
+          <select
+            value={period}
+            onChange={(e) => setPeriod(e.target.value as Period)}
+            aria-label="统计区间"
+            className="rounded-full border border-line bg-panel px-3 py-1.5 text-sm text-ink-2"
+          >
+            {PERIODS.map((p) => (
+              <option key={p} value={p}>
+                统计：{periodName(coin, p)}
+              </option>
+            ))}
+          </select>
           <Toggle
             value={mode}
             options={[
@@ -149,21 +122,34 @@ export function MovesView() {
       {v && (
         <>
           {error && <p className="rounded-lg bg-warn-soft px-3 py-2 text-[12px] text-ink">刷新失败（{error}），下面是上一次的数据。</p>}
+          {mode === "beginner" && <HowTo />}
           <Headline v={v} />
           <NowTiles v={v} mode={mode} />
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Buckets v={v} mode={mode} />
-            <Typicals v={v} mode={mode} />
-          </div>
+          <PeriodNote v={v} />
+          <LadderCard v={v} mode={mode} />
           <Leverage v={v} mode={mode} />
-          <Extremes v={v} mode={mode} />
+          <AfterBig v={v} mode={mode} />
+          {mode === "pro" ? (
+            <History v={v} mode={mode} />
+          ) : (
+            <details className="group">
+              <summary className="card cursor-pointer list-none p-4 text-[15px] font-semibold">
+                更多历史统计：每档占多少天、一般动多少、最大的涨跌
+                <span className="ml-2 text-[12px] font-normal text-ink-3 group-open:hidden">点开看</span>
+              </summary>
+              <div className="mt-4 space-y-4">
+                <History v={v} mode={mode} />
+              </div>
+            </details>
+          )}
+          {mode === "pro" && <VolStreak v={v} />}
           {d && <Compare coins={d.coins} />}
           <footer className="space-y-1 text-[11px] leading-relaxed text-ink-3">
             <p>
               数据：交易所 USDT 永续合约 K 线（{v.source}），日线按 UTC 0 点（北京时间 8 点）收盘；“现在”的涨跌用最新成交价和 1 / 4 / 24 小时、7 天前的价格比，和交易所 App 的 24 小时涨跌是同一种算法。
               {!v.live && " 实时行情暂时取不到，现在用的是最后一根保存的 1 小时收盘。"}
             </p>
-            <p>分位 = 历史上比现在小的那部分占多少，按大小算、不分涨跌；“多久一次”= 同一方向、至少这么大的次数摊到整段历史上。{MOVE_FACTS.notSignal}</p>
+            <p>分位 = 历史上比现在小的那部分占多少，按大小算、不分涨跌；“多久一次”= 同一方向、至少这么大的次数摊到所选统计区间上。{MOVE_FACTS.notSignal}</p>
           </footer>
         </>
       )}
@@ -175,7 +161,7 @@ export function MovesView() {
 
 function Headline({ v }: { v: View }) {
   const w = v.windows.find((x) => x.key === "24h")!;
-  const big = v.windows.filter((x) => x.key !== "24h" && x.rankAll != null && x.rankAll >= 95);
+  const big = v.windows.filter((x) => x.key !== "24h" && x.rank != null && x.rank >= 95);
   return (
     <section className="card space-y-1.5 p-4">
       <p className="text-[17px] font-semibold leading-snug sm:text-lg">
@@ -185,9 +171,9 @@ function Headline({ v }: { v: View }) {
         ) : (
           <>
             ，24 小时{w.pct < 0 ? "跌" : "涨"} <span className={`num ${tone(w.pct)}`}>{Math.abs(w.pct).toFixed(2)}%</span>
-            {w.rankAll != null && (
+            {w.rank != null && (
               <>
-                ：比历史上 <span className="num">{Math.round(w.rankAll)}%</span> 的日子都大，算「{w.band}」
+                ：在「{v.periodName}」里比 <span className="num">{Math.round(w.rank)}%</span> 的日子都大，算「{w.band}」
               </>
             )}
             {w.freq?.everySec != null && `，同方向这么大的${w.pct < 0 ? "跌" : "涨"}幅${every(w.freq.everySec)}`}。
@@ -196,7 +182,7 @@ function Headline({ v }: { v: View }) {
       </p>
       {big.length > 0 && (
         <p className="text-[13px] leading-relaxed text-ink-2">
-          {big.map((x) => `${WIN_NAME[x.key]}${x.pct! < 0 ? "跌" : "涨"} ${Math.abs(x.pct!).toFixed(2)}%（排在历史前 ${Math.max(0.1, Math.round((100 - x.rankAll!) * 10) / 10)}%）`).join("、")}，短时间里动得很快，止损和杠杆要按现在的波动来定。
+          {big.map((x) => `${WIN_NAME[x.key]}${x.pct! < 0 ? "跌" : "涨"} ${Math.abs(x.pct!).toFixed(2)}%（排在前 ${Math.max(0.1, Math.round((100 - x.rank!) * 10) / 10)}%）`).join("、")}，短时间里动得很快，止损和杠杆要按现在的波动来定。
         </p>
       )}
       <p className="text-[12px] leading-relaxed text-ink-3">{MOVE_FACTS.notSignal}</p>
@@ -222,9 +208,9 @@ function NowTiles({ v, mode }: { v: View; mode: Mode }) {
     <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
       {v.windows.map((w) => (
         <Tile key={w.key} label={WIN_NAME[w.key]} value={signed(w.pct)} valueClass={tone(w.pct)} chip={<Band b={w.band} />}>
-          {w.rankAll != null && (
+          {w.rank != null && (
             <p>
-              比 <b className="num text-ink-2">{w.rankAll}%</b> 的历史大{mode === "pro" && w.rankYear != null && <>（最近 1 年 {w.rankYear}%）</>}
+              比 <b className="num text-ink-2">{w.rank}%</b> 的时候大{mode === "pro" && v.period !== "all" && w.rankAll != null && <>（全部历史 {w.rankAll}%）</>}
             </p>
           )}
           {w.freq && w.pct != null && <p>{every(w.freq.everySec)}</p>}
@@ -251,6 +237,18 @@ function NowTiles({ v, mode }: { v: View; mode: Mode }) {
   );
 }
 
+function History({ v, mode }: { v: View; mode: Mode }) {
+  return (
+    <>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Buckets v={v} mode={mode} />
+        <Typicals v={v} mode={mode} />
+      </div>
+      <Extremes v={v} mode={mode} />
+    </>
+  );
+}
+
 // ---------------------------------------------------------------- ② buckets
 
 function freqCell(f: Freq, mode: Mode, side: "down" | "up") {
@@ -264,22 +262,13 @@ function freqCell(f: Freq, mode: Mode, side: "down" | "up") {
 }
 
 function Buckets({ v, mode }: { v: View; mode: Mode }) {
-  const [p, setP] = useState<Period>("all");
-  const b = v.buckets[p];
+  const b = v.buckets;
   const max = Math.max(1, ...b.rows.flatMap((r) => [r.down.share, r.up.share]));
   const label = (lo: number, hi: number | null) => (hi == null ? `${lo}% 以上` : `${lo}–${hi}%`);
   return (
     <Card
-      title="单日涨跌幅分档：历史上各占多少天"
-      extra={
-        <select value={p} onChange={(e) => setP(e.target.value as Period)} className="rounded-md border border-line bg-panel px-2 py-1 text-[12px] text-ink-2">
-          {(Object.keys(PERIOD_NAME) as Period[]).map((k) => (
-            <option key={k} value={k}>
-              {PERIOD_NAME[k]}
-            </option>
-          ))}
-        </select>
-      }
+      title="单日涨跌幅分档：各占多少天"
+      extra={v.periodName}
     >
       <table className="w-full text-[13px]">
         <thead>
@@ -311,8 +300,7 @@ function Buckets({ v, mode }: { v: View; mode: Mode }) {
         </tbody>
       </table>
       <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
-        按日线收盘到收盘算，共 {b.days.toLocaleString("en-US")} 天（{day(b.from)} 起）。“现在”按 24 小时涨跌标在全部历史的那一档。
-        {p !== "all" && " 行情冷热不同，最近一段和全部历史可能差很多，两个都看。"}
+        按日线收盘到收盘算，共 {b.days.toLocaleString("en-US")} 天（{day(b.from)} 起）。“现在”按 24 小时涨跌标出所在的那一档。
       </p>
     </Card>
   );
@@ -417,7 +405,7 @@ function Extremes({ v, mode }: { v: View; mode: Mode }) {
   const n = mode === "pro" ? 10 : 5;
   const s = v.swing;
   return (
-    <Card title="历史上最大的单日涨跌" extra={`每次至少隔 3 天，同一轮暴跌只算一次`}>
+    <Card title={`「${v.periodName}」里最大的单日涨跌`} extra="每次至少隔 3 天，同一轮暴跌只算一次">
       <div className="grid gap-4 lg:grid-cols-2">
         <div>
           <h3 className="mb-1 text-[13px] font-medium text-down">跌得最多的 {n} 天</h3>
@@ -455,7 +443,7 @@ function levCell(s: LevSide) {
 
 function Leverage({ v, mode }: { v: View; mode: Mode }) {
   return (
-    <Card title="开几倍杠杆，历史上多常被一根影线打爆" extra="逐仓、不算手续费和资金费">
+    <Card title="开几倍杠杆，多常被一根影线打爆" extra={`${v.periodName} · 逐仓、不算手续费和资金费`}>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[520px] text-[13px]">
           <thead>
@@ -484,7 +472,7 @@ function Leverage({ v, mode }: { v: View; mode: Mode }) {
       </div>
       <div className="mt-2 space-y-1 text-[11px] leading-relaxed text-ink-3">
         <p>
-          算法：假设每天 UTC 0 点（北京时间 8 点）开盘时开仓，看当天（或之后 {HOLD_DAYS} 天里）的最低价 / 最高价有没有碰到爆仓价，数一数历史上有多少天会被打爆。爆仓价按维持保证金率 0.5% 估算，交易所实际档位和手续费会让爆仓更早。
+          算法：假设每天 UTC 0 点（北京时间 8 点）开盘时开仓，看当天（或之后 {HOLD_DAYS} 天里）的最低价 / 最高价有没有碰到爆仓价，数一数这段时间里有多少天会被打爆。爆仓价按维持保证金率 0.5% 估算，交易所实际档位和手续费会让爆仓更早。
         </p>
         <p className="text-ink-2">
           杠杆越高，正常的日内波动就够把仓位打掉。按风险算仓位（止损放在结构之外、每笔只亏本金的 1–2%）比靠低杠杆“扛”更重要，计划页和实时盯盘都能按止损算仓位。
@@ -507,7 +495,7 @@ function Compare({ coins }: { coins: View[] }) {
             <tr className="text-left text-[11px] text-ink-3">
               <th className="pb-1.5 font-normal">币</th>
               <th className="pb-1.5 font-normal">24 小时</th>
-              <th className="pb-1.5 font-normal">在自己历史里</th>
+              <th className="pb-1.5 font-normal">在各自统计区间里</th>
               <th className="pb-1.5 font-normal">单日一半时候不超过</th>
               <th className="pb-1.5 font-normal">单日 95%</th>
               <th className="pb-1.5 font-normal">10 倍当天被打爆（多 / 空）</th>
@@ -522,7 +510,7 @@ function Compare({ coins }: { coins: View[] }) {
                   <td className="py-1.5 pr-2 font-medium">{c.coin}</td>
                   <td className={`py-1.5 pr-2 ${tone(w.pct)}`}>{signed(w.pct)}</td>
                   <td className="py-1.5 pr-2">
-                    {w.rankAll != null ? `${Math.round(w.rankAll)}%` : "—"} <Band b={w.band} />
+                    {w.rank != null ? `${Math.round(w.rank)}%` : "—"} <Band b={w.band} />
                   </td>
                   <td className="py-1.5 pr-2">{w.typical.p50 == null ? "—" : `${w.typical.p50.toFixed(1)}%`}</td>
                   <td className="py-1.5 pr-2">{w.typical.p95 == null ? "—" : `${w.typical.p95.toFixed(1)}%`}</td>
