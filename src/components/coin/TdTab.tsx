@@ -138,13 +138,13 @@ function TdMtfTable({ mtf, current, onTf, pro }: { mtf: LightSummary[] | null; c
       ) : (
         <>
           <ul className="divide-y divide-line text-[13px]">
-            {/* big to small: the larger timeframe is the background for the smaller ones */}
-            {[...mtf].reverse().map((m) => (
+            {/* small to big: the small timeframes change most often, so the newest events sit on top */}
+            {mtf.map((m) => (
               <TdRow key={m.tf} m={m} active={m.tf === current} onTf={onTf} pro={pro} />
             ))}
           </ul>
           <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
-            从大周期排到小周期。跌势 / 涨势只描述已经连跌或连涨了多久，不是买卖建议。每行左边是这一行所用 K 线的收盘时刻（北京时间），最小的周期一收盘就自动更新。这里只描述每个周期数到了哪里；几个周期同时数到 9 或 13 是否更灵，还没有研究数字，单个信号以前灵不灵见下方统计。点击周期可切换。
+            从小周期排到大周期，当前周期加粗。跌势 / 涨势只描述已经连跌或连涨了多久，不是买卖建议。每行左边是这一行所用 K 线的收盘时刻（北京时间），最小的周期一收盘就自动更新。这里只描述每个周期数到了哪里；几个周期同时数到 9 或 13 是否更灵，还没有研究数字，单个信号以前灵不灵见下方统计。点击周期可切换。
           </p>
         </>
       )}
@@ -185,14 +185,20 @@ function TdRow({ m, active, onTf, pro }: { m: LightSummary; active: boolean; onT
               </div>
               {n.thirteen ? (
                 <div className="text-xs">
-                  <span style={{ color: n.thirteen.invalidated ? "var(--text-3)" : sideColor(n.side) }}>13 已出现 · {spanAgo(n.thirteen.barsAgo * sec)}</span>
+                  <span style={{ color: n.thirteen.invalidated ? "var(--text-3)" : sideColor(n.side) }}>
+                    {n.side === "buy" ? "跌势" : "涨势"} 13 走完 · {spanAgo(n.thirteen.barsAgo * sec)}
+                  </span>
+                  <span className="text-ink-3" title="DeMark 把数满 13 叫作“衰竭”：说明这段涨跌走了很久，研究里之后的涨跌和随机差不多"> （衰竭）</span>
                   {n.thirteen.invalidated ? (
                     <span className="text-ink-2">
                       {" "}
                       · 收盘已{n.side === "buy" ? "跌破" : "突破"}风险位 {fmtPrice(n.thirteen.riskLevel)}，这个 13 失败了
                     </span>
                   ) : (
-                    <span className="text-ink-3"> · 风险位 {fmtPrice(n.thirteen.riskLevel)} 还没被收盘越过</span>
+                    <span className="text-ink-3">
+                      {" "}
+                      · 风险位 <span className="num">{fmtPrice(n.thirteen.riskLevel)}</span> 还没被收盘越过，离现价 <span className="num">{n.thirteen.roomPct.toFixed(2)}%</span>
+                    </span>
                   )}
                 </div>
               ) : n.countdown != null ? (
@@ -205,8 +211,10 @@ function TdRow({ m, active, onTf, pro }: { m: LightSummary; active: boolean; onT
             <div className="text-ink-3">最近没有完整的 9</div>
           )}
           {counting && (
-            <div className="text-xs text-ink-2">
+            <div className={`text-xs ${n && d.setupSide !== n.side ? "border-l-2 border-line pl-2 text-ink-3" : "text-ink-2"}`}>
+              {n && d.setupSide !== n.side && <span style={{ color: sideColor(d.setupSide!) }}>{d.setupSide === "buy" ? "↓ " : "↑ "}</span>}
               {d.setupSide === "buy" ? "连跌" : "连涨"}计数 <span className="num">{d.setupCount}/{d.setupLength}</span>
+              {n && d.setupSide !== n.side && "（反方向，还没满 9）"}
               {d.nextCloseNeeded != null && (
                 <>
                   {" "}

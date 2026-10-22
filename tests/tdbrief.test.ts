@@ -16,6 +16,7 @@ const base: TdDetail = {
   tdstResistance: null,
   tdstSupport: null,
   nine: null,
+  timeline: [],
 };
 
 test("tdBrief: 12/13 countdown reads as 'went on long', with the cancel level and next-close condition", () => {
@@ -30,7 +31,7 @@ test("tdBrief: 12/13 countdown reads as 'went on long', with the cancel level an
 });
 
 test("tdBrief: failed 13 on another timeframe shows up in the review; mixed sides are called out", () => {
-  const m5: TdDetail = { ...base, setupSide: "buy", setupCount: 1, nine: { side: "buy", barsAgo: 60, perfected: true, countdown: null, thirteen: { barsAgo: 24, riskLevel: 82513.5, invalidated: true } } };
+  const m5: TdDetail = { ...base, setupSide: "buy", setupCount: 1, nine: { side: "buy", barsAgo: 60, perfected: true, countdown: null, thirteen: { barsAgo: 24, riskLevel: 82513.5, invalidated: true, roomPct: -1 } } };
   const h4: TdDetail = { ...base, setupSide: "buy", setupCount: 1, nine: { side: "sell", barsAgo: 1, perfected: true, countdown: 0, thirteen: null } };
   const m15: TdDetail = { ...base, setupSide: "buy", setupCount: 3, nine: { side: "buy", barsAgo: 28, perfected: false, countdown: 11, thirteen: null } };
   const b = tdBrief(
@@ -45,7 +46,7 @@ test("tdBrief: failed 13 on another timeframe shows up in the review; mixed side
   );
   assert.match(b.conclusion, /4小时刚出现涨势 9★/);
   assert.ok(b.review.some((r) => r.includes("5分钟的跌势 13 失败了")));
-  assert.ok(b.review[0].includes("目前按它的方向在走"));
+  assert.ok(b.review[0].includes("风险位 84,000 还没被收盘越过"));
   assert.match(b.alignment ?? "", /不一致/);
   assert.equal(b.timeframes.length, 3);
 });
@@ -84,6 +85,9 @@ test("tdDetailOf matches the engine on a synthetic run (9 then a running countdo
   assert.equal(d.nine?.side, "sell");
   assert.equal(d.setupSide, "sell");
   assert.ok(d.nine && (d.nine.countdown != null || d.nine.thirteen != null));
+  const nine = d.timeline.find((x) => x.kind === 9)!;
+  assert.ok(["counting", "reached13"].includes(nine.status));
+  assert.ok(nine.upPct > 0 && nine.downPct <= 0);
 });
 
 test("AI answers wrapped in a code fence or reshaped by a proxy are still read", async () => {
@@ -99,4 +103,36 @@ test("AI answers wrapped in a code fence or reshaped by a proxy are still read",
   assert.equal(ov.headline, "偏空");
   assert.throws(() => normalizeTd(parseLooseJson('{"conclusion":""}')));
   assert.throws(() => parseLooseJson("没有 JSON"));
+});
+
+test("classic cancellation reproduces another site's countdown marks on the same 499 daily bars; the default rule differs in 4", async () => {
+  const { readFileSync } = await import("node:fs");
+  const f = JSON.parse(readFileSync(new URL("./fixtures/td-btc-1d.json", import.meta.url), "utf8")) as {
+    candles: [number, number, number, number, number][];
+    countdown: [number, "buy" | "sell", number][];
+    nines: [number, "buy" | "sell"][];
+    risk13: number;
+  };
+  const c: Candle[] = f.candles.map(([t, o, h, l, cl]) => ({ t, o, h, l, c: cl, v: 0 }));
+  const marks = (classicCancel: boolean) => {
+    const td = computeTd(c, { setupLength: 9, setupLookback: 4, countdownLength: 13, countdownLookback: 2, classicCancel });
+    const out = new Map<string, number>();
+    c.forEach((x, i) => {
+      if (td.buyCountdown[i]) out.set(`${x.t}|buy`, td.buyCountdown[i]);
+      if (td.sellCountdown[i]) out.set(`${x.t}|sell`, td.sellCountdown[i]);
+    });
+    return { td, out };
+  };
+  const want = new Map(f.countdown.map(([t, s, n]) => [`${t}|${s}`, n]));
+  const diff = (got: Map<string, number>) => [...new Set([...want.keys(), ...got.keys()])].filter((k) => want.get(k) !== got.get(k)).length;
+  const classic = marks(true);
+  assert.equal(diff(classic.out), 0);
+  assert.equal(diff(marks(false).out), 4);
+  assert.deepEqual(
+    classic.td.events.filter((e) => e.kind === "setup9").map((e) => [e.t, e.side]),
+    f.nines,
+  );
+  const thirteens = classic.td.events.filter((e) => e.kind === "countdown13");
+  assert.equal(thirteens.length, 1);
+  assert.equal(Math.round(thirteens[0].riskLevel * 10) / 10, f.risk13);
 });

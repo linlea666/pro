@@ -32,8 +32,8 @@ export function TdBriefCard({ a, mtf, mode }: { a: Analysis; mtf: LightSummary[]
     const focus: TdBriefRow = { tf: a.tf, d: tdDetailOf(a.td, closed) };
     const focusCloseAt = a.lastClosedT + TF_SECONDS[a.tf];
     // a replay has no multi-timeframe data: describe the rewound timeframe only; otherwise take whichever copy of the focus timeframe saw the later close
-    // big to small, as in the multi-timeframe table
-    const rows: TdBriefRow[] = mtf && !a.replay ? [...mtf].reverse().map((m) => (m.tf === a.tf && m.closeAt <= focusCloseAt ? focus : { tf: m.tf, d: m.tdDetail })) : [focus];
+    // small to big, as in the multi-timeframe table
+    const rows: TdBriefRow[] = mtf && !a.replay ? mtf.map((m) => (m.tf === a.tf && m.closeAt <= focusCloseAt ? focus : { tf: m.tf, d: m.tdDetail })) : [focus];
     if (!rows.some((r) => r.tf === a.tf)) rows.push(focus);
     const ls = a.td.current.lastSignal;
     const last = ls ? { side: ls.side, kind: ls.kind, barsAgo: ls.barsAgo, price: ls.price, riskLevel: ls.riskLevel, invalidated: ls.invalidated, changePct: ls.changePct } : null;

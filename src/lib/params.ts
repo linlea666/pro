@@ -123,6 +123,12 @@ export const PARAM_MODULES: ParamModule[] = [
           n("td.setupLookback", "Setup 比较根数", 4, 2, 6, 1, "和多少根之前的收盘价比较（标准是 4）。"),
           n("td.countdownLength", "Countdown 长度", 13, 8, 21, 1, "累计多少根合格 K 线算完成 Countdown（标准是 13）。"),
           n("td.countdownLookback", "Countdown 比较根数", 2, 1, 4, 1, "和多少根之前的最高价 / 最低价比较（标准是 2）。"),
+          b(
+            "td.classicCancel",
+            "按 DeMark 原版取消 Countdown",
+            false,
+            "打开后，Countdown 只看开始这一轮的那次 Setup 的 TDST，而且要整根 K 线越过（最高价也在支撑之下 / 最低价也在阻力之上）才取消；关闭时看最新一次同向 Setup 的 TDST、收盘越过就取消。原版与 TradingSignal 等网站一致。",
+          ),
         ],
       },
     ],
@@ -319,7 +325,7 @@ export interface EngineParams {
     tfWeight: Record<Timeframe, number>;
     methodWeight: Record<(typeof LEVEL_METHODS)[number], number>;
   };
-  td: { setupLength: number; setupLookback: number; countdownLength: number; countdownLookback: number };
+  td: { setupLength: number; setupLookback: number; countdownLength: number; countdownLookback: number; classicCancel: boolean };
   indicators: { enabled: Set<string>; rsiLow: number; rsiHigh: number; strongPct: number };
   trend: { adxFloor: number; adxSpan: number; diFull: number; mild: number; strong: number; weights: Record<string, number> };
   structure: { swingAtr: number };
@@ -352,6 +358,7 @@ export function engineParams(values: ParamValues = DEFAULT_PARAMS): EngineParams
       setupLookback: num(p, "td.setupLookback"),
       countdownLength: num(p, "td.countdownLength"),
       countdownLookback: num(p, "td.countdownLookback"),
+      classicCancel: p["td.classicCancel"] === true,
     },
     indicators: {
       enabled: new Set(INDICATOR_IDS.filter((id) => p[`ind.on.${id}`] !== false)),

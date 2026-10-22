@@ -84,7 +84,7 @@ test("params: defaults resolve, overrides clamp, invalid values rejected", async
 
 test("TD honours a custom setup length", () => {
   const closes = [100, 101, 102, 103, 104, 105, ...Array.from({ length: 12 }, (_, i) => 104 - i)];
-  const td = computeTd(series(closes), { setupLength: 7, setupLookback: 4, countdownLength: 13, countdownLookback: 2 });
+  const td = computeTd(series(closes), { setupLength: 7, setupLookback: 4, countdownLength: 13, countdownLookback: 2, classicCancel: false });
   const ev = td.events.find((e) => e.kind === "setup9" && e.side === "buy");
   assert.ok(ev);
   assert.equal(td.buySetup[ev!.i], 7);

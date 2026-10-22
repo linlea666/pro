@@ -7,6 +7,10 @@ import { DEFAULT_ENGINE_PARAMS, type EngineParams } from "../params.ts";
  *
  * Simplification: a new same-direction setup during an active countdown does
  * not recycle it; the countdown keeps running.
+ *
+ * Cancellation by TDST: by default a close beyond the latest same-side setup's TDST;
+ * with `classicCancel`, DeMark's rule — the TDST of the setup that started this
+ * countdown, crossed by a whole bar (low above resistance / high below support).
  */
 
 export type TdSide = "buy" | "sell";
@@ -60,8 +64,8 @@ export function computeTd(c: Candle[], tp: EngineParams["td"] = DEFAULT_ENGINE_P
   let tdstSupport: number | null = null;
 
   // countdown bookkeeping
-  let bcd: { count: number; bar8Close: number; bars: number[]; start: number } | null = null;
-  let scd: { count: number; bar8Close: number; bars: number[]; start: number } | null = null;
+  let bcd: { count: number; bar8Close: number; bars: number[]; start: number; tdst: number } | null = null;
+  let scd: { count: number; bar8Close: number; bars: number[]; start: number; tdst: number } | null = null;
   let lastBuySetupHigh = NaN;
   let lastSellSetupLow = NaN;
 
@@ -90,7 +94,7 @@ export function computeTd(c: Candle[], tp: EngineParams["td"] = DEFAULT_ENGINE_P
       events.push({ i, t: c[i].t, side: "buy", kind: "setup9", perfected, riskLevel: c[loIdx].l - (trueHigh(loIdx) - trueLow(loIdx)), price: c[i].c });
       // sell countdown is cancelled by an opposite setup
       scd = null;
-      if (!bcd) bcd = { count: 0, bar8Close: NaN, bars: [], start: i };
+      if (!bcd) bcd = { count: 0, bar8Close: NaN, bars: [], start: i, tdst: hi };
     }
     if (sellSetup[i] === SETUP) {
       const start = i - SETUP + 1;
@@ -104,12 +108,12 @@ export function computeTd(c: Candle[], tp: EngineParams["td"] = DEFAULT_ENGINE_P
       const perfected = Math.max(c[i].h, c[i - 1].h) >= Math.max(c[i - 2].h, c[i - 3].h);
       events.push({ i, t: c[i].t, side: "sell", kind: "setup9", perfected, riskLevel: c[hiIdx].h + (trueHigh(hiIdx) - trueLow(hiIdx)), price: c[i].c });
       bcd = null;
-      if (!scd) scd = { count: 0, bar8Close: NaN, bars: [], start: i };
+      if (!scd) scd = { count: 0, bar8Close: NaN, bars: [], start: i, tdst: lo };
     }
 
     // ---------------- countdown
     if (bcd) {
-      if (c[i].c > lastBuySetupHigh) bcd = null; // closed above TDST: cancelled
+      if (tp.classicCancel ? c[i].l > bcd.tdst : c[i].c > lastBuySetupHigh) bcd = null; // above TDST: cancelled
     }
     if (bcd && i >= CLB && c[i].c <= c[i - CLB].l) {
       const next = bcd.count + 1;
@@ -129,7 +133,7 @@ export function computeTd(c: Candle[], tp: EngineParams["td"] = DEFAULT_ENGINE_P
       // else: deferred 13, keep waiting for a qualifying bar
     }
     if (scd) {
-      if (c[i].c < lastSellSetupLow) scd = null;
+      if (tp.classicCancel ? c[i].h < scd.tdst : c[i].c < lastSellSetupLow) scd = null;
     }
     if (scd && i >= CLB && c[i].c >= c[i - CLB].h) {
       const next = scd.count + 1;

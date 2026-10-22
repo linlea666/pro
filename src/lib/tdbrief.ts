@@ -29,8 +29,71 @@ export interface TdDetail {
     barsAgo: number;
     perfected: boolean;
     countdown: number | null;
-    thirteen: { barsAgo: number; riskLevel: number; invalidated: boolean } | null;
+    /** roomPct: how far the last close is from the risk level, % of the close (positive = not reached) */
+    thirteen: { barsAgo: number; riskLevel: number; invalidated: boolean; roomPct: number } | null;
   } | null;
+  /** the last few 9s / 13s (oldest first), with what became of them and the range price covered since (high / low vs the signal close, %) */
+  timeline: TdTimelineItem[];
+}
+
+export interface TdTimelineItem {
+  side: TdSide;
+  kind: 9 | 13;
+  barsAgo: number;
+  price: number;
+  status: TdStatus;
+  upPct: number;
+  downPct: number;
+}
+
+/** 9: its 13 count is running / reached 13 / was cancelled; 13: risk level holding / failed */
+export type TdStatus = "counting" | "reached13" | "cancelled" | "standing" | "failed";
+
+export const TD_STATUS_TEXT: Record<TdStatus, string> = {
+  counting: "13 计数中",
+  reached13: "之后数到了 13",
+  cancelled: "13 计数被取消",
+  standing: "风险位还没被收盘越过",
+  failed: "收盘越过风险位，失败",
+};
+
+const TIMELINE = 5;
+
+function timelineOf(td: { events: TdEvent[]; current: TdState["current"] }, closed: Candle[]): TdTimelineItem[] {
+  const idx = new Map(closed.map((x, i) => [x.t, i]));
+  const L = closed.length - 1;
+  const cd = td.current.countdown;
+  const out: TdTimelineItem[] = [];
+  for (const [k, e] of td.events.entries()) {
+    const i = idx.get(e.t);
+    if (i == null) continue;
+    let hi = -Infinity, lo = Infinity;
+    for (let j = i + 1; j <= L; j++) {
+      hi = Math.max(hi, closed[j].h);
+      lo = Math.min(lo, closed[j].l);
+    }
+    const later = td.events.slice(k + 1);
+    let status: TdStatus;
+    if (e.kind === "countdown13") {
+      status = closed.some((x, j) => j > i && (e.side === "buy" ? x.c < e.riskLevel : x.c > e.riskLevel)) ? "failed" : "standing";
+    } else {
+      const opp = later.findIndex((x) => x.kind === "setup9" && x.side !== e.side);
+      const upto = opp < 0 ? later : later.slice(0, opp);
+      if (upto.some((x) => x.kind === "countdown13" && x.side === e.side)) status = "reached13";
+      else if (opp < 0 && cd && cd.side === e.side) status = "counting";
+      else status = "cancelled";
+    }
+    out.push({
+      side: e.side,
+      kind: e.kind === "setup9" ? 9 : 13,
+      barsAgo: L - i,
+      price: e.price,
+      status,
+      upPct: i < L ? ((hi - e.price) / e.price) * 100 : 0,
+      downPct: i < L ? ((lo - e.price) / e.price) * 100 : 0,
+    });
+  }
+  return out.slice(-TIMELINE);
 }
 
 /** `closed`: completed bars only (the forming bar left out). */
@@ -39,6 +102,7 @@ export function tdDetailOf(td: { events: TdEvent[]; current: TdState["current"] 
   const barsSince = (t: number) => closed.length - 1 - closed.findIndex((x) => x.t === t);
   const nineEv = td.events.findLast((e) => e.kind === "setup9");
   const thirteenEv = nineEv && td.events.findLast((e) => e.kind === "countdown13" && e.side === nineEv.side && e.i >= nineEv.i);
+  const lastClose = closed.at(-1)?.c;
   return {
     setupSide: cur.setupSide,
     setupCount: cur.setupCount,
@@ -60,10 +124,12 @@ export function tdDetailOf(td: { events: TdEvent[]; current: TdState["current"] 
                 barsAgo: barsSince(thirteenEv.t),
                 riskLevel: thirteenEv.riskLevel,
                 invalidated: closed.some((x) => x.t > thirteenEv.t && (thirteenEv.side === "buy" ? x.c < thirteenEv.riskLevel : x.c > thirteenEv.riskLevel)),
+                roomPct: lastClose ? ((thirteenEv.side === "buy" ? lastClose - thirteenEv.riskLevel : thirteenEv.riskLevel - lastClose) / lastClose) * 100 : 0,
               }
             : null,
         }
       : null,
+    timeline: timelineOf(td, closed),
   };
 }
 
@@ -130,7 +196,7 @@ function rowText(r: TdBriefRow): string {
       parts.push(
         n.thirteen.invalidated
           ? `${nine}之后的 13 已出现但失败了（收盘${crossWord(n.side)}风险位 ${price(n.thirteen.riskLevel)}）`
-          : `${nine}之后的 13 已出现（${ago(n.thirteen.barsAgo * sec)}），风险位 ${price(n.thirteen.riskLevel)} 还没被收盘越过`,
+          : `${nine}之后的 13 已走完（DeMark 称“衰竭”，${ago(n.thirteen.barsAgo * sec)}），风险位 ${price(n.thirteen.riskLevel)} 还没被收盘越过，离最新收盘 ${n.thirteen.roomPct.toFixed(2)}%`,
       );
     } else if (n.countdown != null) parts.push(n.countdown > 0 ? `${nine}之后 13 数到 ${n.countdown}/${d.countdownLength}` : `${nine}之后 13 计数刚开始`);
     else parts.push(`${nine}之后的 13 计数已取消`);
@@ -172,12 +238,11 @@ function reviewOf(focus: TdBriefRow, rows: TdBriefRow[], last: TdLastSignal | nu
   const sec = TF_SECONDS[focus.tf];
   if (last) {
     const kind = last.kind === "setup9" ? "9" : "13";
-    const went = last.invalidated
-      ? `收盘已${crossWord(last.side)}风险位 ${price(last.riskLevel)}，这个信号失败了`
-      : (last.side === "buy") === last.changePct > 0
-        ? `风险位 ${price(last.riskLevel)} 没被收盘越过，目前按它的方向在走`
-        : `暂时没按它的方向走，但风险位 ${price(last.riskLevel)} 还没被收盘越过`;
-    out.push(`${TF_LABEL[focus.tf]}上一个信号是${sideName(last.side)} ${kind}（${ago(last.barsAgo * sec)}，${price(last.price)}），之后 ${pct(last.changePct)}，${went}。`);
+    // describes only: a 9 / 13 is not read as a call either way, so there is no "it went its way"
+    const went = last.invalidated ? `收盘已${crossWord(last.side)}风险位 ${price(last.riskLevel)}，这个信号失败了` : `风险位 ${price(last.riskLevel)} 还没被收盘越过`;
+    const t = focus.d.timeline.at(-1);
+    const range = t && t.barsAgo === last.barsAgo && t.barsAgo > 0 ? `（期间最高 ${pct(t.upPct)}、最低 ${pct(t.downPct)}）` : "";
+    out.push(`${TF_LABEL[focus.tf]}上一个信号是${sideName(last.side)} ${kind}（${ago(last.barsAgo * sec)}，${price(last.price)}），之后 ${pct(last.changePct)}${range}，${went}。`);
   }
   for (const r of rows) {
     const t = r.d.nine?.thirteen;
