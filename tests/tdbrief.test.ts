@@ -21,7 +21,7 @@ const base: TdDetail = {
 test("tdBrief: 12/13 countdown reads as 'went on long', with the cancel level and next-close condition", () => {
   const d1: TdDetail = { ...base, setupSide: "sell", setupCount: 3, nextCloseNeeded: 81938.4, countdown: { side: "sell", count: 12 }, tdstSupport: 62751.1, nine: { side: "sell", barsAgo: 58, perfected: true, countdown: 12, thirteen: null } };
   const b = tdBrief([{ tf: "1d", d: d1 }], "1d", null, []);
-  assert.match(b.conclusion, /卖出 13 已数到 12\/13/);
+  assert.match(b.conclusion, /涨势 13 已数到 12\/13/);
   assert.match(b.conclusion, /不是卖点/);
   assert.ok(b.watch.some((w) => w.includes("还差 1 根") && w.includes("TDST 62,751.1")));
   assert.ok(b.watch.some((w) => w.includes("高于 81,938.4")));
@@ -43,8 +43,8 @@ test("tdBrief: failed 13 on another timeframe shows up in the review; mixed side
     { side: "sell", kind: "setup9", barsAgo: 1, price: 82500, riskLevel: 84000, invalidated: false, changePct: -0.2 },
     [],
   );
-  assert.match(b.conclusion, /4小时刚出现卖出 9★/);
-  assert.ok(b.review.some((r) => r.includes("5分钟的买入 13 失败了")));
+  assert.match(b.conclusion, /4小时刚出现涨势 9★/);
+  assert.ok(b.review.some((r) => r.includes("5分钟的跌势 13 失败了")));
   assert.ok(b.review[0].includes("目前按它的方向在走"));
   assert.match(b.alignment ?? "", /不一致/);
   assert.equal(b.timeframes.length, 3);
@@ -52,14 +52,14 @@ test("tdBrief: failed 13 on another timeframe shows up in the review; mixed side
 
 test("tdBrief: research sentence only claims what the labels say", () => {
   const stats: TdStat[] = [
-    { key: "td_sell13", name: "TD 卖出 13", samples: 40, winRate: 48, baseWinRate: 47, reliability: "证据弱" },
-    { key: "td_buy9", name: "TD 买入 9", samples: 0, winRate: null, baseWinRate: 50, reliability: "证据不足" },
+    { key: "td_sell13", name: "TD 涨势 13", samples: 40, winRate: 48, baseWinRate: 47, reliability: "证据弱" },
+    { key: "td_buy9", name: "TD 跌势 9", samples: 0, winRate: null, baseWinRate: 50, reliability: "证据不足" },
     { key: "rsi_ob", name: "RSI", samples: 50, winRate: 60, baseWinRate: 47, reliability: "证据较强" },
   ];
   const r = tdBrief([{ tf: "4h", d: base }], "4h", null, stats).research;
-  assert.match(r, /TD 卖出 13 48%（随机 47%，证据弱）/);
+  assert.match(r, /TD 涨势 13 48%（随机 47%，证据弱）/);
   assert.match(r, /没有一个可靠地好于随机/);
-  assert.doesNotMatch(r, /RSI|买入 9/);
+  assert.doesNotMatch(r, /RSI|跌势 9/);
 });
 
 test("forbiddenPhrase catches price calls but lets negations and descriptions through", () => {

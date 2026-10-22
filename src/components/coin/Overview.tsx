@@ -8,7 +8,7 @@ import { PriceChart, type OverlayLine, type PriceLineSpec } from "../PriceChart"
 import { TrafficLight, lightMeta } from "../Light";
 import { Term } from "../Term";
 import { fmtPrice } from "./format";
-import { LevelsList, ReliabilityBadge, Section } from "./shared";
+import { LevelsList, ReliabilityBadge, Section, signalMark } from "./shared";
 import { MtfStrip } from "./MtfStrip";
 import { Explain } from "../Explain";
 import { AiCard } from "./AiCard";
@@ -128,7 +128,7 @@ export function Overview({ a, mtf, mode, plan, onTf, onTab }: { a: Analysis; mtf
               {a.active.map((s) => (
                 <li key={s.key} className="rounded-lg bg-panel-2 p-3">
                   <div className="flex items-center gap-2 text-sm">
-                    <span style={{ color: s.side === "bull" ? "var(--up)" : "var(--down)" }}>{s.side === "bull" ? "↑" : "↓"}</span>
+                    <span style={{ color: signalMark(s.key, s.side).color }}>{signalMark(s.key, s.side).icon}</span>
                     <span className="font-medium">{s.name}</span>
                     <span className="text-[11px] text-ink-3">{s.barsAgo === 0 ? "当前 K 线" : `${s.barsAgo} 根前`}</span>
                     <span className="ml-auto"><ReliabilityBadge r={s.stats.reliability} /></span>

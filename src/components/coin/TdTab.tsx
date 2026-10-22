@@ -27,9 +27,10 @@ export function TdTab({ a, mtf, mode, onTf }: TabProps) {
         return {
           t: m.t,
           position: buy ? "belowBar" : "aboveBar",
-          color: m.kind === "countdown" && !big ? "#e0a400" : buy ? UP : DOWN,
+          // "buy" side = a run of lower closes: drawn red and pointing down, as a description of what happened
+          color: m.kind === "countdown" && !big ? "#e0a400" : buy ? DOWN : UP,
           text: `${m.n}${m.kind === "setup" && m.final && m.perfected ? "★" : ""}`,
-          shape: big ? (buy ? "arrowUp" : "arrowDown") : "circle",
+          shape: big ? (buy ? "arrowDown" : "arrowUp") : "circle",
           size: big ? 1 : 0.1,
         } satisfies MarkerSpec;
       });
@@ -44,7 +45,7 @@ export function TdTab({ a, mtf, mode, onTf }: TabProps) {
   }, [cur]);
 
   const ls = cur.lastSignal;
-  const sideText = (s: "buy" | "sell") => (s === "buy" ? "买入" : "卖出");
+  const sideText = (s: "buy" | "sell") => (s === "buy" ? "跌势" : "涨势");
   const nowText = cur.setupSide
     ? cur.setupCount >= 9
       ? `${cur.setupSide === "buy" ? "下跌" : "上涨"}计数已经走完 9（目前第 ${cur.setupCount} 根），趋势仍在延续。`
@@ -57,7 +58,7 @@ export function TdTab({ a, mtf, mode, onTf }: TabProps) {
         <TdBriefCard a={a} mtf={mtf} mode={mode} />
         <section className="card p-3">
           <div className="mb-1 flex flex-wrap items-center gap-3 px-1 text-xs text-ink-3">
-            <span>↑9 = 买入 9 · ↓9 = 卖出 9 · ★ = 完美 9 · 13 = 衰竭信号</span>
+            <span>红色↓9 = 跌势 9（连跌满 9 根）· 绿色↑9 = 涨势 9（连涨满 9 根）· ★ = 完美 9 · 13 = 衰竭计数数满</span>
             <label className="ml-auto flex cursor-pointer items-center gap-1.5">
               <input type="checkbox" checked={allNumbers} onChange={(e) => setAllNumbers(e.target.checked)} />
               显示全部计数
@@ -70,22 +71,22 @@ export function TdTab({ a, mtf, mode, onTf }: TabProps) {
             <b className="text-ink">核心思想：</b>任何一段涨势或跌势都会“累”。<Term k="TD序列">TD 序列</Term>通过数 K 线来判断它什么时候可能累了。
           </p>
           <p>
-            <b className="text-ink">第一步 · 数到 9：</b>如果连续 9 根 K 线的收盘价都比 4 根前低，就出现<Term k="Setup9">买入 9</Term>，说明跌得太久了，短期可能反弹；反过来就是卖出 9。
+            <b className="text-ink">第一步 · 数到 9：</b>如果连续 9 根 K 线的收盘价都比 4 根前低，就出现<Term k="Setup9">跌势 9</Term>，意思是“已经连跌了 9 根”；反过来连涨 9 根就是涨势 9。DeMark 原名叫“买入 Setup / 卖出 Setup”，但它描述的是已经发生的涨跌，不是叫你买或卖。
           </p>
           <p>
-            <b className="text-ink">第二步 · 数到 13：</b>出现 9 之后，系统继续数“特别弱（或特别强）”的 K 线，数满 13 根就是<Term k="Countdown13">13 信号</Term>，提示这一轮趋势可能走到尽头。
+            <b className="text-ink">第二步 · 数到 13：</b>出现 9 之后，系统继续数“特别弱（或特别强）”的 K 线，数满 13 根就是<Term k="Countdown13">13</Term>，意思是“这一轮走得很久了”。
           </p>
           <p>
-            <b className="text-ink">怎么用：</b>9 是“歇脚”提示，13 是“衰竭”提示，都只是“可能反转”。出现买入信号后，如果价格跌破图上的黄色<Term k="RiskLevel">风险位</Term>，说明信号失败了。
+            <b className="text-ink">怎么用：</b>9 和 13 只告诉你一段涨跌走了多久，研究里它们都不能预测接下来是涨是跌。跌势信号之后收盘跌破图上的黄色<Term k="RiskLevel">风险位</Term>（涨势信号之后收盘突破），说明原来的走势还在继续。
           </p>
           <p>
-            <b className="text-ink">新手最常犯的错：</b>小周期（15 分钟）出现买入 9 就抄底，结果大周期还在下跌。先看日线和 4 小时的方向，再用小周期找时机。
+            <b className="text-ink">新手最常犯的错：</b>把小周期（15 分钟）的跌势 9 当成买点去抄底，结果大周期还在下跌。先看日线和 4 小时的方向，再用小周期找时机。
           </p>
         </Explainer>
       </div>
 
       <div className="space-y-4">
-        <TdMtfTable mtf={mtf} current={a.tf} onTf={onTf} />
+        <TdMtfTable mtf={mtf} current={a.tf} onTf={onTf} pro={mode === "pro"} />
         <Section title={`现在的状态 · ${TF_LABEL[a.tf]}`}>
           <p className="text-[13px] leading-relaxed">{nowText}</p>
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
@@ -100,18 +101,16 @@ export function TdTab({ a, mtf, mode, onTf }: TabProps) {
           {ls ? (
             <div className="text-[13px] leading-relaxed">
               <p>
-                <b style={{ color: ls.side === "buy" ? "var(--up)" : "var(--down)" }}>
-                  {ls.side === "buy" ? "↑" : "↓"} {sideText(ls.side)} {ls.kind === "setup9" ? "9" : "13"}
+                <b style={{ color: ls.side === "buy" ? "var(--down)" : "var(--up)" }}>
+                  {ls.side === "buy" ? "↓" : "↑"} {sideText(ls.side)} {ls.kind === "setup9" ? "9" : "13"}
                 </b>{" "}
                 出现在 {ls.barsAgo} 根 K 线前，价格 {fmtPrice(ls.price)}。
               </p>
               <p className="mt-1 text-ink-2">
                 之后价格 {fmtPct(ls.changePct)}（<Term k="RiskLevel">风险位</Term>是这个信号的认错线），
                 {ls.invalidated
-                  ? `已经${ls.side === "buy" ? "跌破" : "突破"}风险位 ${fmtPrice(ls.riskLevel)}，这个信号失败了。`
-                  : (ls.side === "buy") === ls.changePct > 0
-                    ? `风险位 ${fmtPrice(ls.riskLevel)} 没被触及，信号按预期在走。`
-                    : `暂时没按预期走，但风险位 ${fmtPrice(ls.riskLevel)} 还没被触及，信号仍然有效。`}
+                  ? `收盘已${ls.side === "buy" ? "跌破" : "突破"}风险位 ${fmtPrice(ls.riskLevel)}，原来的${ls.side === "buy" ? "跌势" : "涨势"}还在继续，这个信号失败了。`
+                  : `风险位 ${fmtPrice(ls.riskLevel)} 还没被收盘越过。`}
               </p>
             </div>
           ) : (
@@ -128,7 +127,7 @@ export function TdTab({ a, mtf, mode, onTf }: TabProps) {
 }
 
 /** One block per timeframe: the latest 9 and its countdown, the setup being counted now, and TDST. Describes only. */
-function TdMtfTable({ mtf, current, onTf }: { mtf: LightSummary[] | null; current: Timeframe; onTf: (t: Timeframe) => void }) {
+function TdMtfTable({ mtf, current, onTf, pro }: { mtf: LightSummary[] | null; current: Timeframe; onTf: (t: Timeframe) => void; pro: boolean }) {
   const replay = useReplay();
   return (
     <Section title="多周期 TD 计数">
@@ -139,12 +138,13 @@ function TdMtfTable({ mtf, current, onTf }: { mtf: LightSummary[] | null; curren
       ) : (
         <>
           <ul className="divide-y divide-line text-[13px]">
-            {mtf.map((m) => (
-              <TdRow key={m.tf} m={m} active={m.tf === current} onTf={onTf} />
+            {/* big to small: the larger timeframe is the background for the smaller ones */}
+            {[...mtf].reverse().map((m) => (
+              <TdRow key={m.tf} m={m} active={m.tf === current} onTf={onTf} pro={pro} />
             ))}
           </ul>
           <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
-            每行左边是这一行所用 K 线的收盘时刻（北京时间），打开这个页签时每 15 秒更新一次。这里只描述每个周期数到了哪里；几个周期同时数到 9 或 13 是否更灵，还没有研究数字，单个信号以前灵不灵见下方统计。点击周期可切换。
+            从大周期排到小周期。跌势 / 涨势只描述已经连跌或连涨了多久，不是买卖建议。每行左边是这一行所用 K 线的收盘时刻（北京时间），打开这个页签时每 15 秒更新一次。这里只描述每个周期数到了哪里；几个周期同时数到 9 或 13 是否更灵，还没有研究数字，单个信号以前灵不灵见下方统计。点击周期可切换。
           </p>
         </>
       )}
@@ -152,11 +152,11 @@ function TdMtfTable({ mtf, current, onTf }: { mtf: LightSummary[] | null; curren
   );
 }
 
-function TdRow({ m, active, onTf }: { m: LightSummary; active: boolean; onTf: (t: Timeframe) => void }) {
+function TdRow({ m, active, onTf, pro }: { m: LightSummary; active: boolean; onTf: (t: Timeframe) => void; pro: boolean }) {
   const d = m.tdDetail;
   const sec = TF_SECONDS[m.tf];
   const n = d.nine;
-  const sideColor = (s: "buy" | "sell") => (s === "buy" ? "var(--up)" : "var(--down)");
+  const sideColor = (s: "buy" | "sell") => (s === "buy" ? "var(--down)" : "var(--up)");
   const counting = d.setupSide && d.setupCount < d.setupLength;
   const tdst = (p: number | null) => (p == null ? null : `${fmtPrice(p)}（${fmtPct(((p - m.close) / m.close) * 100, 1)}）`);
   return (
@@ -174,13 +174,14 @@ function TdRow({ m, active, onTf }: { m: LightSummary; active: boolean; onTf: (t
             <>
               <div>
                 <b style={{ color: sideColor(n.side) }}>
-                  {n.side === "buy" ? "↑ 买入 9" : "↓ 卖出 9"}
+                  {n.side === "buy" ? "↓ 跌势 9" : "↑ 涨势 9"}
                   {n.perfected ? "★" : ""}
                 </b>
                 <span className="text-ink-2">
                   {" "}
                   （{n.side === "buy" ? "连跌" : "连涨"}满 9 根）· {spanAgo(n.barsAgo * sec)}
                 </span>
+                {pro && <span className="text-[11px] text-ink-3"> · DeMark 原名{n.side === "buy" ? "买入" : "卖出"} Setup</span>}
               </div>
               {n.thirteen ? (
                 <div className="text-xs">

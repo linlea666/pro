@@ -44,10 +44,10 @@ export function signalEvents(c: Candle[], panel: ReturnType<typeof computeIndica
     if (panel.net[i] <= -strong && panel.net[i - 1] > -strong) resoBear.push(i);
   }
   return [
-    { key: "td_buy9", name: `TD 买入 ${S}`, side: "bull", idx: ev("buy", "setup9") },
-    { key: "td_buy13", name: `TD 买入 ${CD}`, side: "bull", idx: ev("buy", "countdown13") },
-    { key: "td_sell9", name: `TD 卖出 ${S}`, side: "bear", idx: ev("sell", "setup9") },
-    { key: "td_sell13", name: `TD 卖出 ${CD}`, side: "bear", idx: ev("sell", "countdown13") },
+    { key: "td_buy9", name: `TD 跌势 ${S}`, side: "bull", idx: ev("buy", "setup9") },
+    { key: "td_buy13", name: `TD 跌势 ${CD}`, side: "bull", idx: ev("buy", "countdown13") },
+    { key: "td_sell9", name: `TD 涨势 ${S}`, side: "bear", idx: ev("sell", "setup9") },
+    { key: "td_sell13", name: `TD 涨势 ${CD}`, side: "bear", idx: ev("sell", "countdown13") },
     { key: "ema_golden", name: "EMA 金叉", side: "bull", idx: crossUps(e12, e26) },
     { key: "ema_death", name: "EMA 死叉", side: "bear", idx: crossUps(e26, e12) },
     { key: "rsi_oversold", name: "RSI 进入超卖", side: "bull", idx: rsiIn(true) },

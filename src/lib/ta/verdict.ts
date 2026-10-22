@@ -72,8 +72,8 @@ export function timingScore(td: TdState, lastIdx: number): { score: number; text
     if (fresh) {
       const base = ev.kind === "countdown13" ? 80 : ev.perfected ? 65 : 45;
       const dir = ev.side === "buy" ? 1 : -1;
-      const name = ev.side === "buy" ? (ev.kind === "countdown13" ? "买入13（下跌衰竭）" : "买入9（下跌可能歇脚）") : ev.kind === "countdown13" ? "卖出13（上涨衰竭）" : "卖出9（上涨可能歇脚）";
-      return { score: base * dir, text: `${age === 0 ? "本根" : `${age} 根前`}出现 TD ${name}，${dir > 0 ? "短期有反弹可能" : "短期有回调可能"}` };
+      const name = ev.side === "buy" ? (ev.kind === "countdown13" ? "跌势 13（下跌已数满 13）" : "跌势 9（连跌满 9 根）") : ev.kind === "countdown13" ? "涨势 13（上涨已数满 13）" : "涨势 9（连涨满 9 根）";
+      return { score: base * dir, text: `${age === 0 ? "本根" : `${age} 根前`}出现 TD ${name}，说明这段${dir > 0 ? "跌势" : "涨势"}已经走了很久，不预测接下来的方向` };
     }
   }
   const { setupSide, setupCount } = td.current;
@@ -201,7 +201,7 @@ export function buildVerdict(args: {
     if (r1) plan.push(`已经持有的话，反弹到 ${fmtPrice(r1.price)} 附近可以考虑减仓。`);
     st = stopFor("short");
     if (st) stopText = `价格重新站上 ${fmtPrice(st.ref)}（约 ${pct(((st.ref - price) / price) * 100)}）才说明空头判断失效。${stopDetail(st, "short")}`;
-    plan.push("想抄底的话，至少等出现 TD 买入 9/13，或价格重新站上短期阻力之后。");
+    plan.push("想抄底的话，至少等价格重新站上短期阻力之后；TD 跌势 9 / 13 只说明跌了很久，不是买点。");
   } else {
     headline = `${tfName}级别方向不明：多空信号互相打架，建议观望。`;
     if (r1 && s1) plan.push(`等价格有效突破 ${fmtPrice(r1.price)}（转强）或跌破 ${fmtPrice(s1.price)}（转弱）后再判断方向。`);

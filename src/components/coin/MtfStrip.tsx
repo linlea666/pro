@@ -43,9 +43,9 @@ function cellFor(kind: MtfKind, m: LightSummary): Cell {
       const fresh = d.last && !d.last.invalidated && d.last.barsAgo <= (d.last.kind === "setup9" ? 4 : 8);
       if (fresh) {
         const buy = d.last!.side === "buy";
-        return { main: `${buy ? "买" : "卖"}${d.last!.kind === "setup9" ? "9" : "13"}`, sub: `${d.last!.barsAgo} 根前`, tone: buy ? "up" : "down" };
+        return { main: `${buy ? "跌势" : "涨势"}${d.last!.kind === "setup9" ? "9" : "13"}`, sub: `${d.last!.barsAgo} 根前`, tone: buy ? "down" : "up" };
       }
-      const sub = d.countdown && d.countdown.count > 0 ? `计数 ${d.countdown.count}/${d.countdownLength}` : d.last ? `上次${d.last.side === "buy" ? "买" : "卖"}${d.last.kind === "setup9" ? "9" : "13"}` : "—";
+      const sub = d.countdown && d.countdown.count > 0 ? `计数 ${d.countdown.count}/${d.countdownLength}` : d.last ? `上次${d.last.side === "buy" ? "跌势" : "涨势"}${d.last.kind === "setup9" ? "9" : "13"}` : "—";
       const near = d.setupSide && d.setupCount >= d.setupLength - 2 && d.setupCount <= d.setupLength;
       return { main: d.setupSide ? `${d.setupSide === "buy" ? "跌" : "涨"} ${Math.min(d.setupCount, d.setupLength)}/${d.setupLength}` : "未计数", sub, tone: near || (d.countdown?.count ?? 0) >= d.countdownLength - 2 ? "warn" : "neutral" };
     }

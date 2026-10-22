@@ -98,7 +98,8 @@ export interface TdBrief {
 const price = (v: number) => (v >= 1000 ? v.toLocaleString("en-US", { maximumFractionDigits: 1 }) : v >= 1 ? v.toFixed(v >= 100 ? 2 : 3) : v.toPrecision(4));
 const pct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
 const ago = (sec: number) => (sec <= 0 ? "刚收盘这根" : sec < 3600 ? `${Math.round(sec / 60)} 分钟前` : sec < 48 * 3600 ? `${Math.round(sec / 3600)} 小时前` : `${Math.round(sec / 86400)} 天前`);
-const sideName = (s: TdSide) => (s === "buy" ? "买入" : "卖出");
+/** "buy" / "sell" are DeMark's names; the page describes what happened: a run of lower (higher) closes */
+const sideName = (s: TdSide) => (s === "buy" ? "跌势" : "涨势");
 /** what a side's count is measuring, in plain words */
 const runName = (s: TdSide) => (s === "buy" ? "连跌" : "连涨");
 const crossWord = (s: TdSide) => (s === "buy" ? "跌破" : "突破");

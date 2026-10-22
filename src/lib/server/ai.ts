@@ -94,7 +94,7 @@ export const TD_PROMPT = `你是一位做了多年合约的交易员，在「信
 要求：
 1. TD 在我们的研究里没有可证明的方向优势。它只描述“一段涨跌走了多久”。绝不预测涨跌、反转、目标价或幅度；不说“会冲上”“一大波”“大级别反转”“见顶”“见底”“抄底”这类话。
 2. 可以说的：每个周期数到哪里、13 是否出现或失败、风险位和 TDST 在哪里、下一根收盘到哪里计数继续或取消、上一个信号之后实际走了多少、历史统计（照 stats 原样引用，不要改数字）。
-3. 用到术语（9、13、风险位、TDST）时顺带用半句话解释。
+3. 数据里 side 为 buy 表示连跌（称“跌势 9 / 跌势 13”），sell 表示连涨（称“涨势 9 / 涨势 13”）。不要说“买入 9”“卖出 9”，新手会当成买卖建议。用到术语（9、13、风险位、TDST）时顺带用半句话解释。
 4. 不给买卖指令和仓位建议。可以说“想用它的人通常会等什么条件”，比如等风险位被守住或被收盘越过。
 5. 快照之外的信息（新闻、链上、宏观、形态如头肩底）一律不要编造。
 6. 简短：conclusion 不超过 40 个字；timeframes、review 各不超过 120 个字；watch 给 2–3 条，每条不超过 40 个字。`;
@@ -251,10 +251,10 @@ export function buildSnapshot(a: Analysis, mtf: LightSummary[]) {
     otherTimeframes: mtf.map((m) => ({ timeframe: TF_LABEL[m.tf], light: m.lightText, trend: m.trend, td: m.td })),
     td: {
       counting: a.td.current.setupSide ? `${a.td.current.setupSide === "buy" ? "连续下跌" : "连续上涨"} ${a.td.current.setupCount}/${a.td.current.setupLength}` : "未计数",
-      countdown: a.td.current.countdown ? `${a.td.current.countdown.side === "buy" ? "买入" : "卖出"} ${a.td.current.countdown.count}/${a.td.current.countdownLength}` : null,
+      countdown: a.td.current.countdown ? `${a.td.current.countdown.side === "buy" ? "跌势" : "涨势"} ${a.td.current.countdown.count}/${a.td.current.countdownLength}` : null,
       lastSignal: a.td.current.lastSignal
         ? {
-            type: `${a.td.current.lastSignal.side === "buy" ? "买入" : "卖出"}${a.td.current.lastSignal.kind === "setup9" ? a.td.current.setupLength : a.td.current.countdownLength}`,
+            type: `${a.td.current.lastSignal.side === "buy" ? "跌势" : "涨势"}${a.td.current.lastSignal.kind === "setup9" ? a.td.current.setupLength : a.td.current.countdownLength}`,
             barsAgo: a.td.current.lastSignal.barsAgo,
             invalidated: a.td.current.lastSignal.invalidated,
             changeSincePct: Math.round(a.td.current.lastSignal.changePct * 100) / 100,

@@ -78,6 +78,15 @@ const STAT_TERM: Record<string, string> = {
   reso_bear: "共振",
 };
 
+/**
+ * Arrow and colour for a signal row. Most signals point the way they bet; TD 9 / 13 instead show the run
+ * that already happened (跌势 = red ↓), so a "TD 跌势 9" never reads as a green "buy".
+ */
+export function signalMark(key: string, side: "bull" | "bear"): { icon: string; color: string } {
+  const up = key.startsWith("td_") ? side === "bear" : side === "bull";
+  return { icon: up ? "↑" : "↓", color: up ? "var(--up)" : "var(--down)" };
+}
+
 export function StatsTable({ stats, horizonText, coin, tf, only }: { stats: SignalStats[]; horizonText: string; coin: string; tf: Timeframe; only?: string[] }) {
   const rows = only ? stats.filter((s) => only.includes(s.key)) : stats;
   return (
@@ -89,7 +98,7 @@ export function StatsTable({ stats, horizonText, coin, tf, only }: { stats: Sign
         {rows.map((s) => (
           <div key={s.key} className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1">
             <div className="flex items-center gap-2 text-sm">
-              <span style={{ color: s.side === "bull" ? "var(--up)" : "var(--down)" }} aria-hidden="true">{s.side === "bull" ? "↑" : "↓"}</span>
+              <span style={{ color: signalMark(s.key, s.side).color }} aria-hidden="true">{signalMark(s.key, s.side).icon}</span>
               <Explain k={STAT_TERM[s.key] ?? "胜率"} variant="term">{s.name}</Explain>
               <span className="text-[11px] text-ink-3">{s.samples} 次</span>
             </div>
