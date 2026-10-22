@@ -196,7 +196,7 @@ function watchOf(r: TdBriefRow): string[] {
   if (n && n.countdown != null) {
     const cancel = n.side === "sell" ? d.tdstSupport : d.tdstResistance;
     out.push(
-      `13 计数还差 ${d.countdownLength - n.countdown} 根${cancel != null ? `；收盘${n.side === "sell" ? "跌破" : "突破"} TDST ${price(cancel)} 会取消这次计数` : ""}。`,
+      `${n.countdown === 0 ? `${sideName(n.side)} 13 计数刚开始，要数满 ${d.countdownLength} 根` : `${sideName(n.side)} 13 计数还差 ${d.countdownLength - n.countdown} 根`}${cancel != null ? `；收盘${n.side === "sell" ? "跌破" : "突破"} TDST ${price(cancel)} 会取消这次计数` : ""}。`,
     );
   }
   if (d.setupSide && d.setupCount < d.setupLength && d.nextCloseNeeded != null)

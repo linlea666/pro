@@ -85,3 +85,18 @@ test("tdDetailOf matches the engine on a synthetic run (9 then a running countdo
   assert.equal(d.setupSide, "sell");
   assert.ok(d.nine && (d.nine.countdown != null || d.nine.thirteen != null));
 });
+
+test("AI answers wrapped in a code fence or reshaped by a proxy are still read", async () => {
+  process.env.LOG_LEVEL = "error";
+  const { parseLooseJson, normalizeTd, normalizeOverview } = await import("../src/lib/server/ai.ts");
+  const fenced = '```json\n{\n  "conclusion": "4小时8小时前出了卖出9★",\n  "timeframes": [\n    {"tf": "15分钟", "text": "买入9★之后13数到4/13"},\n    {"tf": "1小时", "text": "13数到3/13"}\n  ],\n  "review": ["上一个卖出 9 之后 -2.2%"],\n  "watch": "下一根收盘低于 82,459.2 才继续"\n}\n```';
+  const td = normalizeTd(parseLooseJson(fenced));
+  assert.equal(td.conclusion, "4小时8小时前出了卖出9★");
+  assert.equal(td.timeframes, "15分钟：买入9★之后13数到4/13\n1小时：13数到3/13");
+  assert.equal(td.review, "上一个卖出 9 之后 -2.2%");
+  assert.deepEqual(td.watch, ["下一根收盘低于 82,459.2 才继续"]);
+  const ov = normalizeOverview(parseLooseJson('好的，解读如下：{"headline":"偏空","summary":"s","timeframes":"t","levels":"l","watch":["w"],"invalidation":"i","caution":"c"} 以上。'));
+  assert.equal(ov.headline, "偏空");
+  assert.throws(() => normalizeTd(parseLooseJson('{"conclusion":""}')));
+  assert.throws(() => parseLooseJson("没有 JSON"));
+});

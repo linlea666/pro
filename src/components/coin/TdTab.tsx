@@ -6,7 +6,7 @@ import type { LightSummary } from "@/lib/analysis";
 import { TF_LABEL, TF_SECONDS, type Timeframe } from "@/lib/types";
 import { PriceChart, type MarkerSpec, type PriceLineSpec } from "../PriceChart";
 import { Term } from "../Term";
-import { fmtPct, fmtPrice, spanAgo } from "./format";
+import { fmtBjTime, fmtPct, fmtPrice, spanAgo } from "./format";
 import { Explainer, Section, StatsTable } from "./shared";
 import type { TabProps } from "./CoinView";
 import { useReplay } from "./replay";
@@ -144,7 +144,7 @@ function TdMtfTable({ mtf, current, onTf }: { mtf: LightSummary[] | null; curren
             ))}
           </ul>
           <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
-            时间按已收盘的 K 线算。这里只描述每个周期数到了哪里；几个周期同时数到 9 或 13 是否更灵，还没有研究数字，单个信号以前灵不灵见下方统计。点击周期可切换。
+            每行左边是这一行所用 K 线的收盘时刻（北京时间），打开这个页签时每 15 秒更新一次。这里只描述每个周期数到了哪里；几个周期同时数到 9 或 13 是否更灵，还没有研究数字，单个信号以前灵不灵见下方统计。点击周期可切换。
           </p>
         </>
       )}
@@ -162,8 +162,12 @@ function TdRow({ m, active, onTf }: { m: LightSummary; active: boolean; onTf: (t
   return (
     <li className="py-2.5">
       <div className="flex gap-3">
-        <button onClick={() => onTf(m.tf)} className={`w-12 shrink-0 text-left ${active ? "font-semibold text-ink" : "text-ink-2 hover:text-ink"}`}>
+        <button onClick={() => onTf(m.tf)} className={`w-14 shrink-0 text-left ${active ? "font-semibold text-ink" : "text-ink-2 hover:text-ink"}`}>
           {TF_LABEL[m.tf]}
+          <span className="num mt-0.5 block text-[10px] font-normal leading-tight text-ink-3" title="这一行按这一刻收盘的 K 线计算（北京时间）">
+            截至 {fmtBjTime(m.closeAt).slice(6)}
+            {m.tf === "1d" || m.tf === "1w" ? <span className="block">{fmtBjTime(m.closeAt).slice(0, 5)}</span> : null}
+          </span>
         </button>
         <div className="min-w-0 flex-1 space-y-1">
           {n ? (

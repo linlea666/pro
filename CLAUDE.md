@@ -13,7 +13,7 @@
   - 内部 import 用**相对路径并带 `.ts` 后缀**，比如 `../ta/risk.ts`；`@/` 别名只在 app / components 里用；
   - **不要使用 TS 的参数属性写法**（`constructor(private x)`），也不要用 enum。
 - 常用命令：
-  - `npm test`：单元测试，目前 129 个（全部不联网，CI 在 `.github/workflows/ci.yml` 里跑类型检查、测试和构建）；
+  - `npm test`：单元测试，目前 130 个（全部不联网，CI 在 `.github/workflows/ci.yml` 里跑类型检查、测试和构建）；
   - `npx tsc --noEmit`：类型检查；
   - `npx next build`：生产构建；
   - `npm run dev`：本地开发；

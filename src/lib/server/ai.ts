@@ -351,6 +351,61 @@ async function callClaude(c: AiConfig, system: string, user: string, opts: { jso
   };
 }
 
+// Some proxies ignore the json_schema output format: the model then wraps its JSON in a code
+// fence or reshapes a field. Spell the shape out in the request, and read the answer leniently.
+const SHAPE_TD = '只输出一个 JSON 对象，不要代码块，不要其他文字，格式：{"conclusion":"…","timeframes":"…","review":"…","watch":["…","…"]}（timeframes、review 都是一段文字，不是数组）';
+const SHAPE_OVERVIEW =
+  '只输出一个 JSON 对象，不要代码块，不要其他文字，格式：{"headline":"…","summary":"…","timeframes":"…","levels":"…","watch":["…"],"invalidation":"…","caution":"…"}';
+
+/** JSON from a model answer that may be wrapped in a ```json fence or surrounded by text. */
+export function parseLooseJson(text: string): Record<string, unknown> {
+  const t = text.trim();
+  const fenced = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  let body = fenced ? fenced[1] : t;
+  if (!body.trim().startsWith("{")) {
+    const a = body.indexOf("{"), b = body.lastIndexOf("}");
+    if (a < 0 || b <= a) throw new Error("没有找到 JSON");
+    body = body.slice(a, b + 1);
+  }
+  const v = JSON.parse(body);
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("不是 JSON 对象");
+  return v as Record<string, unknown>;
+}
+
+/** A field the model returned as a list (or a list of {tf, text}) becomes one paragraph. */
+function asText(v: unknown): string {
+  if (typeof v === "string") return v.trim();
+  if (Array.isArray(v)) return v.map(asText).filter(Boolean).join("\n");
+  if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    if (typeof o.text === "string") return `${typeof o.tf === "string" ? `${o.tf}：` : ""}${o.text}`.trim();
+    return Object.values(o).map(asText).filter(Boolean).join("：");
+  }
+  return v == null ? "" : String(v);
+}
+
+const asList = (v: unknown): string[] => (Array.isArray(v) ? v.map(asText).filter(Boolean) : asText(v) ? [asText(v)] : []);
+
+export function normalizeTd(o: Record<string, unknown>): TdAiContent {
+  const c = { conclusion: asText(o.conclusion), timeframes: asText(o.timeframes), review: asText(o.review), watch: asList(o.watch) };
+  if (!c.conclusion || !c.watch.length) throw new Error("字段缺失");
+  return c;
+}
+
+export function normalizeOverview(o: Record<string, unknown>): AiContent {
+  const c = {
+    headline: asText(o.headline),
+    summary: asText(o.summary),
+    timeframes: asText(o.timeframes),
+    levels: asText(o.levels),
+    watch: asList(o.watch),
+    invalidation: asText(o.invalidation),
+    caution: asText(o.caution),
+  };
+  if (!c.headline || !c.watch.length) throw new Error("字段缺失");
+  return c;
+}
+
 export interface Interpretation<C = AiContent> {
   content: C;
   model: string;
@@ -439,8 +494,8 @@ export async function interpret(coin: string, tf: Timeframe, kind: AiKind = "ove
     try {
       r =
         kind === "td"
-          ? await callClaude(c, TD_PROMPT, `请解读下面这份多周期 TD 计数：\n${JSON.stringify(buildTdSnapshot(a, mtf))}`, { json: true, schema: TD_SCHEMA as unknown as Record<string, unknown> })
-          : await callClaude(c, c.prompt || DEFAULT_PROMPT, `请解读下面这份行情快照：\n${JSON.stringify(buildSnapshot(a, mtf))}`, { json: true });
+          ? await callClaude(c, TD_PROMPT, `请解读下面这份多周期 TD 计数：\n${JSON.stringify(buildTdSnapshot(a, mtf))}\n\n${SHAPE_TD}`, { json: true, schema: TD_SCHEMA as unknown as Record<string, unknown> })
+          : await callClaude(c, c.prompt || DEFAULT_PROMPT, `请解读下面这份行情快照：\n${JSON.stringify(buildSnapshot(a, mtf))}\n\n${SHAPE_OVERVIEW}`, { json: true });
     } catch (e) {
       recordUsage(false);
       const err = describeApiError(e);
@@ -455,8 +510,7 @@ export async function interpret(coin: string, tf: Timeframe, kind: AiKind = "ove
     }
     let content: AiContent | TdAiContent;
     try {
-      content = JSON.parse(r.text) as AiContent | TdAiContent;
-      if (!(kind === "td" ? (content as TdAiContent).conclusion : (content as AiContent).headline) || !Array.isArray(content.watch)) throw new Error("字段缺失");
+      content = kind === "td" ? normalizeTd(parseLooseJson(r.text)) : normalizeOverview(parseLooseJson(r.text));
     } catch (e) {
       logger.error("ai", `AI 返回内容无法解析 ${coin} ${tf}`, { error: (e as Error).message, stopReason: r.stopReason, sample: r.text.slice(0, 300) });
       throw new AiError("AI 返回的内容格式不正确", "bad_output");

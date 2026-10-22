@@ -133,6 +133,26 @@ export function CoinView({ coinId, coins, initialTf, initialTab, initialAsOf = n
     return () => clearInterval(id);
   }, [load, asOf]);
 
+  // the TD tab's multi-timeframe table: small timeframes close every few minutes, so refresh it every 15 s while it is open
+  useEffect(() => {
+    if (tab !== "td" || asOf) return;
+    let alive = true;
+    const get = () =>
+      fetch(`/api/mtf?coin=${coinId}${mode === "pro" ? "&pro=1" : ""}`)
+        .then((r) => r.json())
+        .then((m) => alive && Array.isArray(m) && setMtf(m))
+        .catch(() => {});
+    const visible = () => document.visibilityState === "visible";
+    const id = setInterval(() => visible() && get(), 15_000);
+    const onVis = () => visible() && get();
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      alive = false;
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [tab, asOf, coinId, mode]);
+
   useEffect(() => {
     if (data && !data.replay && tab === "overview") track("view_verdict", `verdict:${data.coin}:${data.tf}`);
   }, [data, tab]);

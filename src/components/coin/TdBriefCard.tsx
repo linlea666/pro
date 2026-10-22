@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Analysis, LightSummary } from "@/lib/analysis";
 import { tdBrief, tdDetailOf, type TdBriefRow } from "@/lib/tdbrief";
-import { TF_LABEL, type Timeframe } from "@/lib/types";
+import { TF_LABEL, TF_SECONDS, type Timeframe } from "@/lib/types";
 import { track } from "../track";
 
 interface TdAiContent {
@@ -30,8 +30,9 @@ export function TdBriefCard({ a, mtf, mode }: { a: Analysis; mtf: LightSummary[]
   const brief = useMemo(() => {
     const closed = a.forming ? a.candles.slice(0, -1) : a.candles;
     const focus: TdBriefRow = { tf: a.tf, d: tdDetailOf(a.td, closed) };
-    // a replay has no multi-timeframe data: describe the rewound timeframe only
-    const rows: TdBriefRow[] = mtf && !a.replay ? mtf.map((m) => (m.tf === a.tf ? focus : { tf: m.tf, d: m.tdDetail })) : [focus];
+    const focusCloseAt = a.lastClosedT + TF_SECONDS[a.tf];
+    // a replay has no multi-timeframe data: describe the rewound timeframe only; otherwise take whichever copy of the focus timeframe saw the later close
+    const rows: TdBriefRow[] = mtf && !a.replay ? mtf.map((m) => (m.tf === a.tf && m.closeAt <= focusCloseAt ? focus : { tf: m.tf, d: m.tdDetail })) : [focus];
     if (!rows.some((r) => r.tf === a.tf)) rows.push(focus);
     const ls = a.td.current.lastSignal;
     const last = ls ? { side: ls.side, kind: ls.kind, barsAgo: ls.barsAgo, price: ls.price, riskLevel: ls.riskLevel, invalidated: ls.invalidated, changePct: ls.changePct } : null;
@@ -142,8 +143,12 @@ function TdAi({ coin, tf }: { coin: string; tf: Timeframe }) {
       ) : res.status === "ok" ? (
         <div className="space-y-2">
           <p className="font-medium text-ink">{res.content.conclusion}</p>
-          <Block label="多周期">{res.content.timeframes}</Block>
-          <Block label="复盘">{res.content.review}</Block>
+          <Block label="多周期">
+            <span className="whitespace-pre-line">{res.content.timeframes}</span>
+          </Block>
+          <Block label="复盘">
+            <span className="whitespace-pre-line">{res.content.review}</span>
+          </Block>
           <Block label="接下来盯">
             <ul className="space-y-0.5">
               {res.content.watch.map((w) => (

@@ -13,7 +13,7 @@ async function handler(req: NextRequest) {
   const coin = findCoin(req.nextUrl.searchParams.get("coin") ?? "");
   if (!coin) return NextResponse.json({ error: "unknown coin" }, { status: 400 });
   try {
-    return NextResponse.json(await multiTimeframe(coin.id, req.nextUrl.searchParams.get("pro") === "1"), { headers: { "cache-control": "public, max-age=30" } });
+    return NextResponse.json(await multiTimeframe(coin.id, req.nextUrl.searchParams.get("pro") === "1"), { headers: { "cache-control": "public, max-age=10" } });
   } catch (e) {
     logger.error("engine", "多周期接口失败", { error: e });
     return NextResponse.json({ error: "行情数据暂时获取失败，请稍后再试" }, { status: 502 });
