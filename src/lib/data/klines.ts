@@ -1,5 +1,6 @@
 import type { Candle, Timeframe } from "../types.ts";
 import { TF_SECONDS } from "../types.ts";
+import { closedBetween } from "../bars.ts";
 import { getDb } from "../server/db.ts";
 import { recordSource } from "../server/health.ts";
 import { raiseAlert } from "../server/alert.ts";
@@ -341,7 +342,8 @@ export async function getKlines(coin: string, tf: Timeframe, limit = 2000): Prom
   const key = `${coin}:${tf}:${limit}`;
   const now = Date.now();
   const hit = cache.get(key);
-  if (hit?.value && now - hit.at < TTL_MS[tf]) return hit.value;
+  // a bar that closed since the cached fetch makes the cache stale at once: pages refresh right after each close
+  if (hit?.value && now - hit.at < TTL_MS[tf] && !closedBetween(tf, hit.at, now)) return hit.value;
   if (hit?.pending) {
     if (now - (hit.since ?? 0) < STUCK_MS) return hit.pending;
     logger.warn("datasource", `K 线读取超过 ${STUCK_MS / 60_000} 分钟没有完成，重新读取：${coin} ${tf}`);

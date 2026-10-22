@@ -10,6 +10,7 @@ import type { PaTf, PaView } from "@/lib/pa";
 import type { CoinMeta } from "@/lib/symbols";
 import { CoinsContext } from "../coins-context";
 import { BEGINNER_TIMEFRAMES, TF_HORIZON, TF_LABEL, TF_SECONDS, TIMEFRAMES, type Timeframe } from "@/lib/types";
+import { barStart, nextClose } from "@/lib/bars";
 import { ago, fmtBjTime, fmtPct, fmtPrice, signColor } from "./format";
 import { Overview } from "./Overview";
 import { TdTab } from "./TdTab";
@@ -44,6 +45,22 @@ type TabId = (typeof TABS)[number]["id"];
 const BEGINNER_TABS: TabId[] = ["overview", "plan", "watch", "pa", "learn"];
 /** tabs that load their own data rather than the chart timeframe's analysis */
 const OWN_DATA: TabId[] = ["plan", "learn", "watch", "pa"];
+
+/** exchanges publish a closed bar within a few seconds; ask a little after the close */
+const CLOSE_LAG_MS = 5000;
+
+/** The live price patched into an analysis: the header, and the forming bar's close / high / low on the chart. */
+function withLivePrice(a: Analysis, price: number, change24h: number | null): Analysis {
+  const last = a.candles[a.candles.length - 1];
+  // once the forming bar's time is up it is a closed bar the next analysis will bring; leave it alone
+  const formingLive = a.forming && Date.now() / 1000 < a.forming.closesAt && last;
+  return {
+    ...a,
+    price,
+    change24h: change24h ?? a.change24h,
+    candles: formingLive ? [...a.candles.slice(0, -1), { ...last, c: price, h: Math.max(last.h, price), l: Math.min(last.l, price) }] : a.candles,
+  };
+}
 const PA_TFS: PaTf[] = ["15m", "1h", "4h", "1d"];
 const PA_PREF = "sl-pa-tf";
 
@@ -103,19 +120,35 @@ export function CoinView({ coinId, coins, initialTf, initialTab, initialAsOf = n
     } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // close time (unix seconds) of the newest bar the live page has: the analysis of `tf`, and the smallest timeframe of the table
+  const aClose = useRef(0);
+  const mClose = useRef(0);
+  const smallTf = (mode === "pro" ? TIMEFRAMES : BEGINNER_TIMEFRAMES)[0];
+  const loadMtf = useCallback(async () => {
+    if (asOf) return;
+    try {
+      const m = await fetch(`/api/mtf?coin=${coinId}${mode === "pro" ? "&pro=1" : ""}`).then((r) => r.json());
+      if (Array.isArray(m)) {
+        setMtf(m);
+        mClose.current = (m as LightSummary[]).find((x) => x.tf === smallTf)?.closeAt ?? 0;
+      }
+    } catch {}
+  }, [coinId, mode, asOf, smallTf]);
+
   const load = useCallback(
-    async (quiet = false) => {
+    async (quiet = false, analysisOnly = false) => {
       if (!quiet) setLoading(true);
       try {
-        const [a, m] = await Promise.all([
+        const [a] = await Promise.all([
           fetch(`/api/analysis?coin=${coinId}&tf=${tf}${asOf ? `&asOf=${asOf}` : ""}`).then((r) => r.json()),
-          asOf ? Promise.resolve(null) : fetch(`/api/mtf?coin=${coinId}${mode === "pro" ? "&pro=1" : ""}`).then((r) => r.json()),
+          asOf || analysisOnly ? null : loadMtf(),
         ]);
         if (a.error) throw new Error(a.error);
         setData(a);
-        if (!asOf) live.current = a;
-        else track("use_replay", `replay:${coinId}:${tf}:${asOf}`);
-        if (Array.isArray(m)) setMtf(m);
+        if (!asOf) {
+          live.current = a;
+          aClose.current = (a as Analysis).lastClosedT + TF_SECONDS[tf];
+        } else track("use_replay", `replay:${coinId}:${tf}:${asOf}`);
         setError(null);
       } catch (e) {
         setError((e as Error).message || "加载失败");
@@ -123,35 +156,73 @@ export function CoinView({ coinId, coins, initialTf, initialTab, initialAsOf = n
         setLoading(false);
       }
     },
-    [coinId, tf, mode, asOf],
+    [coinId, tf, asOf, loadMtf],
   );
 
   useEffect(() => {
+    aClose.current = 0;
     load();
-    if (asOf) return; // a replay never changes; no need to poll
-    const id = setInterval(() => load(true), 60_000);
-    return () => clearInterval(id);
-  }, [load, asOf]);
+  }, [load]);
 
-  // the TD tab's multi-timeframe table: small timeframes close every few minutes, so refresh it every 15 s while it is open
+  // Refresh on closes. Conclusions only change when a bar closes, so the analysis is fetched a few seconds
+  // after its own timeframe closes and the multi-timeframe table after its smallest timeframe closes; until the
+  // server has the new bar it retries every 5 s (for up to 2 minutes). Nothing runs while the page is hidden;
+  // coming back fetches whatever closed meanwhile.
   useEffect(() => {
-    if (tab !== "td" || asOf) return;
+    if (asOf) return;
     let alive = true;
-    const get = () =>
-      fetch(`/api/mtf?coin=${coinId}${mode === "pro" ? "&pro=1" : ""}`)
-        .then((r) => r.json())
-        .then((m) => alive && Array.isArray(m) && setMtf(m))
-        .catch(() => {});
-    const visible = () => document.visibilityState === "visible";
-    const id = setInterval(() => visible() && get(), 15_000);
-    const onVis = () => visible() && get();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let retries = 0;
+    const stale = (now: number) => ({ a: aClose.current > 0 && aClose.current < barStart(tf, now), m: mClose.current > 0 && mClose.current < barStart(smallTf, now) });
+    const schedule = () => {
+      const now = Date.now() / 1000;
+      const s = stale(now);
+      const due = Math.min(nextClose(tf, now), nextClose(smallTf, now));
+      const wait = (s.a || s.m) && retries < 24 ? 5000 : (due - now) * 1000 + CLOSE_LAG_MS;
+      timer = setTimeout(run, wait);
+    };
+    const run = async () => {
+      timer = undefined;
+      if (!alive || document.visibilityState !== "visible") return;
+      const s = stale(Date.now() / 1000);
+      if (s.a || s.m) await Promise.all([s.a ? load(true, true) : null, s.m ? loadMtf() : null]);
+      if (!alive) return;
+      const after = stale(Date.now() / 1000);
+      retries = after.a || after.m ? retries + 1 : 0;
+      schedule();
+    };
+    const onVis = () => {
+      if (!alive || document.visibilityState !== "visible") return;
+      clearTimeout(timer);
+      retries = 0;
+      run();
+    };
+    schedule();
     document.addEventListener("visibilitychange", onVis);
     return () => {
       alive = false;
-      clearInterval(id);
+      clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [tab, asOf, coinId, mode]);
+  }, [asOf, tf, smallTf, load, loadMtf]);
+
+  // the price in the header and the bar still forming on the chart: every 15 s, without re-running the analysis
+  useEffect(() => {
+    if (asOf) return;
+    let alive = true;
+    const get = () =>
+      fetch(`/api/price?coin=${coinId}`)
+        .then((r) => r.json())
+        .then((p: { price?: number; change24h?: number | null }) => {
+          if (alive && typeof p.price === "number") setData((d) => (d && !d.replay && d.coin === coinId ? withLivePrice(d, p.price!, p.change24h ?? null) : d));
+        })
+        .catch(() => {});
+    const id = setInterval(() => document.visibilityState === "visible" && get(), 15_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [asOf, coinId]);
 
   useEffect(() => {
     if (data && !data.replay && tab === "overview") track("view_verdict", `verdict:${data.coin}:${data.tf}`);
@@ -502,6 +573,7 @@ export function CoinView({ coinId, coins, initialTf, initialTab, initialAsOf = n
       {!OWN_DATA.includes(tab) && fresh && (
         <ReplayContext.Provider value={replay}>
         <div className={loading ? "opacity-60 transition" : "transition"}>
+          {!asOf && <RefreshLine tf={tf} closeAt={data.lastClosedT + TF_SECONDS[tf]} onRefresh={() => load(true)} />}
           {tab === "overview" && <Overview a={data} mtf={mtf} mode={mode} plan={planFresh} onTf={changeTf} onTab={(t) => setTab(t as TabId)} />}
           {tab === "td" && <TdTab a={data} mtf={mtf} mode={mode} onTf={changeTf} />}
           {tab === "indicators" && <IndicatorsTab a={data} mtf={mtf} mode={mode} onTf={changeTf} />}
@@ -511,7 +583,7 @@ export function CoinView({ coinId, coins, initialTf, initialTab, initialAsOf = n
           {tab === "chan" && <ChanTab a={data} mtf={mtf} mode={mode} onTf={changeTf} />}
           <p className="mt-4 text-right text-[11px] text-ink-3">
             数据来源 {SOURCE_NOTE[data.source] ?? SOURCE_NOTE.local} · 更新于 {ago(data.updatedAt)}
-            {!asOf && " · 每分钟自动刷新"}
+            {!asOf && " · 每根 K 线收盘后自动刷新，现价每 15 秒更新（页面在前台时）"}
             {data.source !== "binance-spot" && (
               <>
                 <br />
@@ -542,6 +614,34 @@ function CloseLine({ c, replay }: { c: { tf: Timeframe; close: number; closeAt: 
         {fmtBjTime(c.closeAt)} 收盘
         {!replay && (pending ? " · 下一根已收盘，正在更新" : ` · 下一根 ${TF_SECONDS[c.tf] >= 86400 ? fmtBjTime(next) : fmtBjTime(next).slice(6)} 收盘`)}
       </div>
+    </div>
+  );
+}
+
+/** "按 4小时 10-22 20:00 收盘的 K 线 · 下一次 10-23 00:00 收盘后更新 · 立即刷新" above every analysis tab. */
+function RefreshLine({ tf, closeAt, onRefresh }: { tf: Timeframe; closeAt: number; onRefresh: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const next = closeAt + TF_SECONDS[tf];
+  const waiting = Date.now() / 1000 >= next;
+  const t = (sec: number) => (TF_SECONDS[tf] >= 86400 ? fmtBjTime(sec) : fmtBjTime(sec).slice(6));
+  return (
+    <div className="num mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 px-1 text-[11px] text-ink-3">
+      <span>
+        本页按{TF_LABEL[tf]} <span className="text-ink-2">{t(closeAt)}</span> 收盘的 K 线计算
+      </span>
+      <span>·</span>
+      <span>{waiting ? `${t(next)} 的收盘数据正在获取…` : `下一次 ${t(next)} 收盘后自动更新`}</span>
+      <button
+        className="rounded border border-line px-1.5 py-0.5 text-ink-2 hover:text-ink disabled:opacity-50"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          await onRefresh();
+          setBusy(false);
+        }}
+      >
+        {busy ? "刷新中…" : "立即刷新"}
+      </button>
     </div>
   );
 }

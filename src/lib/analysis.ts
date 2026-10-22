@@ -3,6 +3,7 @@ import { logger } from "./server/log.ts";
 import { currentParams } from "./server/params-store.ts";
 import { DEFAULT_ENGINE_PARAMS, type EngineParams } from "./params.ts";
 import { TF_SECONDS } from "./types.ts";
+import { closedBetween } from "./bars.ts";
 import type { Candle, Timeframe } from "./types.ts";
 import { BEGINNER_TIMEFRAMES, TIMEFRAMES } from "./types.ts";
 import * as ta from "./ta/core.ts";
@@ -184,7 +185,7 @@ export type IndicatorStat = Pick<SignalStats, "samples" | "winRate" | "winLo" | 
 
 const clean = (arr: number[]) => arr.map((v) => (Number.isFinite(v) ? Math.round(v * 1e6) / 1e6 : null));
 
-function change24h(c: Candle[]): number {
+export function change24h(c: Candle[]): number {
   const last = c[c.length - 1];
   const target = last.t + (c[1] ? c[1].t - c[0].t : 0) - 86400;
   let ref = c[0];
@@ -229,7 +230,7 @@ export async function analyze(coin: string, tf: Timeframe): Promise<Analysis> {
   const params = currentParams();
   const key = `${coin}:${tf}:${params.version}`;
   const hit = cache.get(key);
-  if (hit?.value && Date.now() - hit.at < ttlFor(tf)) return hit.value;
+  if (hit?.value && Date.now() - hit.at < ttlFor(tf) && !closedBetween(tf, hit.at, Date.now())) return hit.value;
   if (hit?.pending) {
     if (Date.now() - (hit.since ?? 0) < STUCK_MS) return hit.pending;
     logger.warn("engine", `分析超过 ${STUCK_MS / 60_000} 分钟没有完成，重新计算：${coin} ${tf}`);
