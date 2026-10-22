@@ -150,6 +150,23 @@ async function tick() {
       if (!r.error && (r.cmDays || r.fngDays)) logger[r.cmDays > 10 ? "info" : "debug"]("datasource", "现货估值数据已更新", { ...r });
       done("spotDaily");
     }
+    // the ETF 买盘 page: daily ETF flows (the file is small; every 2 hours catches the overnight publication and revisions),
+    // and the hourly Coinbase / Binance / USDT closes behind the premarket premium (back to 2024 the first time)
+    const flowsEmpty = !getDb().prepare("SELECT 1 FROM etf_flows LIMIT 1").get();
+    if (flowsEmpty || due("etfFlows", 2 * HOUR)) {
+      const { syncEtfFlows } = await import("../data/flows.ts");
+      const r = await syncEtfFlows();
+      // failures are logged and alerted inside
+      if (!r.error && (r.added || r.revised)) logger.info("datasource", "ETF 流入数据已更新", { ...r });
+      done("etfFlows");
+    }
+    if (getState("job.premiumComplete") !== "1" || due("premiumHourly", HOUR - 60_000)) {
+      const { syncPremiumHourly } = await import("../data/flows.ts");
+      const r = await syncPremiumHourly({ budgetMs: 60_000 });
+      setState("job.premiumComplete", r.complete ? "1" : "0");
+      if (!r.error && r.requests > 3) logger.info("datasource", r.complete ? "溢价历史已补齐" : "溢价历史补充中", { ...r });
+      done("premiumHourly");
+    }
     // stop-loss calibration: weekly, and right away on a fresh install
     const calibEmpty = !getDb().prepare("SELECT 1 FROM risk_calib LIMIT 1").get();
     if (calibEmpty || due("riskCalib", 7 * DAY)) {
@@ -208,6 +225,7 @@ export function startJobs() {
   setTimeout(tick, 15_000);
   import("./precompute.ts").then((m) => m.startPrecompute()).catch((e) => logger.error("system", "预计算启动失败", { error: e }));
   import("./watchalert.ts").then((m) => m.startWatchAlerts()).catch((e) => logger.error("system", "盯盘提醒启动失败", { error: e }));
+  import("../data/flows.ts").then((m) => m.startPremiumSampler()).catch((e) => logger.error("system", "溢价采样启动失败", { error: e }));
   g.__slJobs = setInterval(tick, 10 * 60 * 1000);
   g.__slJobs.unref?.();
 }

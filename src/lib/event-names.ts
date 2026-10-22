@@ -12,6 +12,7 @@ export const EVENT_NAMES = {
   view_pa: "看裸 K",
   view_spot: "看现货囤币",
   view_moves: "看涨跌统计",
+  view_flows: "看 ETF 买盘",
   use_stack: "使用攒币计划",
   check_position: "使用持仓体检",
   defense_done: "完成防守位任务",

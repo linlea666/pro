@@ -53,6 +53,12 @@ for u in "https://community-api.coinmetrics.io/v4/timeseries/asset-metrics?asset
          "https://api.alternative.me/fng/?limit=1"; do
   curl -s -o /dev/null --max-time 15 -w "  %{http_code}  %{time_total}s  ${u%%\?*}\n" "$u"
 done
+echo "--- ETF 买盘页要用的免费数据源（HTTP 状态码、耗时；000 = 连不上）"
+for u in "https://www.tftc.io/bitcoin-etf-flows/latest.json" \
+         "https://api.exchange.coinbase.com/products/BTC-USD/ticker" \
+         "https://data-api.binance.vision/api/v3/ticker/price?symbol=BTCUSDT"; do
+  curl -s -o /dev/null --max-time 15 -w "  %{http_code}  %{time_total}s  ${u%%\?*}\n" "$u"
+done
 
 sec "2. 开机 / 关机记录"
 last -x 2>/dev/null | grep -E "reboot|shutdown|crash" | head -10

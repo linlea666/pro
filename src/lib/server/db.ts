@@ -209,6 +209,31 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (asset, day)
   ) WITHOUT ROWID;
   `,
+  // 13: the ETF 买盘 page: US spot BTC ETF daily net flows (TFTC, first published value kept apart from revisions),
+  // and the Coinbase / Binance / USDT prices behind the premarket premium, hourly (history) and per minute (live)
+  `
+  CREATE TABLE etf_flows (
+    day TEXT PRIMARY KEY,
+    flow REAL NOT NULL,
+    first_flow REAL NOT NULL,
+    aum REAL,
+    per_etf TEXT,
+    first_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  ) WITHOUT ROWID;
+  CREATE TABLE premium_hourly (
+    t INTEGER PRIMARY KEY,
+    cb REAL,
+    bn REAL,
+    usdt REAL
+  ) WITHOUT ROWID;
+  CREATE TABLE premium_minute (
+    t INTEGER PRIMARY KEY,
+    cb REAL NOT NULL,
+    bn REAL NOT NULL,
+    usdt REAL NOT NULL
+  ) WITHOUT ROWID;
+  `,
 ];
 
 let db: Database.Database | null = null;

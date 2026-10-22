@@ -23,6 +23,8 @@
  *                                 (Beijing time unless a zone is given): both sides' state, the levels, the signs
  *   spot [--sync]                 BTC spot valuation for the 现货囤币 page: the rulers now, the opinion zones as prices,
  *                                 the past episodes of each zone; --sync downloads the new days first
+ *   flows [--sync]                the ETF 买盘 page: the latest ETF flow and its ranks, today's premarket premium Z and
+ *                                 the Z table; --sync downloads the flows and the hourly premium history first
  */
 import fs from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -406,8 +408,52 @@ async function main() {
       }
       break;
     }
+    case "flows": {
+      const { syncEtfFlows, syncPremiumHourly, samplePremium, flowsFreshness } = await import("../src/lib/data/flows.ts");
+      const { buildFlowsPage } = await import("../src/lib/flows/page.ts");
+      const bj = (t: number) => new Date((t + 8 * 3600) * 1000).toISOString().slice(0, 16).replace("T", " ");
+      if (rest.includes("--sync")) {
+        const e = await syncEtfFlows();
+        console.log(`ETF 流入：${e.days} 天，新增 ${e.added}，修正 ${e.revised}，最新 ${e.lastDay ?? "—"}${e.error ? `，出错：${e.error}` : ""}`);
+        for (;;) {
+          const r = await syncPremiumHourly({ budgetMs: 60_000 });
+          console.log(`溢价历史：请求 ${r.requests} 次，${r.rows} 行${r.error ? `，出错：${r.error}` : ""}`);
+          if (r.complete || !r.requests) break;
+          if (r.error) await new Promise((f) => setTimeout(f, 5_000));
+        }
+        try {
+          const s = await samplePremium();
+          getDb().prepare("INSERT OR REPLACE INTO premium_minute (t, cb, bn, usdt) VALUES (?, ?, ?, ?)").run(s.t, s.cb, s.bn, s.usdt);
+        } catch (e) {
+          console.log(`实时溢价采样失败：${(e as Error).message}`);
+        }
+        console.log("");
+      }
+      const f = flowsFreshness();
+      const p = buildFlowsPage(Date.now() / 1000);
+      const yi = (x: number | null) => (x == null ? "—" : `${x >= 0 ? "+" : "−"}${(Math.abs(x) / 1e8).toFixed(2)} 亿`);
+      const pc = (x: number | null) => (x == null ? "—" : `${Math.round(x)}%`);
+      const n = p.now;
+      console.log(`ETF 流入：${f.days} 个交易日，最新 ${f.lastDay}；溢价历史 ${f.hours} 小时，最新实时采样 ${f.lastMinute ? bj(f.lastMinute) : "无"}`);
+      console.log(`${n.day}（美东）净流入 ${yi(n.flow)} 美元，最近 120 个交易日分位 ${Math.round(n.pct * 100)}%；连续 ${Math.abs(n.streak)} 天${n.streak > 0 ? "流入" : "流出"}`);
+      console.log(`近 3 日 ${yi(n.sum3)}（分位 ${Math.round(n.p3 * 100)}%），近 7 日 ${yi(n.sum7)}（分位 ${Math.round(n.p7 * 100)}%）→ 美国买盘：${n.state}`);
+      if (p.firstFlow !== n.flow) console.log(`  首次公布 ${yi(p.firstFlow)}，之后修正为 ${yi(n.flow)}`);
+      console.log(`分基金：${p.funds.slice(0, 6).map((x) => `${x.name} ${yi(x.flow)}`).join("，") || "—"}`);
+      const r = p.radar;
+      const zs = (z: number | null | undefined) => (z == null ? "—" : `${z >= 0 ? "+" : ""}${z.toFixed(2)}`);
+      console.log(`\n盘前雷达（${r.day}，${r.phase}${r.weekend ? "，周末" : ""}）：Z ${zs(r.z)}${r.band ? `（${r.band}）` : ""}，溢价 ${r.prem == null ? "—" : `${(r.prem * 100).toFixed(4)}%`}；当天 ETF 净流入的历史比例 ${pc(r.inflowPct)}（所有日子 ${pc(r.baseInflowPct)}）`);
+      if (r.prevDay) console.log(`上一个交易日 ${r.prevDay.day}：Z ${zs(r.prevDay.z)}`);
+      if (r.live) console.log(`实时：真实溢价 ${(r.live.prem * 100).toFixed(4)}%（名义 ${(r.live.nominal * 100).toFixed(4)}%，USDT ${r.live.usdt}），${bj(r.live.t)}`);
+      console.log(`\nZ 分档（${r.tableDays} 个交易日）：档位 | 天数 | 当天 ETF 净流入 | 美股时段 BTC 上涨 | 平均`);
+      for (const x of r.table) console.log(`  ${x.label.padEnd(10)} ${String(x.days).padStart(4)} | ${pc(x.inflowPct).padStart(4)} | ${pc(x.upPct).padStart(4)} | ${x.avgPct == null ? "—" : x.avgPct.toFixed(2) + "%"}`);
+      const fl = p.follows;
+      console.log(`\n流入和涨跌的相关系数（${fl.days} 天）：当天 ${fl.sameDay.toFixed(2)}，之前 5 天 ${fl.prev5.toFixed(2)}，之后 1 天 ${fl.next1.toFixed(2)}，之后 7 天 ${fl.next7.toFixed(2)}`);
+      console.log(`像 ${n.day} 这样（${p.similar.label}）之后：${p.similar.rows.map((x) => `${x.days} 天 ${x.avgPct.toFixed(2)}%/涨 ${Math.round(x.upPct)}%`).join("，")}；所有日子：${p.similar.all.map((x) => `${x.days} 天 ${x.avgPct.toFixed(2)}%/涨 ${Math.round(x.upPct)}%`).join("，")}`);
+      console.log(`\n${p.facts.flowNoEdge}\n${p.facts.zFlow}\n${p.facts.zPrice}`);
+      break;
+    }
     default:
-      console.log("用法：cli.ts migrate | admin [--user 名称] [--password 密码] | backup | restore 文件 | info | history [--sync] | research [--kind …] | compare --set … | plan [--coin BTC] [--at 时间] | watch [--coin BTC] [--at 时间] | spot [--sync]");
+      console.log("用法：cli.ts migrate | admin [--user 名称] [--password 密码] | backup | restore 文件 | info | history [--sync] | research [--kind …] | compare --set … | plan [--coin BTC] [--at 时间] | watch [--coin BTC] [--at 时间] | spot [--sync] | flows [--sync]");
       process.exitCode = cmd ? 1 : 0;
   }
 }

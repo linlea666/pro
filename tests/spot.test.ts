@@ -234,12 +234,11 @@ test("migration 12: the spot table on a fresh database and on a v11 one", () => 
   const fresh = new Database(":memory:");
   migrate(fresh);
   assert.equal(fresh.pragma("user_version", { simple: true }), SCHEMA_VERSION);
-  assert.equal(SCHEMA_VERSION, 12);
   const old = new Database(":memory:");
   migrate(old, 11);
   old.prepare("INSERT INTO coins (id, name, sort, added_at) VALUES ('BTC', 'Bitcoin', 0, 1)").run();
   migrate(old);
-  assert.equal(old.pragma("user_version", { simple: true }), 12);
+  assert.equal(old.pragma("user_version", { simple: true }), SCHEMA_VERSION);
   old.prepare("INSERT INTO spot_daily (asset, day, price, updated_at) VALUES ('BTC', '2026-10-20', 1, 1)").run();
   assert.deepEqual(old.prepare("SELECT asset, day, price, supply, mvrv, fng FROM spot_daily").all(), [{ asset: "BTC", day: "2026-10-20", price: 1, supply: null, mvrv: null, fng: null }]);
   assert.equal((old.prepare("SELECT COUNT(*) n FROM coins").get() as { n: number }).n, 1);
