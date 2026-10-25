@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { SpotPage } from "@/lib/spot/page";
 import { track } from "../track";
+import { BottomListCard } from "./BottomList";
 import { Episodes } from "./Episodes";
 import { PriceLadder } from "./PriceLadder";
 import { fmtBj, type Mode } from "./spot-ui";
@@ -102,6 +103,7 @@ export function SpotView() {
               <PriceLadder d={d} />
             </div>
           </div>
+          <BottomListCard d={d} mode={mode} />
           <Episodes d={d} mode={mode} />
           <StackPlanner d={d} mode={mode} />
           <footer className="space-y-1 text-[11px] leading-relaxed text-ink-3">

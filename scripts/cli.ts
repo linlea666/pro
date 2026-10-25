@@ -406,6 +406,15 @@ async function main() {
         }
         for (const m of e.summary) if (m.n) console.log(`  ${m.days / 365} 年：${m.n} 段里 ${m.better} 段好于同期，平均倍数比 ${m.ratio!.toFixed(2)}；${m.verdict}`);
       }
+      const { bottomList, BOTTOM_RULES } = await import("../src/lib/spot/bottoms.ts");
+      const b = bottomList(s, r);
+      if (b) {
+        console.log(`\n见底清单：6 项里亮了 ${b.litCount} 项（只描述，不是见底信号）`);
+        for (const it of b.items) console.log(`  ${it.lit ? "●" : "○"} ${it.label}：${it.value}${it.price != null ? ` ${fp(it.price)}（离现价 ${sg(it.distPct)}）` : ""}`);
+        console.log(`每轮第一次亮到 ${BOTTOM_RULES.half} 项（${b.from} 起可算）：`);
+        for (const e of b.episodes)
+          console.log(`  ${e.start} 价格 ${fp(e.price)}，亮 ${e.lit.map((k) => b.items.find((x) => x.key === k)!.label).join("、")}；之后 2 年内最深 ${sg(e.drawdownPct)}（${e.lowDay}）；1 / 2 年后 ${e.after.map((a) => (a.mult == null ? "—" : `${a.mult.toFixed(2)}x`)).join(" / ")}`);
+      }
       break;
     }
     case "flows": {

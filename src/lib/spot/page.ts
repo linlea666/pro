@@ -20,6 +20,7 @@ import {
 } from "./valuation.ts";
 import { parseOpinionZones } from "./opinion.ts";
 import { STACK_DEFAULTS, type SpotHistoryWire } from "./stack.ts";
+import { bottomList, BOTTOM_RULES, type BottomList } from "./bottoms.ts";
 
 /**
  * What GET /api/spot returns: the 现货囤币 page's valuation (daily, recomputed once per new stored day), the live
@@ -36,6 +37,9 @@ export interface SpotPage {
   live: SpotLivePrice;
   opinion: { source: string; date: string; zones: CapZonePrice[] };
   episodes: EpisodeResult[];
+  /** the 见底清单: six bottom conditions now and after each past cycle first had half lit (E27) */
+  bottoms: BottomList | null;
+  bottomRules: typeof BOTTOM_RULES;
   fng: FngBlock | null;
   /** reference prices for the planner (computed lines and the opinion zones' edges) */
   refs: PriceRef[];
@@ -82,6 +86,8 @@ function build(): Omit<SpotPage, "live"> {
     now,
     opinion: { source: op.value.source, date: op.value.date, zones },
     episodes: EPISODE_ZONES.map((z) => episodes(s, z.key, r)),
+    bottoms: bottomList(s, r),
+    bottomRules: BOTTOM_RULES,
     fng: fngBlock(fngPoints("BTC")),
     refs: spotRefs(now, zones),
     reservePrice,

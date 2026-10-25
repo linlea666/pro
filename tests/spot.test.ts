@@ -291,3 +291,40 @@ test("sync: Coin Metrics pages and Fear & Greed upsert their own columns; a fail
   assert.match(c.error!, /coinmetrics/);
   assert.equal(c.fngDays, 2, "Fear & Greed still updated");
 });
+
+test("bottom list: weekly RSI on every 7th close, Pi Cycle, and episodes of the first half-lit day per cycle", async () => {
+  const b = await import("../src/lib/spot/bottoms.ts");
+  // weekly RSI: steady weekly gains → 100; one interleaved series per weekday
+  const up = Array.from({ length: 7 * 20 }, (_, i) => 100 + Math.floor(i / 7));
+  const r = b.weeklyRsi(up);
+  assert.equal(r[7 * 14 - 1], null);
+  assert.equal(r[7 * 14 + 6], 100);
+  // alternating +2 / −1 weeks: Wilder average gain 1 / loss 0.5 after the seed → RSI near 66.7
+  const alt = [100];
+  for (let w = 1; w <= 60; w++) alt.push(alt[w - 1] + (w % 2 ? 2 : -1));
+  const daily = alt.flatMap((p) => Array(7).fill(p));
+  const ra = b.weeklyRsi(daily)[daily.length - 1]!;
+  assert.ok(Math.abs(ra - 66.7) < 2, String(ra));
+  // ema seeds with the first value and is null before n days
+  assert.deepEqual(b.ema([1, 1, 1, 4], 3).map((x) => (x == null ? null : Math.round(x * 100) / 100)), [null, null, 1, 2.5]);
+
+  // a 6-year series: a long rise, a crash to a third, a slow recovery; MVRV < 1 during the crash
+  const n = 6 * 365;
+  const p = Array.from({ length: n }, (_, i) => (i < 1500 ? 100 + i : i < 1600 ? 1600 - (i - 1500) * 10 : 600 + (i - 1600) * 2));
+  const s = series(p, { mvrv: p.map((_, i) => (i >= 1550 && i < 1700 ? 0.9 : 1.5)) });
+  const L = b.bottomList(s, v.rulers(s))!;
+  assert.equal(L.items.length, 6);
+  assert.equal(L.litCount, L.items.filter((x) => x.lit).length);
+  assert.equal(L.episodes.length, 1, JSON.stringify(L.episodes.map((e) => e.start)));
+  const e = L.episodes[0];
+  assert.ok(e.lit.length >= b.BOTTOM_RULES.half);
+  assert.ok(e.drawdownPct <= 0);
+  assert.equal(e.low, Math.min(...p.slice(v.dayNum(e.start) - v.dayNum(s.day[0]), v.dayNum(e.start) - v.dayNum(s.day[0]) + 731)));
+  const age = v.dayNum(s.day[n - 1]) - v.dayNum(e.start);
+  assert.deepEqual(L.higher.map((h) => h.n), b.BOTTOM_RULES.horizons.map((h) => (age >= h ? 1 : 0)));
+  assert.ok(age >= 365);
+  assert.equal(L.furtherDrop!.n, 1);
+  // price lines report where they light and how far that is
+  const w = L.items.find((x) => x.key === "ma200")!;
+  assert.ok(w.price != null && w.distPct != null && !w.lit && w.distPct < 0);
+});
