@@ -225,6 +225,7 @@ export function startJobs() {
   setTimeout(tick, 15_000);
   import("./precompute.ts").then((m) => m.startPrecompute()).catch((e) => logger.error("system", "预计算启动失败", { error: e }));
   import("./watchalert.ts").then((m) => m.startWatchAlerts()).catch((e) => logger.error("system", "盯盘提醒启动失败", { error: e }));
+  import("./rollalert.ts").then((m) => m.startRollAlerts()).catch((e) => logger.error("system", "滚仓提醒启动失败", { error: e }));
   import("../data/flows.ts").then((m) => m.startPremiumSampler()).catch((e) => logger.error("system", "溢价采样启动失败", { error: e }));
   g.__slJobs = setInterval(tick, 10 * 60 * 1000);
   g.__slJobs.unref?.();

@@ -123,6 +123,7 @@ test("status: most urgent first", () => {
   const pos = positionOf(1, [{ kind: "open", price: 2300, qty: 4 }], 0);
   const s = (o: Partial<Parameters<typeof rollStatus>[0]>) => rollStatus({ pos, price: 2400, stop: 2250, liq: 2080, atr: 20, cuts: [], addLevel: 2450, fee: 0, ...o });
   assert.equal(s({ liq: 2370 }).title, "离强平太近");
+  assert.equal(s({ liq: 2410 }).title, "已经越过强平价");
   assert.equal(s({ stop: 2410 }).title, "已经过了止损");
   assert.equal(s({ stop: 2395 }).title, "快到止损");
   assert.equal(s({ price: 2290 }).title, "浮亏中：不加仓");

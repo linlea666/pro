@@ -266,6 +266,8 @@ export function rollStatus(o: {
   const f = (v: number) => (v >= 1000 ? Math.round(v).toLocaleString("en-US") : v >= 1 ? v.toFixed(2) : v.toPrecision(4));
   const money = (v: number) => `${v >= 0 ? "" : "−"}${Math.abs(Math.round(v)).toLocaleString("en-US")} USDT`;
   if (!(pos.qty > 0)) return { tone: "wait", title: "没有持仓", detail: "这笔已经全部平掉了。" };
+  if (liq != null && d * (price - liq) <= 0)
+    return { tone: "bad", title: "已经越过强平价", detail: `按估算强平价 ${f(liq)}，这笔在交易所应该已经被强平。交易所还有这笔仓位的话，说明保证金比这里填的多：请按交易所显示的数字改。` };
   if (liq != null && d * (price - liq) < ROLL_RULES.nearLiqAtr * atr)
     return { tone: "bad", title: "离强平太近", detail: `强平价 ${f(liq)}，离现价不到 ${ROLL_RULES.nearLiqAtr} 倍 ATR。先减仓或补保证金。` };
   if (stop != null && d * (price - stop) <= 0)

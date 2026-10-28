@@ -1,66 +1,20 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import type { TrendPlan } from "@/lib/trendplan";
-import {
-  cutPlan,
-  DEFAULT_FEE,
-  fundingCost,
-  liquidationPrice,
-  maxAdd,
-  nextAddLevel,
-  pnlAt,
-  positionOf,
-  previewAdd,
-  previewReduce,
-  ROLL_RULES,
-  rollStatus,
-  trimQty,
-  type AddLimit,
-  type Dir,
-  type Fill,
-  type MarginMode,
-  type Position,
-  type Tone,
-} from "@/lib/ta/roll";
+import { DEFAULT_FEE, maxAdd, pnlAt, positionOf, previewAdd, previewReduce, ROLL_RULES, trimQty, type AddLimit, type Dir, type Fill, type MarginMode, type Tone } from "@/lib/ta/roll";
+import { ACCOUNT_RISK_PCT, DEFAULT_ROLL_ALERT, holdingView, marketOf, type Account, type Holding, type HoldingView as View, type RollAlertConfig } from "@/lib/rollbook";
 import type { CoinMeta } from "@/lib/symbols";
 import { fmtPrice } from "../coin/format";
-import { structureStop } from "../coin/plan-ui";
 import { track } from "../track";
 
 /**
  * 滚仓助手: positions entered by hand, grouped by account, with the price ladder, how much
- * may be added under the risk budget, and where to take some off. Everything stays in this
- * browser (localStorage); only public prices and plans are fetched. Nothing is ordered.
+ * may be added under the risk budget, and where to take some off. Visitors keep their accounts
+ * in this browser (localStorage); the signed-in admin's live on the server, which mails alerts.
+ * Only public prices and plans are fetched. Nothing is ordered.
  */
-
-interface Holding {
-  id: string;
-  coin: string;
-  dir: Dir;
-  mode: MarginMode;
-  leverage: number;
-  fills: Fill[];
-  /** null: use the plan's structure stop */
-  stop: number | null;
-  targets: number[];
-  /** closed profit carried over when the fills were replaced by the exchange's figures */
-  realizedBase: number;
-  example?: boolean;
-}
-
-interface Account {
-  id: string;
-  name: string;
-  /** account total, USDT */
-  total: number;
-  /** risk budget per position, % of the account */
-  riskPct: number;
-  /** keep: the whole position may lose the budget at the stop; even: it must not lose after an add */
-  budget: "keep" | "even";
-  fee: number;
-  holdings: Holding[];
-}
 
 const KEY = "sl-roll-v1";
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -88,6 +42,7 @@ function save(list: Account[]) {
     localStorage.setItem(KEY, JSON.stringify(list));
   } catch {}
 }
+const real = (list: Account[]) => list.filter((a) => a.id !== EXAMPLE.id || a.holdings.some((h) => !h.example)).map((a) => ({ ...a, holdings: a.holdings.filter((h) => !h.example) }));
 
 const field = "num w-full rounded-lg border border-line bg-panel-2 px-2.5 py-1.5 text-sm outline-none focus:border-accent";
 const money = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(Math.round(v)).toLocaleString("en-US")}`;
@@ -134,51 +89,64 @@ function useLive(coins: string[]): Record<string, Live> {
   return live;
 }
 
-/** Everything the page shows about one holding, from its fills and the live data. */
-function analyse(h: Holding, acc: Account, l: Live | undefined) {
-  const pos = positionOf(h.dir, h.fills, acc.fee);
-  pos.realized += h.realizedBase;
-  const plan = l?.plan ?? null;
-  const price = l?.price ?? plan?.price ?? null;
-  const atr = plan?.atr ?? null;
-  const st = plan ? structureStop(plan, h.dir) : null;
-  const stop = h.stop ?? st?.stop ?? null;
-  const liq = liquidationPrice({ dir: h.dir, qty: pos.qty, avg: pos.avg, mode: h.mode, leverage: h.leverage, account: acc.total });
-  const levels = (plan?.levels ?? []).map((x) => x.price);
-  const budget = acc.budget === "even" ? 0 : (acc.total * acc.riskPct) / 100;
-  const add = (at: number) => (stop != null ? maxAdd({ pos, price: at, stop, budget, mode: h.mode, leverage: h.leverage, account: acc.total, atr, fee: acc.fee }) : null);
-  // the next level is where to add after a close beyond it while adding is still allowed; otherwise it is the first cut
-  const next = price != null ? nextAddLevel(h.dir, price, levels) : null;
-  const canAdd = next != null && (add(next)?.qty ?? 0) > 0;
-  const cuts = price != null ? cutPlan(pos, price, canAdd ? levels.filter((x) => h.dir * (x - next!) > 0) : levels, acc.fee) : [];
-  const addLevel = canAdd || (next != null && !cuts.some((c) => c.price === next)) ? next : null;
-  const status = price != null ? rollStatus({ pos, price, stop, liq, atr, cuts, addLevel, fee: acc.fee }) : null;
-  const open = price != null ? pnlAt(pos, price, acc.fee) : null;
-  const atStop = stop != null && pos.qty > 0 ? pnlAt(pos, stop, acc.fee) : null;
-  const fundDay = l?.funding != null && price != null ? fundingCost(h.dir, pos.qty * price, l.funding, 3) : null;
-  return { pos, plan, price, atr, st, stop, liq, levels, cuts, addLevel, budget, add, status, open, atStop, fundDay, funding: l?.funding ?? null };
+const analyse = (h: Holding, acc: Account, l: Live | undefined): View => holdingView(h, acc, marketOf(l?.plan ?? null, l?.price ?? null, l?.funding ?? null));
+
+/** The signed-in admin's book on the server (null: a visitor, kept in this browser). */
+interface Server {
+  alert: RollAlertConfig;
+  mailTo: string[];
+  mailReady: boolean;
+  /** accounts in this browser that the server does not have yet */
+  local: Account[] | null;
 }
-type View = ReturnType<typeof analyse>;
 
 export function RollView({ coins }: { coins: CoinMeta[] }) {
   const [accounts, setAccounts] = useState<Account[]>([EXAMPLE]);
   const [accId, setAccId] = useState(EXAMPLE.id);
   const [holdId, setHoldId] = useState<string | null>("ex1");
   const [adding, setAdding] = useState(false);
+  const [server, setServer] = useState<Server | null>(null);
+  const [sync, setSync] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const show = (list: Account[]) => {
+    setAccounts(list);
+    setAccId(list[0].id);
+    setHoldId(list[0].holdings[0]?.id ?? null);
+  };
   useEffect(() => {
-    const v = load();
-    if (v?.length) {
-      setAccounts(v);
-      setAccId(v[0].id);
-      setHoldId(v[0].holdings[0]?.id ?? null);
-    }
+    const local = load();
+    if (local?.length) show(local);
+    fetch("/api/admin/roll")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((b) => {
+        if (!b?.book) return;
+        const mine: Account[] = b.book.accounts;
+        setServer({ alert: b.book.alert, mailTo: b.mailTo, mailReady: b.mailReady, local: !mine.length && local && real(local).length ? real(local) : null });
+        if (mine.length) show(mine);
+      })
+      .catch(() => {});
     track("view_roll", "roll");
   }, []);
 
+  const push = (list: Account[], alert: RollAlertConfig, now = false) => {
+    if (timer.current) clearTimeout(timer.current);
+    const go = () =>
+      fetch("/api/admin/roll", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "save", book: { accounts: real(list), alert } }) })
+        .then(async (r) => {
+          const b = await r.json().catch(() => null);
+          if (!r.ok) throw new Error(b?.error || "保存失败");
+          setServer((s) => s && { ...s, alert: b.book.alert });
+          setSync("已保存到服务器");
+        })
+        .catch((e) => setSync((e as Error).message));
+    if (now) return go();
+    timer.current = setTimeout(go, 800);
+  };
   const update = (next: Account[]) => {
     setAccounts(next);
-    save(next);
+    if (server) push(next, server.alert);
+    else save(next);
     track("use_roll", "roll");
   };
   const acc = accounts.find((a) => a.id === accId) ?? accounts[0];
@@ -200,8 +168,24 @@ export function RollView({ coins }: { coins: CoinMeta[] }) {
         </p>
       </header>
 
+      {server ? (
+        <div className="space-y-2 text-xs text-ink-3">
+          <p>已登录：账户和持仓存在服务器上，服务器每分钟检查一次，按下面的设置发邮件。{sync && <span className={sync === "已保存到服务器" ? "" : "text-down"}> {sync}</span>}</p>
+          {server.local && (
+            <p className="text-ink-2">
+              这个浏览器里还有 {server.local.length} 个账户没存到服务器。
+              <button className="ml-2 text-accent" onClick={() => (show(server.local!), update(server.local!), setServer({ ...server, local: null }))}>存到服务器</button>
+            </p>
+          )}
+        </div>
+      ) : (
+        <p className="text-xs text-ink-3">
+          账户和持仓只存在这个浏览器里。站长<Link href="/admin" className="text-accent">登录后台</Link>后，这一页会改存到服务器，并能在到加仓位、减仓位、快到止损时发邮件。
+        </p>
+      )}
+
       <AccountBar accounts={accounts} acc={acc} onPick={(id) => { setAccId(id); setHoldId(accounts.find((a) => a.id === id)?.holdings[0]?.id ?? null); }} onChange={setAcc} onAdd={() => {
-        const a: Account = { id: uid(), name: `账户 ${accounts.length + 1}`, total: 10000, riskPct: 2, budget: "keep", fee: DEFAULT_FEE.taker, holdings: [] };
+        const a: Account = { id: uid(), name: `账户 ${real(accounts).length + 1}`, total: 10000, riskPct: 2, budget: "keep", fee: DEFAULT_FEE.taker, holdings: [] };
         update([...accounts.filter((x) => x.id !== EXAMPLE.id || x.holdings.some((h) => !h.example)), a]);
         setAccId(a.id);
         setHoldId(null);
@@ -238,9 +222,11 @@ export function RollView({ coins }: { coins: CoinMeta[] }) {
         !adding && <div className="card p-6 text-sm text-ink-3">这个账户还没有持仓。点“添加持仓”，填上币种、方向、开仓价和数量。</div>
       )}
 
+      {server && <AlertCard server={server} onSave={(alert) => push(accounts, alert, true)} accounts={accounts} />}
+
       <Rules />
       <p className="text-[11px] leading-relaxed text-ink-3">
-        账户和持仓只保存在这个浏览器（换设备或清缓存会丢失），页面不会上传。强平价按维持保证金率 0.5% 估算、不含平仓手续费和资金费，以交易所显示为准。页面上的止损请在交易所挂好，提醒不能代替止损单。
+        {server ? "账户和持仓存在服务器上，只有登录后能看到。" : "账户和持仓只保存在这个浏览器（换设备或清缓存会丢失），页面不会上传。"}强平价按维持保证金率 0.5% 估算、不含平仓手续费和资金费，以交易所显示为准。页面上的止损请在交易所挂好，提醒不能代替止损单。
       </p>
     </div>
   );
@@ -319,7 +305,7 @@ function AccountRisk({ acc, views }: { acc: Account; views: (readonly [Holding, 
         {known.length < views.length && <span className="text-ink-3">（{views.length - known.length} 笔还没有止损）</span>}
       </span>
       <span>实际杠杆 <b className={`num ${lev > ROLL_RULES.maxLeverage ? "text-down" : ""}`}>{lev.toFixed(1)} 倍</b></span>
-      {pct > 6 && <span className="text-warn">⚠ 超过账户的 6%：一起打到止损时伤得很重。</span>}
+      {pct > ACCOUNT_RISK_PCT && <span className="text-warn">⚠ 超过账户的 {ACCOUNT_RISK_PCT}%：一起打到止损时伤得很重。</span>}
       {sides.map((s) => (
         <span key={s.join()} className="text-warn">⚠ {s.join("、")} 同方向：常常一起涨跌，等于一笔更大的单。</span>
       ))}
@@ -339,7 +325,7 @@ function HoldingCard({ h, v, acc, onChange, onRemove }: { h: Holding; v: View; a
         <h2 className="text-lg font-semibold">
           {h.coin} {h.dir > 0 ? "多单" : "空单"} <span className="text-sm font-normal text-ink-3">· {h.mode === "isolated" ? "逐仓" : "全仓"} {h.leverage}× {h.example && "· 示例，可以直接改或删掉"}</span>
         </h2>
-        <span className="num text-sm text-ink-3">现价 {fmtPrice(price)}{v.plan && ` · 4 小时 ATR ${fmtPrice(atr)}`}</span>
+        <span className="num text-sm text-ink-3">现价 {fmtPrice(price)}{atr != null && ` · 4 小时 ATR ${fmtPrice(atr)}`}</span>
       </div>
 
       {v.status && (
@@ -360,11 +346,11 @@ function HoldingCard({ h, v, acc, onChange, onRemove }: { h: Holding; v: View; a
         <div className="flex flex-wrap justify-between gap-2">
           <span className="text-ink-3">离强平</span>
           <span className="num">
-            {liq == null ? "按现在的保证金不会被强平" : liqPct == null ? fmtPrice(liq) : `${liqPct.toFixed(1)}%（${fmtPrice(liq)}）${liqAtr != null ? ` · ${liqAtr.toFixed(1)} 倍 ATR` : ""}`}
+            {liq == null ? "按现在的保证金不会被强平" : liqPct == null ? fmtPrice(liq) : h.dir * (price! - liq) <= 0 ? <b className="text-down">已越过强平价 {fmtPrice(liq)}</b> : `${liqPct.toFixed(1)}%（${fmtPrice(liq)}）${liqAtr != null ? ` · ${liqAtr.toFixed(1)} 倍 ATR` : ""}`}
             {liq != null && stop != null && h.dir * (stop - liq) <= 0 && <b className="text-down"> · 强平在止损之前，还没到止损就会被强平</b>}
           </span>
         </div>
-        {liqAtr != null && <SafetyBar atr={liqAtr} />}
+        {liqAtr != null && h.dir * (price! - liq!) > 0 && <SafetyBar atr={liqAtr} />}
         {v.fundDay != null && (
           <div className="text-xs text-ink-3">
             资金费：当前费率 {((v.funding ?? 0) * 100).toFixed(4)}%，按这个费率每天{v.fundDay >= 0 ? "付" : "收"}约 {Math.abs(v.fundDay).toFixed(1)} USDT（每 8 小时结算一次，费率会变）。
@@ -712,5 +698,45 @@ function Rules() {
         </li>
       </ul>
     </details>
+  );
+}
+
+function AlertCard({ server, accounts, onSave }: { server: Server; accounts: Account[]; onSave: (a: RollAlertConfig) => Promise<void> | void }) {
+  const [enabled, setEnabled] = useState(server.alert.enabled);
+  const [to, setTo] = useState(server.alert.to.join(", "));
+  const [cap, setCap] = useState(server.alert.dailyCap);
+  const [msg, setMsg] = useState<string | null>(null);
+  const form = (): RollAlertConfig => ({ enabled, to: to.split(/[\s,;，；、]+/).filter(Boolean), dailyCap: cap || DEFAULT_ROLL_ALERT.dailyCap });
+  const test = () =>
+    fetch("/api/admin/roll", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "test", book: { accounts: real(accounts), alert: form() } }) })
+      .then(async (r) => {
+        const b = await r.json().catch(() => null);
+        setMsg(r.ok ? b.message : b?.error || "发送失败");
+      })
+      .catch(() => setMsg("发送失败"));
+  return (
+    <section className="card space-y-3 p-4 text-sm">
+      <h2 className="text-[15px] font-semibold">邮件提醒</h2>
+      <p className="text-xs leading-relaxed text-ink-3">
+        服务器每分钟看一次：4 小时收盘站上关键位、按规则可以加仓时；价格到减仓位或你填的价位时；快到止损、已经过了止损、离强平太近时；所有持仓一起打到止损超过账户 {ACCOUNT_RISK_PCT}% 时。同一件事只发一次，同一分钟的几件事合成一封。刚打开时第一轮只记录不发。
+      </p>
+      {!server.mailReady && <p className="text-xs text-warn">后台的邮件还没配置好：先到“系统设置 → 邮件与告警”填 SMTP 并保存。</p>}
+      <label className="flex items-center gap-2">
+        <input id="ra-on" type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+        开启滚仓邮件提醒
+      </label>
+      <div className="grid gap-2.5 text-xs text-ink-3 sm:grid-cols-[2fr_1fr]">
+        <label className="space-y-1">
+          <span>收件邮箱（留空用告警收件人{server.mailTo.length ? `：${server.mailTo.join("、")}` : ""}）</span>
+          <input id="ra-to" className={field} value={to} onChange={(e) => setTo(e.target.value)} />
+        </label>
+        <Num id="ra-cap" label="每天最多几封" value={cap} onChange={setCap} />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button className="rounded-lg bg-ink px-3 py-1.5 text-bg" onClick={() => (setMsg(null), onSave(form()))}>保存提醒设置</button>
+        <button className="rounded-lg border border-line px-3 py-1.5" onClick={test}>发一封测试邮件</button>
+        {msg && <span className="text-xs text-ink-2">{msg}</span>}
+      </div>
+    </section>
   );
 }
