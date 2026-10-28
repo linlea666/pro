@@ -43,6 +43,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Link href="/" className="rounded-lg px-1.5 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink"><span className="hidden sm:inline">今日</span>看盘</Link>
               <Link href="/coin/BTC" className="rounded-lg px-1.5 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink">分析<span className="hidden sm:inline">工作台</span></Link>
               <Link href="/watch" className="rounded-lg px-1.5 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink"><span className="hidden sm:inline">实时</span>盯盘</Link>
+              <Link href="/roll" className="rounded-lg px-1.5 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink">滚仓<span className="hidden sm:inline">助手</span></Link>
               <Link href="/moves" className="rounded-lg px-1.5 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink">涨跌<span className="hidden sm:inline">统计</span></Link>
               <Link href="/spot" className="rounded-lg px-1.5 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink">囤币</Link>
               <Link href="/flows" className="rounded-lg px-1.5 py-1.5 text-ink-2 sm:px-3 hover:bg-panel-2 hover:text-ink">ETF<span className="hidden sm:inline"> 买盘</span></Link>
