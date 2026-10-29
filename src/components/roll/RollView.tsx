@@ -632,6 +632,12 @@ function Settings({ h, v, onChange }: { h: Holding; v: View; onChange: (p: Parti
           <option value="aggressive">激进：可亏一笔风险</option>
         </select>
       </label>
+      {h.mode === "isolated" && (
+        <label className="col-span-2 flex items-start gap-2 sm:col-span-4">
+          <input id="h-nolev" type="checkbox" className="mt-0.5" checked={!!h.noLevCap} onChange={(e) => onChange({ noLevCap: e.target.checked || undefined })} />
+          <span>逐仓不受“实际杠杆不超过 {ROLL_RULES.maxLeverage} 倍”限制。这笔最多亏的就是放进去的保证金；加仓数量仍受风险预算和“止损要在强平之前”限制，杠杆越高强平越近，能加的反而可能更少。</span>
+        </label>
+      )}
       <label className="space-y-1">
         <span>加仓确认用哪根收盘</span>
         <select id="h-confirm" className={field} value={h.confirmTf ?? "4h"} onChange={(e) => onChange({ confirmTf: e.target.value as ConfirmTf })}>

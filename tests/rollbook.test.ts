@@ -135,3 +135,18 @@ test("aggressive style: the per-trade risk as the budget even when the account r
   // (200 + 4 × 20) / 40 = 7 > the pyramid's 4
   assert.equal(v.add(2360)!.binding, "pyramid");
 });
+
+test("isolated holdings can drop the account leverage cap; cross cannot", async () => {
+  const { holdingView } = await import("../src/lib/rollbook.ts");
+  // a big budget so the leverage cap binds: 5 × 10,000 / 2360 − 4 ≈ 17.2
+  const b = book({ stop: 2320, style: "aggressive", leverage: 2 });
+  b.accounts[0].riskPct = 50;
+  const h = b.accounts[0].holdings[0];
+  const capped = holdingView(h, b.accounts[0], mk(2360).ETH).add(2360, 2340)!;
+  assert.equal(capped.binding, "pyramid");
+  const big = { ...h, fills: [{ kind: "open" as const, price: 2300, qty: 20 }] };
+  assert.equal(holdingView(big, b.accounts[0], mk(2360).ETH).add(2360, 2340)!.binding, "leverage");
+  assert.notEqual(holdingView({ ...big, noLevCap: true }, b.accounts[0], mk(2360).ETH).add(2360, 2340)!.binding, "leverage");
+  assert.equal(holdingView({ ...big, noLevCap: true, mode: "cross" }, b.accounts[0], mk(2360).ETH).add(2360, 2340)!.binding, "leverage");
+  assert.equal(cleanBook({ ...b, accounts: [{ ...b.accounts[0], holdings: [{ ...h, noLevCap: true }] }] }, ["ETH"]).accounts[0].holdings[0].noLevCap, true);
+});

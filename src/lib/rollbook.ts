@@ -25,6 +25,8 @@ export interface Holding {
   /** "bold": break-even rolling, each add up to the previous fill, up to 5 adds; "aggressive": the same with
    *  the per-trade risk as the budget (E31d) */
   style?: "bold" | "aggressive";
+  /** isolated only: adds not capped by the account's real leverage (the stop-before-liquidation rule stays) */
+  noLevCap?: boolean;
   example?: boolean;
 }
 
@@ -34,7 +36,11 @@ export const CONFIRM_NAME: Record<ConfirmTf, string> = { "4h": "4 小时", "1h":
 /** E31c: the best price at least `atr` ATR beyond the average, then a price that keeps ≤ `keep` of that profit → cut `cut` */
 /** E31d: the user's "stop at the entry, roll with the profit" — break-even budget, adds as big as the last fill, 5 adds */
 export const BOLD_RULES = { pyramid: 1, maxAdds: 5 };
-export const rulesOf = (h: Pick<Holding, "style">) => (h.style === "bold" || h.style === "aggressive" ? BOLD_RULES : undefined);
+export const rulesOf = (h: Pick<Holding, "style" | "noLevCap" | "mode">) => {
+  const r: { pyramid?: number; maxAdds?: number; maxLeverage?: number } = h.style === "bold" || h.style === "aggressive" ? { ...BOLD_RULES } : {};
+  if (h.noLevCap && h.mode === "isolated") r.maxLeverage = Infinity;
+  return Object.keys(r).length ? r : undefined;
+};
 export const GIVEBACK = { atr: 2, keep: 0.5, cut: 1 / 3 };
 const confirmOf = (h: Holding): ConfirmTf => (h.confirmTf && CONFIRM_TFS.includes(h.confirmTf) ? h.confirmTf : "4h");
 
@@ -99,6 +105,7 @@ export function cleanBook(input: unknown, coins: string[]): RollBook {
         realizedBase: num(h.realizedBase, -1e12, 1e12, 0),
         ...(h.giveback === true ? { giveback: true } : {}),
         ...(h.style === "bold" || h.style === "aggressive" ? { style: h.style } : {}),
+        ...(h.noLevCap === true ? { noLevCap: true } : {}),
         ...(h.confirmTf && CONFIRM_TFS.includes(h.confirmTf) && h.confirmTf !== "4h" ? { confirmTf: h.confirmTf } : {}),
       }))
       .filter((h) => h.fills.length),
@@ -174,7 +181,7 @@ export function holdingView(h: Holding, acc: Account, m: Market) {
   const fundDay = m.funding != null && price != null ? fundingCost(h.dir, pos.qty * price, m.funding, 3) : null;
   const addAt = canAdd ? add(next!) : null;
   const steps = price != null ? planSteps({ pos, price, stop, add: addAt && next != null ? { price: next, qty: addAt.qty } : null, levels: m.levels, fee: acc.fee }) : [];
-  return { pos, price, atr, st, stop, liq, levels: m.levels, cuts, addLevel, budget, rules: { pyramid: rules?.pyramid ?? ROLL_RULES.pyramid, maxAdds: rules?.maxAdds ?? ROLL_RULES.maxAdds, liqGapAtr: ROLL_RULES.liqGapAtr as number, maxLeverage: ROLL_RULES.maxLeverage as number }, add, status, open, atStop, fundDay, funding: m.funding, steps };
+  return { pos, price, atr, st, stop, liq, levels: m.levels, cuts, addLevel, budget, rules: { pyramid: rules?.pyramid ?? ROLL_RULES.pyramid, maxAdds: rules?.maxAdds ?? ROLL_RULES.maxAdds, liqGapAtr: ROLL_RULES.liqGapAtr as number, maxLeverage: rules?.maxLeverage ?? (ROLL_RULES.maxLeverage as number) }, add, status, open, atStop, fundDay, funding: m.funding, steps };
 }
 export type HoldingView = ReturnType<typeof holdingView>;
 
