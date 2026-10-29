@@ -280,7 +280,7 @@ export function rollStatus(o: {
   if (at) return { tone: "good", title: "到减仓位", detail: `${f(at.price)} 一带可以减 ${trimQty(at.qty)}，减完落袋 ${money(at.realized)}。` };
   const locked = stop != null && pnlAt(pos, stop, o.fee) >= 0;
   const next =
-    o.addLevel != null ? `等 ${f(o.addLevel)} 收盘站上再看加仓。` : o.cuts.length ? `前方 ${f(o.cuts[0].price)} 一带先减一部分，剩下按移动认错位拿着。` : "前方没有关键位，按移动认错位拿着。";
+    o.addLevel != null ? `等 4 小时收盘${d > 0 ? "站上" : "跌破"} ${f(o.addLevel)} 再看加仓。` : o.cuts.length ? `前方 ${f(o.cuts[0].price)} 一带先减一部分，剩下按移动认错位拿着。` : "前方没有关键位，按移动认错位拿着。";
   if (locked) return { tone: "good", title: "拿着，止损已保本", detail: `打到止损${moneyAt(pos, stop!, o.fee, money)}。${next}` };
   return { tone: "good", title: "拿着", detail: stop != null ? `打到止损${moneyAt(pos, stop, o.fee, money)}。${next}` : `还没有填止损。${next}` };
 }
@@ -296,4 +296,49 @@ export function trimQty(q: number): string {
   if (q >= 1000) return Math.round(q).toLocaleString("en-US");
   if (q >= 1) return String(Math.round(q * 1000) / 1000);
   return q.toPrecision(3).replace(/\.?0+$/, "");
+}
+
+export interface PlanStep {
+  kind: "add" | "cut";
+  price: number;
+  qty: number;
+  /** position after this step */
+  avg: number;
+  left: number;
+  /** closed profit of this step (a negative fee for an add) */
+  realized: number;
+  /** closed profit of all steps so far, from now on */
+  banked: number;
+  /** after this step: the rest at the stop, plus what was banked */
+  atStop: number | null;
+  /** after this step: closing everything at this step's price, plus what was banked */
+  closeAll: number;
+}
+
+/**
+ * The plan if the price goes the position's way, in order: the add (when allowed) at the next
+ * level, then the cuts at the levels beyond it, sized on the position after the add.
+ */
+export function planSteps(o: { pos: Position; price: number; stop: number | null; add: { price: number; qty: number } | null; levels: number[]; fee?: number }): PlanStep[] {
+  const fee = o.fee ?? DEFAULT_FEE.taker;
+  const d = o.pos.dir;
+  let p: Position = { ...o.pos };
+  let banked = 0;
+  const out: PlanStep[] = [];
+  const after = (price: number) => ({ atStop: o.stop != null ? banked + pnlAt(p, o.stop, fee) : null, closeAll: banked + pnlAt(p, price, fee) });
+  let from = o.price;
+  if (o.add && o.add.qty > 0) {
+    const q = p.qty + o.add.qty;
+    p = { ...p, avg: (p.avg * p.qty + o.add.price * o.add.qty) / q, qty: q, lastAdd: o.add.qty, adds: p.adds + 1 };
+    const cost = -o.add.price * o.add.qty * fee;
+    banked += cost;
+    out.push({ kind: "add", price: o.add.price, qty: o.add.qty, avg: p.avg, left: p.qty, realized: cost, banked, ...after(o.add.price) });
+    from = o.add.price;
+  }
+  for (const c of cutPlan(p, from, o.levels.filter((l) => d * (l - from) > 0), fee)) {
+    banked += c.realized;
+    p = { ...p, qty: c.left };
+    out.push({ kind: "cut", price: c.price, qty: c.qty, avg: p.avg, left: c.left, realized: c.realized, banked, ...after(c.price) });
+  }
+  return out;
 }

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cutPlan, fundingCost, liquidationPrice, maxAdd, nextAddLevel, pnlAt, positionOf, previewAdd, previewReduce, rollStatus, settlementsBetween, trimQty } from "../src/lib/ta/roll.ts";
+import { cutPlan, fundingCost, planSteps, liquidationPrice, maxAdd, nextAddLevel, pnlAt, positionOf, previewAdd, previewReduce, rollStatus, settlementsBetween, trimQty } from "../src/lib/ta/roll.ts";
 
 const near = (a: number, b: number, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≠ ${b}`);
 
@@ -138,4 +138,19 @@ test("quantities print with sensible decimals", () => {
   assert.equal(trimQty(0.0341), "0.0341");
   assert.equal(trimQty(2.12345), "2.123");
   assert.equal(trimQty(1250.4), "1,250");
+});
+
+test("plan steps: the add first, then cuts sized on the bigger position", () => {
+  const pos = positionOf(-1, [{ kind: "open", price: 2380, qty: 4 }], 0);
+  const s = planSteps({ pos, price: 2320, stop: 2385, add: { price: 2290, qty: 2 }, levels: [2230, 2200, 2400], fee: 0 });
+  assert.deepEqual(s.map((x) => x.kind), ["add", "cut", "cut"]);
+  near(s[0].avg, 2350);
+  assert.equal(s[0].left, 6);
+  near(s[0].atStop!, -210);
+  near(s[1].qty, 2);
+  near(s[1].realized, 240);
+  near(s[1].closeAll, 720);
+  near(s[2].banked, 240 + 300);
+  near(s[2].atStop!, 540 - 70);
+  assert.equal(planSteps({ pos, price: 2320, stop: 2385, add: null, levels: [2230], fee: 0 })[0].kind, "cut");
 });

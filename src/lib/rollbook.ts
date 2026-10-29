@@ -4,7 +4,7 @@
  */
 
 import type { TrendPlan } from "./trendplan.ts";
-import { cutPlan, DEFAULT_FEE, fundingCost, liquidationPrice, maxAdd, nextAddLevel, pnlAt, positionOf, rollStatus, trimQty, type Dir, type Fill, type MarginMode } from "./ta/roll.ts";
+import { cutPlan, DEFAULT_FEE, planSteps, fundingCost, liquidationPrice, maxAdd, nextAddLevel, pnlAt, positionOf, rollStatus, trimQty, type Dir, type Fill, type MarginMode } from "./ta/roll.ts";
 
 export interface Holding {
   id: string;
@@ -149,7 +149,9 @@ export function holdingView(h: Holding, acc: Account, m: Market) {
   const open = price != null ? pnlAt(pos, price, acc.fee) : null;
   const atStop = stop != null && pos.qty > 0 ? pnlAt(pos, stop, acc.fee) : null;
   const fundDay = m.funding != null && price != null ? fundingCost(h.dir, pos.qty * price, m.funding, 3) : null;
-  return { pos, price, atr, st, stop, liq, levels: m.levels, cuts, addLevel, budget, add, status, open, atStop, fundDay, funding: m.funding };
+  const addAt = canAdd ? add(next!) : null;
+  const steps = price != null ? planSteps({ pos, price, stop, add: addAt && next != null ? { price: next, qty: addAt.qty } : null, levels: m.levels, fee: acc.fee }) : [];
+  return { pos, price, atr, st, stop, liq, levels: m.levels, cuts, addLevel, budget, add, status, open, atStop, fundDay, funding: m.funding, steps };
 }
 export type HoldingView = ReturnType<typeof holdingView>;
 
@@ -216,7 +218,7 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
           alerts.push({
             key: `${h.id}:add:${lc.t}`,
             kind: "add",
-            title: `${head}：4 小时收盘站上 ${fp(lvl)}，可以加仓`,
+            title: `${head}：4 小时收盘${h.dir > 0 ? "站上" : "跌破"} ${fp(lvl)}，可以加仓`,
             lines: [
               `按规则最多加 ${trimQty(lim.qty)}（约 ${fp(lc.c)}），加完均价 ${fp(lim.avg)}，强平 ${fp(lim.liq)}，打到止损 ${fp(v.stop)} ${lim.atStop >= 0 ? "也赚" : "亏"} ${Math.abs(Math.round(lim.atStop)).toLocaleString("en-US")} USDT。`,
               "先确认止损已经移到新的保护位；规则只给上限，不是一定要加。回测（E31）里滚仓没有可证明比不滚多赚。",

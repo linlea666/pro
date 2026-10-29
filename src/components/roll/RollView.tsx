@@ -358,6 +358,8 @@ function HoldingCard({ h, v, acc, onChange, onRemove }: { h: Holding; v: View; a
         )}
       </div>
 
+      <NextSteps h={h} v={v} />
+
       <Ladder h={h} v={v} />
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -407,6 +409,68 @@ function SafetyBar({ atr }: { atr: number }) {
   );
 }
 
+/** The plan in order if the price goes the position's way: add, then cuts; and what the stop costs. */
+function NextSteps({ h, v }: { h: Holding; v: View }) {
+  const { pos, price, stop, liq } = v;
+  if (!(pos.qty > 0) || price == null) return null;
+  const losing = h.dir * (price - pos.avg) <= 0;
+  const away = h.dir > 0 ? "涨" : "跌";
+  const beyond = (x: number) => `4 小时收盘${h.dir > 0 ? "站上" : "跌破"} ${fmtPrice(x)}`;
+  return (
+    <div className="space-y-2">
+      <h3 className="text-[15px] font-semibold">接下来怎么做（如果价格往你的方向{away}）</h3>
+      {losing ? (
+        <p className="text-sm text-ink-2">现在浮亏，按规则不加仓。先守住止损{stop != null ? ` ${fmtPrice(stop)}` : ""}，等回到均价 {fmtPrice(pos.avg)} 另一边再看。</p>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-line">
+          <table className="num w-full min-w-[640px] text-sm">
+            <thead className="bg-panel-2 text-left text-xs text-ink-3">
+              <tr>
+                <th className="px-3 py-2 font-medium">步骤</th>
+                <th className="px-3 py-2 font-medium">做什么</th>
+                <th className="px-3 py-2 text-right font-medium">之后均价 · 数量</th>
+                <th className="px-3 py-2 text-right font-medium">这一步落袋</th>
+                <th className="px-3 py-2 text-right font-medium">这时全平共赚</th>
+                <th className="px-3 py-2 text-right font-medium">之后打到止损</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-t border-line bg-accent-soft">
+                <td className="px-3 py-2">现在 {fmtPrice(price)}</td>
+                <td className="px-3 py-2">拿着</td>
+                <td className="px-3 py-2 text-right">{fmtPrice(pos.avg)} · {trimQty(pos.qty)}</td>
+                <td className="px-3 py-2 text-right text-ink-3">—</td>
+                <td className={`px-3 py-2 text-right ${toneColor(v.open ?? 0)}`}>{money(v.open ?? 0)}</td>
+                <td className={`px-3 py-2 text-right ${toneColor(v.atStop ?? 0)}`}>{v.atStop != null ? money(v.atStop) : "—"}</td>
+              </tr>
+              {v.steps.map((s, i) => (
+                <tr key={i} className="border-t border-line">
+                  <td className="px-3 py-2">{"①②③④⑤"[i]} {s.kind === "add" ? beyond(s.price) : `到 ${fmtPrice(s.price)}`}</td>
+                  <td className="px-3 py-2">{s.kind === "add" ? <span className="text-up">加 {trimQty(s.qty)}</span> : <span className="text-warn">减 {trimQty(s.qty)}（三分之一）</span>}</td>
+                  <td className="px-3 py-2 text-right">{fmtPrice(s.avg)} · {trimQty(s.left)}</td>
+                  <td className={`px-3 py-2 text-right ${s.kind === "add" ? "text-ink-3" : toneColor(s.realized)}`}>{s.kind === "add" ? `手续费 ${Math.abs(s.realized).toFixed(1)}` : money(s.realized)}</td>
+                  <td className={`px-3 py-2 text-right ${toneColor(s.closeAll)}`}>{money(s.closeAll)}</td>
+                  <td className={`px-3 py-2 text-right ${toneColor(s.atStop ?? 0)}`}>{s.atStop != null ? money(s.atStop) : "—"}</td>
+                </tr>
+              ))}
+              {v.steps.length > 0 && (
+                <tr className="border-t border-line">
+                  <td className="px-3 py-2 text-ink-3" colSpan={6}>剩下的 {trimQty(v.steps[v.steps.length - 1].left)} 跟着移动认错位拿：每出现一个新的保护位，就把止损移到它外面。</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {!losing && !v.steps.length && <p className="text-sm text-ink-2">前方 4 小时图上没有关键位，没有加仓位和减仓位：跟着移动认错位拿着。</p>}
+      <p className="text-[11px] leading-relaxed text-ink-3">
+        {v.steps.some((s) => s.kind === "add") && <>加仓前先把止损移到新的保护位；表里“之后打到止损”还按现在的止损 {fmtPrice(stop)} 算，移了以后亏得更少或者变成赚。</>}
+        如果反着走：到止损 {fmtPrice(stop)} {v.atStop != null ? money(v.atStop) : ""}{liq != null ? `，强平 ${fmtPrice(liq)}` : ""}。加仓位和减仓位来自趋势与计划页的 4 小时关键位，只是“可能停顿的地方”，不是会到的目标。
+      </p>
+    </div>
+  );
+}
+
 interface Rung {
   price: number;
   label: string;
@@ -434,9 +498,10 @@ function Ladder({ h, v }: { h: Holding; v: View }) {
   for (const t of h.targets) rungs.push({ price: t, label: "你填的价位", kind: "target" });
   if (v.addLevel != null) {
     const a = v.add(v.addLevel);
-    rungs.push({ price: v.addLevel, label: a && a.qty > 0 ? `收盘站上 → 最多可加 ${trimQty(a.qty)}，新均价 ${fmtPrice(a.avg)}` : `收盘站上再看加仓${a ? `（现在${BINDING[a.binding]}，加不了）` : ""}`, kind: "add" });
+    rungs.push({ price: v.addLevel, label: a && a.qty > 0 ? `收盘${h.dir > 0 ? "站上" : "跌破"} → 最多可加 ${trimQty(a.qty)}，新均价 ${fmtPrice(a.avg)}` : `收盘${h.dir > 0 ? "站上" : "跌破"}再看加仓${a ? `（现在${BINDING[a.binding]}，加不了）` : ""}`, kind: "add" });
   }
-  v.cuts.forEach((c, i) => rungs.push({ price: c.price, label: `${i ? "第二个" : "前方第一个"}关键位：减 ${trimQty(c.qty)}，落袋 ${money(c.realized)}`, kind: "cut" }));
+  // the cuts as planned: after the add when there is one, so the sizes match the table above
+  v.steps.filter((s) => s.kind === "cut").forEach((c, i) => rungs.push({ price: c.price, label: `${i ? "第二个" : "前方第一个"}关键位：减 ${trimQty(c.qty)}，落袋 ${money(c.realized)}`, kind: "cut" }));
   rungs.sort((a, b) => b.price - a.price);
   return (
     <div className="space-y-2">
@@ -453,7 +518,7 @@ function Ladder({ h, v }: { h: Holding; v: View }) {
           </li>
         ))}
       </ol>
-      <p className="text-[11px] text-ink-3">盈亏是这笔仓位到该价位全部平掉的结果，已扣平仓手续费，不含资金费和已实现部分。关键位只是“沿途可能停顿的地方”，不是会到的目标。</p>
+      <p className="text-[11px] text-ink-3">盈亏是现在这笔仓位（不算还没加的仓）到该价位全部平掉的结果，已扣平仓手续费，不含资金费和已实现部分。关键位只是“沿途可能停顿的地方”，不是会到的目标。</p>
     </div>
   );
 }
@@ -718,7 +783,7 @@ function AlertCard({ server, accounts, onSave }: { server: Server; accounts: Acc
     <section className="card space-y-3 p-4 text-sm">
       <h2 className="text-[15px] font-semibold">邮件提醒</h2>
       <p className="text-xs leading-relaxed text-ink-3">
-        服务器每分钟看一次：4 小时收盘站上关键位、按规则可以加仓时；价格到减仓位或你填的价位时；快到止损、已经过了止损、离强平太近时；所有持仓一起打到止损超过账户 {ACCOUNT_RISK_PCT}% 时。同一件事只发一次，同一分钟的几件事合成一封。刚打开时第一轮只记录不发。
+        服务器每分钟看一次：4 小时收盘越过关键位（多单站上、空单跌破）、按规则可以加仓时；价格到减仓位或你填的价位时；快到止损、已经过了止损、离强平太近时；所有持仓一起打到止损超过账户 {ACCOUNT_RISK_PCT}% 时。同一件事只发一次，同一分钟的几件事合成一封。刚打开时第一轮只记录不发。
       </p>
       {!server.mailReady && <p className="text-xs text-warn">后台的邮件还没配置好：先到“系统设置 → 邮件与告警”填 SMTP 并保存。</p>}
       <label className="flex items-center gap-2">
