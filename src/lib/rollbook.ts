@@ -18,8 +18,19 @@ export interface Holding {
   targets: number[];
   /** closed profit carried over when the fills were replaced by the exchange's figures */
   realizedBase: number;
+  /** the close that confirms an add beyond a key level (default 4h; E31b: 1h / 15m no different) */
+  confirmTf?: ConfirmTf;
+  /** mail when the floating profit gives back half (E31c: smoother, not more) */
+  giveback?: boolean;
   example?: boolean;
 }
+
+export type ConfirmTf = "4h" | "1h" | "15m";
+export const CONFIRM_TFS: ConfirmTf[] = ["4h", "1h", "15m"];
+export const CONFIRM_NAME: Record<ConfirmTf, string> = { "4h": "4 小时", "1h": "1 小时", "15m": "15 分钟" };
+/** E31c: the best price at least `atr` ATR beyond the average, then a price that keeps ≤ `keep` of that profit → cut `cut` */
+export const GIVEBACK = { atr: 2, keep: 0.5, cut: 1 / 3 };
+const confirmOf = (h: Holding): ConfirmTf => (h.confirmTf && CONFIRM_TFS.includes(h.confirmTf) ? h.confirmTf : "4h");
 
 export interface Account {
   id: string;
@@ -80,6 +91,8 @@ export function cleanBook(input: unknown, coins: string[]): RollBook {
         stop: typeof h.stop === "number" && h.stop > 0 ? h.stop : null,
         targets: (Array.isArray(h.targets) ? h.targets : []).filter((x) => typeof x === "number" && x > 0).slice(0, 10),
         realizedBase: num(h.realizedBase, -1e12, 1e12, 0),
+        ...(h.giveback === true ? { giveback: true } : {}),
+        ...(h.confirmTf && CONFIRM_TFS.includes(h.confirmTf) && h.confirmTf !== "4h" ? { confirmTf: h.confirmTf } : {}),
       }))
       .filter((h) => h.fills.length),
   }));
@@ -102,6 +115,8 @@ export interface Market {
   funding: number | null;
   /** the last two closed 4-hour closes */
   lastClose: { t: number; c: number; prev: number } | null;
+  /** the last two closed 1-hour / 15-minute closes, when a holding confirms adds on them */
+  closes?: Partial<Record<"1h" | "15m", { t: number; c: number; prev: number }>>;
 }
 
 /**
@@ -145,7 +160,7 @@ export function holdingView(h: Holding, acc: Account, m: Market) {
   const canAdd = next != null && (add(next)?.qty ?? 0) > 0;
   const cuts = price != null ? cutPlan(pos, price, canAdd ? m.levels.filter((x) => h.dir * (x - next!) > 0) : m.levels, acc.fee) : [];
   const addLevel = canAdd || (next != null && !cuts.some((c) => c.price === next)) ? next : null;
-  const status = price != null ? rollStatus({ pos, price, stop, liq, atr, cuts, addLevel, fee: acc.fee }) : null;
+  const status = price != null ? rollStatus({ pos, price, stop, liq, atr, cuts, addLevel, fee: acc.fee, confirm: CONFIRM_NAME[confirmOf(h)] }) : null;
   const open = price != null ? pnlAt(pos, price, acc.fee) : null;
   const atStop = stop != null && pos.qty > 0 ? pnlAt(pos, stop, acc.fee) : null;
   const fundDay = m.funding != null && price != null ? fundingCost(h.dir, pos.qty * price, m.funding, 3) : null;
@@ -159,13 +174,13 @@ export type HoldingView = ReturnType<typeof holdingView>;
 
 export interface RollAlert {
   key: string;
-  kind: "add" | "cut" | "target" | "stop" | "liq" | "risk";
+  kind: "add" | "cut" | "giveback" | "target" | "stop" | "liq" | "risk";
   title: string;
   lines: string[];
 }
 
 /** what the previous round saw, per holding id (and per account for the account risk) */
-export type RollMemory = Record<string, { price?: number; status?: string; barT?: number }>;
+export type RollMemory = Record<string, { price?: number; status?: string; barT?: number; best?: number; fills?: number; gave?: number }>;
 
 const fp = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? "—" : v >= 1000 ? v.toLocaleString("en-US", { maximumFractionDigits: 1 }) : v >= 1 ? v.toFixed(v >= 100 ? 2 : 3) : v.toPrecision(4));
 const usd = (v: number) => `${v >= 0 ? "+" : "−"}${Math.abs(Math.round(v)).toLocaleString("en-US")} USDT`;
@@ -192,7 +207,12 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
       if (!(v.pos.qty > 0)) continue;
       const price = m.price;
       const was = mem[h.id];
-      next[h.id] = { price, status: v.status?.title, barT: m.lastClose?.t ?? was?.barT };
+      const tf = confirmOf(h);
+      const lc = tf === "4h" ? m.lastClose : (m.closes?.[tf] ?? null);
+      // the best price since the fills last changed, for the giveback alert
+      const nf = h.fills.length;
+      const best = was?.fills === nf && was.best != null ? (h.dir > 0 ? Math.max(was.best, price) : Math.min(was.best, price)) : price;
+      next[h.id] = { price, status: v.status?.title, barT: lc?.t ?? was?.barT, best, fills: nf, ...(was?.fills === nf && was.gave != null ? { gave: was.gave } : {}) };
       if (v.atStop != null) (loss += Math.max(0, -v.atStop)), known++;
       if (!was) continue;
       const head = `${acc.name} · ${h.coin} ${h.dir > 0 ? "多单" : "空单"}`;
@@ -209,7 +229,23 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
       for (const t of h.targets)
         if (crossed(t)) alerts.push({ key: `${h.id}:target:${t}`, kind: "target", title: `${head}：到了你填的价位 ${fp(t)}`, lines: [`在这里全部平掉约 ${usd(pnlAt(v.pos, t, acc.fee))}（已扣手续费）。`, base] });
 
-      const lc = m.lastClose;
+      if (h.giveback && v.atr != null && v.atr > 0 && next[h.id].gave !== best) {
+        const at = (x: number) => h.dir * (x - v.pos.avg) * v.pos.qty;
+        if (h.dir * (best - v.pos.avg) >= GIVEBACK.atr * v.atr && at(price) <= GIVEBACK.keep * at(best)) {
+          next[h.id].gave = best;
+          const q = v.pos.qty * GIVEBACK.cut;
+          alerts.push({
+            key: `${h.id}:giveback:${best}`,
+            kind: "giveback",
+            title: `${head}：浮盈吐回了一半`,
+            lines: [
+              `最好到过 ${fp(best)}（浮盈约 ${usd(at(best))}），现在只剩 ${usd(at(price))}。按你开的“浮盈回吐提醒”，可以先减 ${trimQty(q)}（三分之一）锁住一部分，这部分落袋约 ${usd(h.dir * (price - v.pos.avg) * q)}。`,
+              "回测（E31c）里这样做平均少赚一点（每笔 0.03–0.08R），但最大回撤小了两到三成；它让结果更平稳，不是更赚。",
+              base,
+            ],
+          });
+        }
+      }
       if (lc && was.barT != null && lc.t > was.barT && v.stop != null) {
         const last = h.fills.filter((f) => f.kind !== "reduce").at(-1)?.price ?? v.pos.avg;
         const lvl = m.levels.filter((L) => h.dir * (L - last) > 0 && h.dir * (lc.prev - L) <= 0 && h.dir * (lc.c - L) > 0).sort((a, b) => h.dir * (b - a))[0];
@@ -218,7 +254,7 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
           alerts.push({
             key: `${h.id}:add:${lc.t}`,
             kind: "add",
-            title: `${head}：4 小时收盘${h.dir > 0 ? "站上" : "跌破"} ${fp(lvl)}，可以加仓`,
+            title: `${head}：${CONFIRM_NAME[tf]}收盘${h.dir > 0 ? "站上" : "跌破"} ${fp(lvl)}，可以加仓`,
             lines: [
               `按规则最多加 ${trimQty(lim.qty)}（约 ${fp(lc.c)}），加完均价 ${fp(lim.avg)}，强平 ${fp(lim.liq)}，打到止损 ${fp(v.stop)} ${lim.atStop >= 0 ? "也赚" : "亏"} ${Math.abs(Math.round(lim.atStop)).toLocaleString("en-US")} USDT。`,
               "先确认止损已经移到新的保护位；规则只给上限，不是一定要加。回测（E31）里滚仓没有可证明比不滚多赚。",

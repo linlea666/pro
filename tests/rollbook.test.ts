@@ -81,3 +81,28 @@ test("mail text", () => {
   assert.match(subject, /滚仓提醒/);
   assert.match(text, /\/roll/);
 });
+
+test("a holding that confirms adds on 1-hour closes reads those, and cleanBook keeps the choice", () => {
+  const b = book({ stop: 2320, confirmTf: "1h" });
+  assert.equal(cleanBook(b, ["ETH"]).accounts[0].holdings[0].confirmTf, "1h");
+  const four = { lastClose: { t: 1000, c: 2350, prev: 2340 } };
+  const { mem } = pickRollAlerts(b, mk(2350, { ...four, closes: { "1h": { t: 500, c: 2350, prev: 2340 } } }), {});
+  // the 4-hour bar has not closed again, the hour has
+  const r = pickRollAlerts(b, mk(2370, { ...four, closes: { "1h": { t: 600, c: 2370, prev: 2350 } } }), mem);
+  const add = r.alerts.find((a) => a.kind === "add");
+  assert.ok(add, "add alert");
+  assert.match(add!.title, /1 小时收盘站上 2,360/);
+});
+
+test("the giveback alert: only when switched on, once per best price", () => {
+  const b = book({ giveback: true, stop: 2250, targets: [] });
+  let { mem } = pickRollAlerts(b, mk(2300), {});
+  ({ mem } = pickRollAlerts(b, mk(2380), mem)); // best 2380: 80 beyond the average, 4 ATR
+  assert.equal(mem.h1.best, 2380);
+  const r = pickRollAlerts(b, mk(2335), mem); // keeps 35 of 80
+  const g = r.alerts.find((a) => a.kind === "giveback");
+  assert.ok(g, "giveback alert");
+  assert.match(g!.lines[0], /减 1\.333/);
+  assert.equal(pickRollAlerts(b, mk(2330), r.mem).alerts.filter((a) => a.kind === "giveback").length, 0);
+  assert.equal(pickRollAlerts(book({ targets: [] }), mk(2335), mem).alerts.filter((a) => a.kind === "giveback").length, 0);
+});

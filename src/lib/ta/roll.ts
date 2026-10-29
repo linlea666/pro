@@ -259,6 +259,8 @@ export function rollStatus(o: {
   cuts: Cut[];
   addLevel: number | null;
   fee?: number;
+  /** the close that confirms an add, e.g. "4 小时" */
+  confirm?: string;
 }): { tone: Tone; title: string; detail: string } {
   const { pos, price, stop, liq } = o;
   const d = pos.dir;
@@ -280,7 +282,7 @@ export function rollStatus(o: {
   if (at) return { tone: "good", title: "到减仓位", detail: `${f(at.price)} 一带可以减 ${trimQty(at.qty)}，减完落袋 ${money(at.realized)}。` };
   const locked = stop != null && pnlAt(pos, stop, o.fee) >= 0;
   const next =
-    o.addLevel != null ? `等 4 小时收盘${d > 0 ? "站上" : "跌破"} ${f(o.addLevel)} 再看加仓。` : o.cuts.length ? `前方 ${f(o.cuts[0].price)} 一带先减一部分，剩下按移动认错位拿着。` : "前方没有关键位，按移动认错位拿着。";
+    o.addLevel != null ? `等 ${o.confirm ?? "4 小时"}收盘${d > 0 ? "站上" : "跌破"} ${f(o.addLevel)} 再看加仓。` : o.cuts.length ? `前方 ${f(o.cuts[0].price)} 一带先减一部分，剩下按移动认错位拿着。` : "前方没有关键位，按移动认错位拿着。";
   if (locked) return { tone: "good", title: "拿着，止损已保本", detail: `打到止损${moneyAt(pos, stop!, o.fee, money)}。${next}` };
   return { tone: "good", title: "拿着", detail: stop != null ? `打到止损${moneyAt(pos, stop, o.fee, money)}。${next}` : `还没有填止损。${next}` };
 }

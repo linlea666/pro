@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { TrendPlan } from "@/lib/trendplan";
 import { DEFAULT_FEE, maxAdd, pnlAt, positionOf, previewAdd, previewReduce, ROLL_RULES, trimQty, type AddLimit, type Dir, type Fill, type MarginMode, type Tone } from "@/lib/ta/roll";
-import { ACCOUNT_RISK_PCT, DEFAULT_ROLL_ALERT, holdingView, marketOf, type Account, type Holding, type HoldingView as View, type RollAlertConfig } from "@/lib/rollbook";
+import { ACCOUNT_RISK_PCT, CONFIRM_NAME, CONFIRM_TFS, DEFAULT_ROLL_ALERT, type ConfirmTf, holdingView, marketOf, type Account, type Holding, type HoldingView as View, type RollAlertConfig } from "@/lib/rollbook";
 import type { CoinMeta } from "@/lib/symbols";
 import { fmtPrice } from "../coin/format";
 import { track } from "../track";
@@ -370,7 +370,7 @@ function HoldingCard({ h, v, acc, onChange, onRemove }: { h: Holding; v: View; a
       <Settings h={h} v={v} onChange={onChange} />
 
       <details className="text-sm">
-        <summary className="cursor-pointer text-ink-2">成交记录（{h.fills.length} 笔）</summary>
+        <summary className="cursor-pointer text-ink-2">成交记录（{h.fills.length} 笔）· 改、删、补记手动加减仓</summary>
         <Fills h={h} acc={acc} onChange={onChange} />
       </details>
 
@@ -415,7 +415,7 @@ function NextSteps({ h, v }: { h: Holding; v: View }) {
   if (!(pos.qty > 0) || price == null) return null;
   const losing = h.dir * (price - pos.avg) <= 0;
   const away = h.dir > 0 ? "涨" : "跌";
-  const beyond = (x: number) => `4 小时收盘${h.dir > 0 ? "站上" : "跌破"} ${fmtPrice(x)}`;
+  const beyond = (x: number) => `${CONFIRM_NAME[h.confirmTf ?? "4h"]}收盘${h.dir > 0 ? "站上" : "跌破"} ${fmtPrice(x)}`;
   return (
     <div className="space-y-2">
       <h3 className="text-[15px] font-semibold">接下来怎么做（如果价格往你的方向{away}）</h3>
@@ -498,7 +498,7 @@ function Ladder({ h, v }: { h: Holding; v: View }) {
   for (const t of h.targets) rungs.push({ price: t, label: "你填的价位", kind: "target" });
   if (v.addLevel != null) {
     const a = v.add(v.addLevel);
-    rungs.push({ price: v.addLevel, label: a && a.qty > 0 ? `收盘${h.dir > 0 ? "站上" : "跌破"} → 最多可加 ${trimQty(a.qty)}，新均价 ${fmtPrice(a.avg)}` : `收盘${h.dir > 0 ? "站上" : "跌破"}再看加仓${a ? `（现在${BINDING[a.binding]}，加不了）` : ""}`, kind: "add" });
+    rungs.push({ price: v.addLevel, label: a && a.qty > 0 ? `${CONFIRM_NAME[h.confirmTf ?? "4h"]}收盘${h.dir > 0 ? "站上" : "跌破"} → 最多可加 ${trimQty(a.qty)}，新均价 ${fmtPrice(a.avg)}` : `${CONFIRM_NAME[h.confirmTf ?? "4h"]}收盘${h.dir > 0 ? "站上" : "跌破"}再看加仓${a ? `（现在${BINDING[a.binding]}，加不了）` : ""}`, kind: "add" });
   }
   // the cuts as planned: after the add when there is one, so the sizes match the table above
   v.steps.filter((s) => s.kind === "cut").forEach((c, i) => rungs.push({ price: c.price, label: `${i ? "第二个" : "前方第一个"}关键位：减 ${trimQty(c.qty)}，落袋 ${money(c.realized)}`, kind: "cut" }));
@@ -624,6 +624,20 @@ function Settings({ h, v, onChange }: { h: Holding; v: View; onChange: (p: Parti
         )}
       </div>
       <label className="space-y-1">
+        <span>加仓确认用哪根收盘</span>
+        <select id="h-confirm" className={field} value={h.confirmTf ?? "4h"} onChange={(e) => onChange({ confirmTf: e.target.value as ConfirmTf })}>
+          {CONFIRM_TFS.map((tf) => (
+            <option key={tf} value={tf}>{CONFIRM_NAME[tf]}{tf === "4h" ? "（默认）" : "（更快）"}</option>
+          ))}
+        </select>
+      </label>
+      <label className="col-span-2 flex items-start gap-2 sm:col-span-4">
+        <input type="checkbox" className="mt-0.5" checked={!!h.giveback} onChange={(e) => onChange({ giveback: e.target.checked })} />
+        <span>
+          浮盈回吐提醒（邮件，可选）：浮盈到过 2 倍 ATR 以上、之后吐回一半时，提醒减三分之一。回测里平均少赚一点（每笔 0.03–0.08R），最大回撤小两到三成，只是让结果更平稳。
+        </span>
+      </label>
+      <label className="space-y-1">
         <span>我的价位（逗号分隔）</span>
         <input
           id="h-targets"
@@ -642,23 +656,78 @@ function Fills({ h, acc, onChange }: { h: Holding; acc: Account; onChange: (p: P
   const pos = positionOf(h.dir, h.fills, acc.fee);
   const [avg, setAvg] = useState(+pos.avg.toPrecision(6));
   const [qty, setQty] = useState(+pos.qty.toPrecision(6));
+  const [kind, setKind] = useState<"add" | "reduce">("reduce");
+  const [px, setPx] = useState(0);
+  const [q, setQ] = useState(0);
   const name = { open: "开仓", add: "加仓", reduce: "减仓" } as const;
+  const edit = (i: number, p: Partial<Fill>) => onChange({ fills: h.fills.map((f, j) => (j === i ? { ...f, ...p } : f)) });
+  const cell = "w-full rounded border border-line bg-transparent px-1.5 py-1 text-right";
   return (
     <div className="mt-2 space-y-3">
+      <p className="text-xs text-ink-3">每一笔都可以直接改价格和数量，改完均价、已实现盈亏、强平和计划会马上重算。在交易所手动加过、减过的，在下面补记一笔。</p>
       <table className="num w-full text-sm">
+        <thead className="text-xs text-ink-3">
+          <tr>
+            <th className="py-1 text-left font-normal">类型</th>
+            <th className="py-1 text-right font-normal">价格</th>
+            <th className="py-1 text-right font-normal">数量</th>
+            <th className="whitespace-nowrap py-1 text-right font-normal">之后均价 · 剩余</th>
+            <th />
+          </tr>
+        </thead>
         <tbody>
-          {h.fills.map((f, i) => (
-            <tr key={i} className="border-b border-line">
-              <td className="py-1">{name[f.kind]}</td>
-              <td className="py-1 text-right">{fmtPrice(f.price)}</td>
-              <td className="py-1 text-right">{trimQty(f.qty)}</td>
-              <td className="py-1 text-right">
-                {h.fills.length > 1 && <button className="text-xs text-ink-3" onClick={() => onChange({ fills: h.fills.filter((_, j) => j !== i) })}>删掉</button>}
-              </td>
-            </tr>
-          ))}
+          {h.fills.map((f, i) => {
+            const after = positionOf(h.dir, h.fills.slice(0, i + 1), acc.fee);
+            return (
+              <tr key={i} className="border-b border-line">
+                <td className="py-1">
+                  {i === 0 ? (
+                    name[f.kind]
+                  ) : (
+                    <select aria-label="类型" className="rounded border border-line bg-transparent px-1 py-1" value={f.kind} onChange={(e) => edit(i, { kind: e.target.value as Fill["kind"] })}>
+                      <option value="add">加仓</option>
+                      <option value="reduce">减仓</option>
+                    </select>
+                  )}
+                </td>
+                <td className="py-1 pl-2"><input aria-label="价格" type="number" inputMode="decimal" className={cell} value={f.price || ""} onChange={(e) => +e.target.value > 0 && edit(i, { price: +e.target.value })} /></td>
+                <td className="py-1 pl-2"><input aria-label="数量" type="number" inputMode="decimal" className={cell} value={f.qty || ""} onChange={(e) => +e.target.value > 0 && edit(i, { qty: +e.target.value })} /></td>
+                <td className="whitespace-nowrap py-1 pl-2 text-right text-xs text-ink-3">{after.qty > 0 ? `${fmtPrice(after.avg)} · ${trimQty(after.qty)}` : "已全平"}</td>
+                <td className="py-1 pl-2 text-right">
+                  {h.fills.length > 1 && <button className="whitespace-nowrap text-xs text-ink-3" onClick={() => onChange({ fills: h.fills.filter((_, j) => j !== i) })}>删掉</button>}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
+      <div className="space-y-2 rounded-lg border border-line p-3 text-xs text-ink-3">
+        <p>补记一笔（在交易所手动做过的）</p>
+        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+          <label className="space-y-1">
+            <span>类型</span>
+            <select id="fill-kind" className={field} value={kind} onChange={(e) => setKind(e.target.value as "add" | "reduce")}>
+              <option value="reduce">减仓</option>
+              <option value="add">加仓</option>
+            </select>
+          </label>
+          <Num id="fill-price" label="成交价" value={px} onChange={setPx} />
+          <Num id="fill-qty" label={`数量${kind === "reduce" ? `（最多 ${trimQty(pos.qty)}）` : ""}`} value={q} onChange={setQ} />
+          <div className="flex items-end">
+            <button
+              disabled={!(px > 0 && q > 0)}
+              className="w-full rounded-lg border border-line px-3 py-2 text-ink disabled:opacity-40"
+              onClick={() => {
+                onChange({ fills: [...h.fills, { kind, price: px, qty: kind === "reduce" ? Math.min(q, pos.qty) : q, t: Math.floor(Date.now() / 1000) }] });
+                setPx(0);
+                setQ(0);
+              }}
+            >
+              记上这一笔
+            </button>
+          </div>
+        </div>
+      </div>
       <div className="space-y-2 rounded-lg border border-line p-3 text-xs text-ink-3">
         <p>和交易所对不上（部分成交、返佣、资金费）时，直接填交易所显示的均价和数量，已实现盈亏保留。</p>
         <div className="grid grid-cols-2 gap-2.5 sm:w-1/2">
@@ -759,7 +828,7 @@ function Rules() {
         <li>每次加完，整笔打到止损最多亏“每笔风险”（或选“保本滚仓”：不亏）；每次不超过上一笔的 {ROLL_RULES.pyramid * 100}%，最多加 {ROLL_RULES.maxAdds} 次；止损要在强平前至少 {ROLL_RULES.liqGapAtr} 倍 ATR；实际杠杆不超过 {ROLL_RULES.maxLeverage} 倍。</li>
         <li>减仓：前方第一个、第二个关键位各减三分之一，剩下跟着移动认错位。离强平不到 {ROLL_RULES.nearLiqAtr} 倍 ATR 时先减仓或补保证金。</li>
         <li>
-          回测（E31，10 个币的 4 小时 K 线，2020 年起 2,027 笔，入场和计划页同一套）：按这套规则滚仓比不滚平均每笔只多 0.05R，没到 0.1R 的门槛，换预算、金字塔比例、加仓次数或改用日线也一样；在“收盘越过摆动点”时加，和持仓期间随便挑时间加差不多。加过仓的交易里约七成比不滚更差（平均少 0.29R），三成更好（平均多 1.09R），多出来的全靠少数大行情；连续亏损时的最大回撤大了约三成。风险预算是守住了的：打到止损亏超过 1.1 倍初始风险的只有 0.5%。所以滚仓不会让你更常赚，只是在大行情里拿得更重。
+          回测（E31，10 个币的 4 小时 K 线，2020 年起 2,027 笔，入场和计划页同一套）：按这套规则滚仓比不滚平均每笔只多 0.05R，没到 0.1R 的门槛，换预算、金字塔比例、加仓次数或改用日线也一样；在“收盘越过摆动点”时加，和持仓期间随便挑时间加差不多。加过仓的交易里约七成比不滚更差（平均少 0.29R），三成更好（平均多 1.09R），多出来的全靠少数大行情；连续亏损时的最大回撤大了约三成。风险预算是守住了的：打到止损亏超过 1.1 倍初始风险的只有 0.5%。所以滚仓不会让你更常赚，只是在大行情里拿得更重。加仓确认改用 1 小时或 15 分钟收盘（同一个摆动点）：结果和 4 小时差不多（每笔多 0.01–0.02R，不显著），加仓价离突破点近一些（中位从 0.11R 变成 0.07R / 0.05R），最大回撤略大；所以三种都可以选，默认 4 小时。另外测了两条：① 浮盈到过 2 倍 ATR 后吐回一半就减三分之一，平均每笔少 0.03–0.08R，最大回撤小两到三成，所以只做成可选的提醒；② 价格离摆动点超过 1.5 倍 ATR 就不加，和不限制差不多（加仓数量本来就被“打到止损最多亏多少”压小了），没有加这条。
         </li>
       </ul>
     </details>
@@ -783,7 +852,7 @@ function AlertCard({ server, accounts, onSave }: { server: Server; accounts: Acc
     <section className="card space-y-3 p-4 text-sm">
       <h2 className="text-[15px] font-semibold">邮件提醒</h2>
       <p className="text-xs leading-relaxed text-ink-3">
-        服务器每分钟看一次：4 小时收盘越过关键位（多单站上、空单跌破）、按规则可以加仓时；价格到减仓位或你填的价位时；快到止损、已经过了止损、离强平太近时；所有持仓一起打到止损超过账户 {ACCOUNT_RISK_PCT}% 时。同一件事只发一次，同一分钟的几件事合成一封。刚打开时第一轮只记录不发。
+        服务器每分钟看一次：收盘（每笔持仓自己选 4 小时 / 1 小时 / 15 分钟）越过关键位（多单站上、空单跌破）、按规则可以加仓时；价格到减仓位或你填的价位时；开了“浮盈回吐提醒”的持仓吐回一半浮盈时；快到止损、已经过了止损、离强平太近时；所有持仓一起打到止损超过账户 {ACCOUNT_RISK_PCT}% 时。同一件事只发一次，同一分钟的几件事合成一封。刚打开时第一轮只记录不发。
       </p>
       {!server.mailReady && <p className="text-xs text-warn">后台的邮件还没配置好：先到“系统设置 → 邮件与告警”填 SMTP 并保存。</p>}
       <label className="flex items-center gap-2">

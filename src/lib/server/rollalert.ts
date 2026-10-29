@@ -2,6 +2,7 @@ import { getKlines } from "../data/klines.ts";
 import { getPerpSnapshot } from "../data/perp.ts";
 import { cleanBook, DEFAULT_ROLL_ALERT, holdingView, marketOf, pickRollAlerts, rollMailText, type Market, type RollAlert, type RollBook, type RollMemory } from "../rollbook.ts";
 import { getTrendPlan } from "../trendplan.ts";
+import { TF_SECONDS } from "../types.ts";
 import { coinIds } from "./coins.ts";
 import { getDb } from "./db.ts";
 import { logger } from "./log.ts";
@@ -51,6 +52,14 @@ async function markets(b: RollBook): Promise<Record<string, Market>> {
     try {
       const [m5, plan, perp] = await Promise.all([getKlines(coin, "5m", 50), getTrendPlan(coin, "4h").catch(() => null), getPerpSnapshot(coin).catch(() => null)]);
       out[coin] = marketOf(plan, m5.candles.at(-1)?.c ?? null, perp?.fundingRate ?? null);
+      // holdings that confirm adds on a faster close
+      const tfs = new Set(b.accounts.flatMap((a) => a.holdings.filter((h) => h.coin === coin && h.confirmTf && h.confirmTf !== "4h").map((h) => h.confirmTf as "1h" | "15m")));
+      for (const tf of tfs) {
+        const now = Date.now() / 1000;
+        const closed = (await getKlines(coin, tf, 10)).candles.filter((x) => x.t + TF_SECONDS[tf] <= now);
+        const n = closed.length;
+        if (n >= 2) out[coin].closes = { ...out[coin].closes, [tf]: { t: closed[n - 1].t, c: closed[n - 1].c, prev: closed[n - 2].c } };
+      }
     } catch (e) {
       logger.warn("engine", `滚仓提醒：${coin} 行情获取失败`, { error: (e as Error).message });
     }
@@ -95,7 +104,7 @@ export async function sendTestRollAlert(input: unknown): Promise<string[]> {
   const mail = alertMail(b);
   if (!mailReady(mail)) throw new Error("邮件还没有配置完整：请先在后台“系统设置 → 邮件与告警”里填好并保存");
   const ms = await markets(b);
-  const lines = ["这是一封测试提醒。正式提醒在可以加仓、到减仓位、到你填的价位、快到止损、离强平太近、账户总风险超过 6% 时发。", "", "现在的持仓："];
+  const lines = ["这是一封测试提醒。正式提醒在可以加仓、到减仓位、到你填的价位、浮盈吐回一半（开了的话）、快到止损、离强平太近、账户总风险超过 6% 时发。", "", "现在的持仓："];
   for (const a of b.accounts)
     for (const h of a.holdings) {
       const m = ms[h.coin];

@@ -37,6 +37,15 @@ const BUDGET = Number(process.env.BUDGET ?? 1);
 const PYR = Number(process.env.PYR ?? 0.5);
 const MAXADDS = Number(process.env.MAXADDS ?? 3);
 const RANDOMS = 20;
+/** E31b: confirm adds on 1-hour or 15-minute closes beyond the same 4-hour swing (needs e31-fetch.ts data) */
+const FAST = process.env.FAST ?? "";
+/** E31c: giveback cut (peak floating ≥ GB_PEAK R, a close back to ≤ GB_KEEP of it → cut GB_CUT of the position, once) */
+const GB_PEAK = Number(process.env.GB_PEAK ?? 1.5);
+const GB_KEEP = Number(process.env.GB_KEEP ?? 0.5);
+const GB_CUT = Number(process.env.GB_CUT ?? 1 / 3);
+const GB_UNIT = process.env.GB_UNIT ?? "r";
+/** E31c: no add when the close is more than EXT ATR beyond the swing */
+const EXT = Number(process.env.EXT ?? 1.5);
 const COST = 0.0015;
 const PIERCE = 0.1;
 const SWING_ATR = 2;
@@ -63,7 +72,7 @@ function rng(seed: number) {
   return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 2 ** 32);
 }
 
-type Res = { coin: string; t: number; A: number; B: number; B0: number; C: number; D: number; addsB: number; addsB0: number; addedB: number };
+type Res = { coin: string; t: number; A: number; B: number; B0: number; C: number; D: number; F: number; addsB: number; addsB0: number; addedB: number; addsF: number; gapB: number[]; gapF: number[]; G: number; BG: number; X: number; cutG: number; cutBG: number; skippedX: number };
 
 function run(coin: string): Res[] {
   const j: J = JSON.parse(readFileSync(`${dir}/e30/${coin}.json`, "utf8"));
@@ -81,6 +90,13 @@ function run(coin: string): Res[] {
   const buf = bufferAtr(cal, 80);
   const evs = findEntries({ tf: TF, c, atr, ss, filterAt: (t) => (fIdx[t] < 0 ? 0 : structureDirection(fss[fIdx[t]])), buf, from: WARMUP });
   const fund = j.funding;
+  // lower-timeframe closes inside each entry bar, for FAST
+  const sub: Candle[] = FAST ? bars(JSON.parse(readFileSync(`${dir}/e31/${coin}.json`, "utf8"))[FAST === "1h" ? "h1" : "m15"]) : [];
+  const subStart: number[] = [];
+  for (let jj = 0, k = 0; jj < c.length; jj++) {
+    while (k < sub.length && sub[k].t < c[jj].t) k++;
+    subStart[jj] = k;
+  }
 
   // the stop path after an entry: independent of size, so every variant exits on the same bar
   function path(i: number, d: 1 | -1, stop0: number) {
@@ -116,6 +132,31 @@ function run(coin: string): Res[] {
     return pnl / risk;
   }
 
+  // like result(), with a share of every open lot closed at a cut close (cut = { i, price, frac } or null)
+  function resultCut(fills: (Fill & { i: number })[], d: 1 | -1, exitBar: number, exitPx: number, cut: { i: number; price: number; frac: number } | null) {
+    if (!cut) return result(fills, d, exitBar, exitPx, 1);
+    const before = fills.filter((x) => x.i <= cut.i), after = fills.filter((x) => x.i > cut.i);
+    const cutLots = before.map((x) => ({ ...x, qty: x.qty * cut.frac }));
+    const keepLots = before.map((x) => ({ ...x, qty: x.qty * (1 - cut.frac) }));
+    // the cut share closes at the cut bar's close (funding up to that close)
+    return result(cutLots, d, cut.i, cut.price, 1) + result([...keepLots, ...after], d, exitBar, exitPx, 1);
+  }
+  // the giveback cut on a set of fills: track the position's peak floating profit (bar extremes), cut at the first close
+  // that keeps ≤ GB_KEEP of a peak ≥ GB_PEAK (R of the first fill)
+  function giveback(fills: (Fill & { i: number })[], d: 1 | -1, from: number, exitBar: number) {
+    let peak = 0;
+    for (let jj = from + 1; jj < exitBar; jj++) {
+      const lots = fills.filter((x) => x.i < jj);
+      const at = (px: number) => lots.reduce((s, x) => s + d * (px - x.price) * x.qty, 0);
+      peak = Math.max(peak, at(d > 0 ? c[jj].h : c[jj].l));
+      // GB_UNIT=atr (the page's version): the best price at least GB_PEAK ATR beyond the average
+      const qty = lots.reduce((s, x) => s + x.qty, 0), avg = lots.reduce((s, x) => s + x.price * x.qty, 0) / qty;
+      const far = GB_UNIT === "atr" ? peak >= GB_PEAK * atr[jj] * qty : peak >= GB_PEAK;
+      if (far && at(c[jj].c) <= GB_KEEP * peak && d * (c[jj].c - avg) > -Infinity) return { i: jj, price: c[jj].c, frac: GB_CUT };
+    }
+    return null;
+  }
+
   const out: Res[] = [];
   let free = -1;
   const r = rng(coin.charCodeAt(0) * 7919 + coin.length);
@@ -129,14 +170,16 @@ function run(coin: string): Res[] {
     const first: Fill & { i: number } = { kind: "open", price: E, qty: q0, i: e.i };
 
     // B / B0: add at the close that breaks beyond the last confirmed swing, outside the last fill
-    const rolled = (budget: number) => {
+    let skipped = 0;
+    const rolled = (budget: number, ext0 = Infinity, until = Infinity) => {
       const fills = [first];
-      for (let jj = e.i + 1; jj < p.exitBar && fills.length - 1 < MAXADDS; jj++) {
+      for (let jj = e.i + 1; jj < Math.min(p.exitBar, until) && fills.length - 1 < MAXADDS; jj++) {
         const s = ss[jj], ext = d > 0 ? s.lastHigh : s.lastLow;
         if (!ext || !(atr[jj] > 0)) continue;
         const lvl = ext.price + d * PIERCE * atr[jj];
         if (!((c[jj].c - lvl) * d > 0 && (c[jj - 1].c - lvl) * d <= 0)) continue;
         if ((ext.price - fills[fills.length - 1].price) * d <= 0) continue;
+        if (d * (c[jj].c - ext.price) > ext0 * atr[jj]) { skipped++; continue; }
         const x = addAt(fills, jj, budget);
         if (x > 0) fills.push({ kind: "add", price: c[jj].c, qty: x, i: jj });
       }
@@ -146,8 +189,45 @@ function run(coin: string): Res[] {
       const pos = positionOf(d, fills, 0);
       return maxAdd({ pos, price: c[jj].c, stop: p.stops[jj + 1], budget, mode: "cross", leverage: 1, account: 1e18, atr: null, fee: 0, rules: { pyramid: PYR, maxAdds: MAXADDS } }).qty;
     };
+    // F: the same rule, but the close beyond the swing is a lower-timeframe close inside the 4-hour bar
+    const gapF: number[] = [];
+    const fast = () => {
+      const fills = [first];
+      if (!FAST) return fills;
+      outer: for (let jj = e.i + 1; jj <= p.exitBar && fills.length - 1 < MAXADDS; jj++) {
+        const s = ss[jj - 1], ext = d > 0 ? s.lastHigh : s.lastLow;
+        if (!ext || !(atr[jj - 1] > 0)) continue;
+        if ((ext.price - fills[fills.length - 1].price) * d <= 0) continue;
+        const lvl = ext.price + d * PIERCE * atr[jj - 1], stop = p.stops[jj];
+        let prev = c[jj - 1].c;
+        for (let k = subStart[jj]; k < sub.length && sub[k].t < c[jj].t + 14400; k++) {
+          const b = sub[k];
+          if (d > 0 ? b.l <= stop : b.h >= stop) break outer;
+          if ((b.c - lvl) * d > 0 && (prev - lvl) * d <= 0) {
+            const x = maxAdd({ pos: positionOf(d, fills, 0), price: b.c, stop, budget: BUDGET, mode: "cross", leverage: 1, account: 1e18, atr: null, fee: 0, rules: { pyramid: PYR, maxAdds: MAXADDS } }).qty;
+            if (x > 0) (fills.push({ kind: "add", price: b.c, qty: x, i: jj }), gapF.push((d * (b.c - ext.price)) / risk0));
+            break;
+          }
+          prev = b.c;
+        }
+      }
+      return fills;
+    };
+    const ff = fast();
     const fb = rolled(BUDGET), fb0 = rolled(0);
+    const gapB = fb.slice(1).map((x) => {
+      const ext = d > 0 ? ss[x.i].lastHigh : ss[x.i].lastLow;
+      return ext ? (d * (x.price - ext.price)) / risk0 : 0;
+    });
     const resB = result(fb, d, p.exitBar, p.exitPx, 1);
+    skipped = 0;
+    const fx = rolled(BUDGET, EXT);
+    const skippedX = skipped;
+    // G: no adds, giveback cut; BG: B's adds up to the cut, none after
+    const cutA = giveback([first], d, e.i, p.exitBar);
+    const fbg = rolled(BUDGET, Infinity, Infinity);
+    const cutB = giveback(fbg, d, e.i, p.exitBar);
+    const fbg2 = cutB ? fbg.filter((x) => x.i <= cutB.i) : fbg;
 
     // C: the same number of adds as B, at random bars of the trade, same sizing
     let resC = resB;
@@ -176,7 +256,7 @@ function run(coin: string): Res[] {
       if (jj === e.i + MAXBARS) resD = result([first], d, jj, b.c, 1);
     }
 
-    out.push({ coin, t: c[e.i].t, A: result([first], d, p.exitBar, p.exitPx, 1), B: resB, B0: result(fb0, d, p.exitBar, p.exitPx, 1), C: resC, D: resD, addsB: k, addsB0: fb0.length - 1, addedB: fb.slice(1).reduce((s, x) => s + x.qty, 0) / q0 });
+    out.push({ coin, t: c[e.i].t, G: resultCut([first], d, p.exitBar, p.exitPx, cutA), BG: resultCut(fbg2, d, p.exitBar, p.exitPx, cutB), X: result(fx, d, p.exitBar, p.exitPx, 1), cutG: cutA ? 1 : 0, cutBG: cutB ? 1 : 0, skippedX, A: result([first], d, p.exitBar, p.exitPx, 1), B: resB, F: result(ff, d, p.exitBar, p.exitPx, 1), addsF: ff.length - 1, gapB, gapF, B0: result(fb0, d, p.exitBar, p.exitPx, 1), C: resC, D: resD, addsB: k, addsB0: fb0.length - 1, addedB: fb.slice(1).reduce((s, x) => s + x.qty, 0) / q0 });
   }
   return out;
 }
@@ -211,7 +291,7 @@ console.log(`交易 ${all.length} 笔（样本内 ${all.filter((x) => x.t < OOS)
 const is = all.filter((x) => x.t < OOS);
 console.log(`\n加仓：B 有加仓的交易 ${((is.filter((x) => x.addsB > 0).length / is.length) * 100).toFixed(0)}%，平均加 ${mean(is.map((x) => x.addsB)).toFixed(2)} 次、加的数量合计为第一笔的 ${mean(is.filter((x) => x.addsB > 0).map((x) => x.addedB)).toFixed(2)} 倍；B0 有加仓 ${((is.filter((x) => x.addsB0 > 0).length / is.length) * 100).toFixed(0)}%`);
 
-const V: [keyof Res, string][] = [["A", "A 不滚"], ["B", "B 滚仓"], ["B0", "B0 保本滚仓"], ["C", "C 随机时点加"], ["D", "D 固定 2R"]];
+const V: [keyof Res, string][] = [["A", "A 不滚"], ["B", "B 滚仓"], ["B0", "B0 保本滚仓"], ["C", "C 随机时点加"], ["D", "D 固定 2R"], ["G", "G 不滚+回吐减"], ["BG", "BG 滚仓+回吐减"], ["X", "X 太远不加"], ...(FAST ? [["F", `F ${FAST} 收盘确认`] as [keyof Res, string]] : [])];
 console.log("\n各做法（样本内，R / 笔）：");
 console.log("做法          平均     中位    标准差   赚钱%   亏>1.1R%  最大单笔  最大回撤(R)");
 for (const [k, n] of V) {
@@ -220,7 +300,7 @@ for (const [k, n] of V) {
 }
 
 console.log("\n平均（R / 笔）按切分：");
-console.log("切分      笔数    A       B       B0      C       D");
+console.log(`切分      笔数  ${V.map(([k]) => String(k).padEnd(7)).join(" ")}`);
 for (const [g, fn] of groups) {
   const rows = all.filter(fn);
   console.log(`${g.padEnd(6, "　")}${String(rows.length).padStart(5)} ${V.map(([k]) => f2(mean(rows.map((x) => x[k] as number))).padStart(7)).join(" ")}`);
@@ -244,6 +324,19 @@ paired("B", "A", "B 滚仓 对 A 不滚");
 paired("B0", "A", "B0 保本滚仓 对 A 不滚");
 paired("B", "C", "B 越过摆动点再加 对 C 随机时点加");
 paired("A", "D", "A 移动认错位 对 D 固定 2R");
+console.log(`\nE31c 浮盈回吐：浮盈到过 ${GB_PEAK}R 后收盘只剩 ≤ ${GB_KEEP * 100}% → 减 ${(GB_CUT * 100).toFixed(0)}%（一次）。触发：不滚 ${((is.filter((x) => x.cutG).length / is.length) * 100).toFixed(0)}%，滚仓 ${((is.filter((x) => x.cutBG).length / is.length) * 100).toFixed(0)}%`);
+paired("G", "A", "G 不滚 + 浮盈回吐减仓 对 A 不滚");
+paired("BG", "B", "BG 滚仓 + 浮盈回吐减仓（之后不再加） 对 B 滚仓");
+console.log(`\nE31c 离摆动点超过 ${EXT} 倍 ATR 不加：跳过 ${is.reduce((s, x) => s + x.skippedX, 0)} 次加仓`);
+paired("X", "B", `X 离摆动点 > ${EXT} ATR 不加 对 B 滚仓`);
+if (FAST) {
+  paired("F", "B", `F ${FAST} 收盘确认加仓 对 B 4 小时收盘确认`);
+  paired("F", "A", `F ${FAST} 收盘确认加仓 对 A 不滚`);
+  const gb = is.flatMap((x) => x.gapB), gf = is.flatMap((x) => x.gapF);
+  console.log(`\n加仓价离摆动点多远（R，样本内，越小越接近突破点）：4 小时收盘 平均 ${mean(gb).toFixed(2)}、中位 ${med(gb).toFixed(2)}（${gb.length} 次）；${FAST} 收盘 平均 ${mean(gf).toFixed(2)}、中位 ${med(gf).toFixed(2)}（${gf.length} 次）`);
+  const fa = is.filter((x) => x.addsF > 0), dfa = fa.map((x) => x.F - x.A);
+  console.log(`F 加过仓的 ${fa.length} 笔：比不滚差的 ${((dfa.filter((x) => x < 0).length / dfa.length) * 100).toFixed(0)}%，好的 ${((dfa.filter((x) => x > 0).length / dfa.length) * 100).toFixed(0)}%；F 有加仓的交易 ${((fa.length / is.length) * 100).toFixed(0)}%`);
+}
 
 // only trades where B actually added: the shape the page talks about
 const added = is.filter((x) => x.addsB > 0);
