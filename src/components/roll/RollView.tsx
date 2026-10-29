@@ -775,6 +775,8 @@ function HoldingForm({ coins, price, onAdd, onCancel }: { coins: string[]; price
   const [by, setBy] = useState<"qty" | "margin">("margin");
   const [amount, setAmount] = useState(0);
   const [stop, setStop] = useState(0);
+  const [style, setStyle] = useState<Holding["style"]>(undefined);
+  const [noLevCap, setNoLevCap] = useState(false);
   const qty = by === "qty" ? amount : entry > 0 ? (amount * lev) / entry : 0;
   const stopOk = !(stop > 0) || dir * (entry - stop) > 0;
   const ok = entry > 0 && qty > 0 && lev >= 1 && stopOk;
@@ -813,6 +815,20 @@ function HoldingForm({ coins, price, onAdd, onCancel }: { coins: string[]; price
           <button className="text-accent" onClick={() => (setBy(by === "margin" ? "qty" : "margin"), setAmount(0))}>改填{by === "margin" ? "数量" : "保证金"}</button>
         </div>
         <Num id="new-stop" label="止损（可不填）" value={stop} onChange={setStop} />
+        <label className="space-y-1">
+          <span>滚仓风格</span>
+          <select id="new-style" className={field} value={style ?? "steady"} onChange={(e) => setStyle(e.target.value === "steady" ? undefined : (e.target.value as "bold" | "aggressive"))}>
+            <option value="steady">稳健（默认）</option>
+            <option value="bold">进取：保本滚</option>
+            <option value="aggressive">激进：可亏一笔风险</option>
+          </select>
+        </label>
+        {mode === "isolated" && (
+          <label className="col-span-2 flex items-start gap-2 sm:col-span-4">
+            <input id="new-nolev" type="checkbox" className="mt-0.5" checked={noLevCap} onChange={(e) => setNoLevCap(e.target.checked)} />
+            <span>逐仓不受“实际杠杆不超过 {ROLL_RULES.maxLeverage} 倍”限制（风险预算和“止损要在强平之前”照旧）</span>
+          </label>
+        )}
         <div className="space-y-1">
           <span>换算</span>
           <div className="num py-1.5 text-sm text-ink">{qty > 0 && entry > 0 ? `${trimQty(qty)} ${coin} · 仓位价值 ${Math.round(qty * entry).toLocaleString("en-US")}` : "—"}</div>
@@ -823,7 +839,7 @@ function HoldingForm({ coins, price, onAdd, onCancel }: { coins: string[]; price
         <button
           disabled={!ok}
           className="rounded-lg bg-ink px-3 py-1.5 text-sm text-bg disabled:opacity-40"
-          onClick={() => onAdd({ id: uid(), coin, dir, mode, leverage: lev, fills: [{ kind: "open", price: entry, qty, t: Math.floor(Date.now() / 1000) }], stop: stop > 0 ? stop : null, targets: [], realizedBase: 0 })}
+          onClick={() => onAdd({ id: uid(), coin, dir, mode, leverage: lev, fills: [{ kind: "open", price: entry, qty, t: Math.floor(Date.now() / 1000) }], stop: stop > 0 ? stop : null, targets: [], realizedBase: 0, ...(style ? { style } : {}), ...(noLevCap && mode === "isolated" ? { noLevCap: true } : {}) })}
         >
           添加
         </button>
