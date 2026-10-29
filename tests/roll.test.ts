@@ -154,3 +154,14 @@ test("plan steps: the add first, then cuts sized on the bigger position", () => 
   near(s[2].atStop!, 540 - 70);
   assert.equal(planSteps({ pos, price: 2320, stop: 2385, add: null, levels: [2230], fee: 0 })[0].kind, "cut");
 });
+
+test("the stop an add needs: break-even means beyond the new average", async () => {
+  const { stopForAdd } = await import("../src/lib/ta/roll.ts");
+  const pos = positionOf(-1, [{ kind: "open", price: 2347, qty: 4 }], 0);
+  const t = stopForAdd({ pos, price: 2287, qty: 4, budget: 0, fee: 0 });
+  near(t, 2317);
+  // with a budget the stop may sit higher for a short: 2317 + 200 / 8
+  near(stopForAdd({ pos, price: 2287, qty: 4, budget: 200, fee: 0 }), 2342);
+  const l = stopForAdd({ pos: positionOf(1, [{ kind: "open", price: 100, qty: 2 }], 0), price: 110, qty: 2, budget: 10, fee: 0 });
+  near(l, 105 - 10 / 4);
+});

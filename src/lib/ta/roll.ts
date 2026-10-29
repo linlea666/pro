@@ -208,6 +208,20 @@ export function previewAdd(o: { pos: Position; price: number; qty: number; stop:
   return { qty: pos.qty, avg: pos.avg, liq, atStop, stopBeforeLiq, margin: o.mode === "isolated" ? (pos.avg * pos.qty) / Math.max(1, o.leverage) : null };
 }
 
+/**
+ * The stop an add of `qty` at `price` needs so that the whole position at the stop loses at most
+ * `budget` (after fees): for a long the stop must be at or above it, for a short at or below.
+ * Break-even rolling (budget 0) means the stop must be beyond the average after the add.
+ */
+export function stopForAdd(o: { pos: Position; price: number; qty: number; budget: number; fee?: number }): number {
+  const fee = o.fee ?? DEFAULT_FEE.taker;
+  const Q = o.pos.qty + o.qty;
+  const avg = (o.pos.avg * o.pos.qty + o.price * o.qty) / Q;
+  // dir·(T − avg)·Q − fee·(price·qty + T·Q) ≥ −budget, solved for T
+  const rhs = -o.budget + fee * o.price * o.qty + o.pos.dir * avg * Q;
+  return rhs / (Q * (o.pos.dir - fee));
+}
+
 /** What taking `qty` off at `price` does: closed profit (after fee) and what is left. */
 export function previewReduce(pos: Position, price: number, qty: number, fee = DEFAULT_FEE.taker) {
   const q = Math.min(Math.max(0, qty), pos.qty);

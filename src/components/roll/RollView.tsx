@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { TrendPlan } from "@/lib/trendplan";
-import { DEFAULT_FEE, maxAdd, pnlAt, positionOf, previewAdd, previewReduce, ROLL_RULES, trimQty, type AddLimit, type Dir, type Fill, type MarginMode, type Tone } from "@/lib/ta/roll";
+import { DEFAULT_FEE, maxAdd, nextAddLevel, stopForAdd, pnlAt, positionOf, previewAdd, previewReduce, ROLL_RULES, trimQty, type AddLimit, type Dir, type Fill, type MarginMode, type Tone } from "@/lib/ta/roll";
 import { ACCOUNT_RISK_PCT, CONFIRM_NAME, CONFIRM_TFS, DEFAULT_ROLL_ALERT, type ConfirmTf, holdingView, marketOf, type Account, type Holding, type HoldingView as View, type RollAlertConfig } from "@/lib/rollbook";
 import type { CoinMeta } from "@/lib/symbols";
 import { fmtPrice } from "../coin/format";
@@ -420,6 +420,7 @@ function NextSteps({ h, v }: { h: Holding; v: View }) {
   return (
     <div className="space-y-2">
       <h3 className="text-[15px] font-semibold">接下来怎么做（如果价格往你的方向{away}）</h3>
+      {!losing && <AddPlan h={h} v={v} />}
       {losing ? (
         <p className="text-sm text-ink-2">现在浮亏，按规则不加仓。先守住止损{stop != null ? ` ${fmtPrice(stop)}` : ""}，等回到均价 {fmtPrice(pos.avg)} 另一边再看。</p>
       ) : (
@@ -468,6 +469,49 @@ function NextSteps({ h, v }: { h: Holding; v: View }) {
         {v.steps.some((s) => s.kind === "add") && <>加仓前先把止损移到新的保护位；表里“之后打到止损”还按现在的止损 {fmtPrice(stop)} 算，移了以后亏得更少或者变成赚。</>}
         如果反着走：到止损 {fmtPrice(stop)} {v.atStop != null ? money(v.atStop) : ""}{liq != null ? `，强平 ${fmtPrice(liq)}` : ""}。加仓位和减仓位来自趋势与计划页的 4 小时关键位，只是“可能停顿的地方”，不是会到的目标。
       </p>
+    </div>
+  );
+}
+
+/** Where to add, how much margin, and the average after it; when the rules say no, what would have to change. */
+function AddPlan({ h, v }: { h: Holding; v: View }) {
+  const { pos, price, stop } = v;
+  if (price == null) return null;
+  const lvl = nextAddLevel(h.dir, price, v.levels);
+  const at = lvl ?? price;
+  const when = lvl != null ? `${CONFIRM_NAME[h.confirmTf ?? "4h"]}收盘${h.dir > 0 ? "站上" : "跌破"} ${fmtPrice(lvl)} 之后` : `现价 ${fmtPrice(price)} 附近（前方没有关键位）`;
+  const lim = v.add(at);
+  const margin = (q: number) => Math.round((q * at) / Math.max(1, h.leverage)).toLocaleString("en-US");
+  const side = h.dir > 0 ? "以上" : "以下";
+  const style = h.style === "bold" ? "进取：保本滚" : h.style === "aggressive" ? "激进" : "稳健";
+  const rule = v.budget === 0 ? "加完以后打到止损也不能亏" : `加完以后打到止损最多亏 ${Math.round(v.budget).toLocaleString("en-US")} USDT`;
+  if (stop == null)
+    return <div className="rounded-lg border border-line p-3 text-sm text-ink-2">还没有止损：在下面“止损”里填一个，或点“用结构认错位”，才能算能加多少。</div>;
+  if (lim && lim.qty > 0) {
+    return (
+      <div className="space-y-1 rounded-lg border border-up/40 bg-up-soft p-3 text-sm">
+        <p className="font-semibold">加仓：{when}，加 {trimQty(lim.qty)}（保证金约 {margin(lim.qty)} USDT，{h.leverage} 倍）</p>
+        <p className="text-ink-2">
+          加完均价 <b className="num">{fmtPrice(lim.avg)}</b>、共 {trimQty(pos.qty + lim.qty)}；强平 {fmtPrice(lim.liq)}；打到止损 {fmtPrice(stop)} <b className={toneColor(lim.atStop)}>{money(lim.atStop)}</b>。这是规则给的上限（{style}：{rule}；这次受“{bindingText(lim.binding, v.rules)}”限制），可以在下面“加仓预览”里改保证金。
+        </p>
+        {lim.liq != null && h.dir * (stop - lim.liq) <= 0 && <p className="text-down">按 {h.leverage} 倍杠杆，强平会跑到止损前面，先降低杠杆或少加。</p>}
+      </div>
+    );
+  }
+  // not allowed: say why, and for the budget, which stop would allow a normal-size add
+  const want = Math.max(pos.lastAdd * (v.rules.pyramid ?? 0.5), 0) || pos.qty * 0.5;
+  const need = stopForAdd({ pos, price: at, qty: want, budget: v.budget });
+  return (
+    <div className="space-y-1 rounded-lg border border-warn/40 bg-warn-soft p-3 text-sm">
+      <p className="font-semibold">加仓：现在还不能加{lim ? `（${bindingText(lim.binding, v.rules)}）` : ""}</p>
+      {lim?.binding === "budget" ? (
+        <p className="text-ink-2">
+          你选的是“{style}”：{rule}。止损现在在 {fmtPrice(stop)}，{h.dir * (stop - pos.avg) < 0 ? `还在均价 ${fmtPrice(pos.avg)} 的亏损一边，现在打到止损就要${money(v.atStop ?? 0)}` : "离得还太远"}，加了只会亏得更多。
+          要在 {fmtPrice(at)} 加 {trimQty(want)}（保证金约 {margin(want)} USDT），止损要先移到 <b className="num">{fmtPrice(need)}</b> {side}。止损跟着结构走：{h.dir > 0 ? "出现新的更高低点" : "出现新的更低高点"}以后，把止损移到它外面，这里就会变成“可以加”。
+        </p>
+      ) : (
+        <p className="text-ink-2">{lim?.binding === "count" ? "已经加满次数，剩下只做减仓和移动止损。" : lim?.binding === "liquidation" ? "再加强平会离止损太近：降低杠杆，或先把止损移近一些。" : lim?.binding === "leverage" ? "账户实际杠杆已到上限；逐仓可以在下面勾“不受实际杠杆限制”。" : "按规则这里不加。"}</p>
+      )}
     </div>
   );
 }
@@ -532,8 +576,11 @@ function AddPanel({ h, v, acc, onRecord }: { h: Holding; v: View; acc: Account; 
   const at = atIn > 0 ? atIn : +(v.addLevel ?? v.price ?? 0).toPrecision(6);
   const stop = stopIn > 0 ? stopIn : (v.stop ?? 0);
   const limit = stop > 0 && at > 0 ? maxAdd({ pos: v.pos, price: at, stop, budget: v.budget, mode: h.mode, leverage: lev, account: acc.total, atr: v.atr, fee: acc.fee, rules: v.rules }) : null;
-  const [qty, setQty] = useState<number>(0);
-  const q = qty > 0 ? qty : (limit?.qty ?? 0);
+  // the add is typed as margin (USDT); 0 follows the rules' limit
+  const [mIn, setM] = useState<number>(0);
+  const q = mIn > 0 && at > 0 ? (mIn * lev) / at : (limit?.qty ?? 0);
+  const marginOf = (x: number) => (at > 0 ? (x * at) / lev : 0);
+  const over = limit != null && q > limit.qty * 1.001 + 1e-12;
   const p = q > 0 && at > 0 ? previewAdd({ pos: v.pos, price: at, qty: q, stop: stop > 0 ? stop : null, mode: h.mode, leverage: lev, account: acc.total, fee: acc.fee }) : null;
   return (
     <div className="space-y-3 rounded-lg border border-line p-3">
@@ -541,7 +588,11 @@ function AddPanel({ h, v, acc, onRecord }: { h: Holding; v: View; acc: Account; 
       <div className="grid grid-cols-2 gap-2.5 text-xs text-ink-3 sm:grid-cols-4">
         <Num id="add-price" label="加仓价" value={at} onChange={setAt} />
         <Num id="add-stop" label="加完的止损" value={stop} onChange={setStop} />
-        <Num id="add-qty" label={`数量${qty > 0 ? "" : "（按规则）"}`} value={qty > 0 ? qty : +(limit?.qty ?? 0).toPrecision(4)} onChange={setQty} />
+        <label className="space-y-1">
+          <span>加多少保证金 (USDT){mIn > 0 ? "" : "（按规则）"}</span>
+          <input id="add-margin" type="number" inputMode="decimal" className={field} value={mIn > 0 ? mIn : +marginOf(limit?.qty ?? 0).toFixed(2) || ""} onChange={(e) => setM(+e.target.value)} />
+          <span className="block text-ink-3">= {trimQty(q)} 个{mIn > 0 && <button className="ml-2 text-accent" onClick={() => setM(0)}>回到规则上限</button>}</span>
+        </label>
         <Num id="add-lev" label="杠杆倍数" value={lev} onChange={(x) => setLev(Math.max(1, x))} />
       </div>
       {limit && (
@@ -555,17 +606,20 @@ function AddPanel({ h, v, acc, onRecord }: { h: Holding; v: View; acc: Account; 
       )}
       {p && (
         <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-          <Kpi k="新均价" v={fmtPrice(p.avg)} sub={`共 ${trimQty(p.qty)}`} />
+          <Kpi k="新均价" v={fmtPrice(p.avg)} sub={`原 ${fmtPrice(v.pos.avg)} · 共 ${trimQty(p.qty)}`} />
           <Kpi k="新强平" v={fmtPrice(p.liq)} sub={p.margin != null ? `保证金 ${Math.round(p.margin).toLocaleString("en-US")}` : "全仓按账户算"} />
           <Kpi k="打到止损" v={<span className={toneColor(p.atStop ?? 0)}>{p.atStop != null ? money(p.atStop) : "—"}</span>} sub={p.atStop != null && acc.total > 0 ? `账户的 ${((p.atStop / acc.total) * 100).toFixed(1)}%` : ""} />
           <Kpi k="止损在强平前" v={p.stopBeforeLiq ? <span className="text-up">是</span> : <span className="text-down">否</span>} />
         </div>
       )}
+      {p && over && limit && (
+        <p className="text-sm text-warn">比规则上限多（上限 {trimQty(limit.qty)} 个、保证金约 {Math.round(marginOf(limit.qty)).toLocaleString("en-US")}）：打到止损会{p.atStop != null && p.atStop < 0 ? `亏 ${Math.abs(Math.round(p.atStop)).toLocaleString("en-US")} USDT` : "少赚"}。可以照样记，但这是你自己的决定。</p>
+      )}
       {p && !p.stopBeforeLiq && <p className="text-sm text-down">这样加，强平价会跑到止损之前：价格还没到止损就会被强平。减少数量或降低杠杆。</p>}
       <p className="text-[11px] leading-relaxed text-ink-3">
-        规则：只在赚钱的一边、价格收盘越过关键位后加；先把止损移到新的保护位，再按“加完整笔打到止损最多亏{v.budget === 0 ? " 0（保本）" : `每笔风险 ${acc.riskPct}%`}”算数量。数量可以自己改，结果照样算给你看。
+        规则：只在赚钱的一边、价格收盘越过关键位后加；先把止损移到新的保护位，再按“加完整笔打到止损最多亏{v.budget === 0 ? " 0（保本）" : `每笔风险 ${acc.riskPct}%`}”算数量。保证金可以自己改，均价、强平和打到止损的结果跟着重算。
       </p>
-      <button disabled={!(q > 0 && at > 0)} className="rounded-lg bg-ink px-3 py-1.5 text-sm text-bg disabled:opacity-40" onClick={() => (onRecord({ kind: "add", price: at, qty: q }, lev), setQty(0))}>
+      <button disabled={!(q > 0 && at > 0)} className="rounded-lg bg-ink px-3 py-1.5 text-sm text-bg disabled:opacity-40" onClick={() => (onRecord({ kind: "add", price: at, qty: q }, lev), setM(0))}>
         我按这个加了
       </button>
     </div>
