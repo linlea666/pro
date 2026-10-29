@@ -106,3 +106,20 @@ test("the giveback alert: only when switched on, once per best price", () => {
   assert.equal(pickRollAlerts(b, mk(2330), r.mem).alerts.filter((a) => a.kind === "giveback").length, 0);
   assert.equal(pickRollAlerts(book({ targets: [] }), mk(2335), mem).alerts.filter((a) => a.kind === "giveback").length, 0);
 });
+
+test("bold style: break-even budget, adds as big as the last fill", async () => {
+  const { holdingView } = await import("../src/lib/rollbook.ts");
+  const b = book({ stop: 2320, style: "bold" });
+  assert.equal(cleanBook(b, ["ETH"]).accounts[0].holdings[0].style, "bold");
+  const m = mk(2360).ETH;
+  const bold = holdingView(b.accounts[0].holdings[0], b.accounts[0], m);
+  assert.equal(bold.budget, 0);
+  assert.equal(bold.rules.pyramid, 1);
+  // break-even: (0 + 4 × 20) / 40 = 2 (the pyramid would allow 4)
+  const a = bold.add(2360)!;
+  assert.equal(a.binding, "budget");
+  assert.ok(Math.abs(a.qty - 2) < 1e-9);
+  assert.ok(Math.abs(a.atStop) < 1e-9);
+  const steady = holdingView({ ...b.accounts[0].holdings[0], style: undefined }, b.accounts[0], m);
+  assert.equal(steady.rules.pyramid, 0.5);
+});

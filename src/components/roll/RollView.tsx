@@ -48,15 +48,16 @@ const field = "num w-full rounded-lg border border-line bg-panel-2 px-2.5 py-1.5
 const money = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(Math.round(v)).toLocaleString("en-US")}`;
 const toneColor = (v: number) => (v > 0 ? "text-up" : v < 0 ? "text-down" : "text-ink-3");
 const TONE_BG: Record<Tone, string> = { good: "bg-up-soft", wait: "bg-panel-2", warn: "bg-warn-soft", bad: "bg-down-soft" };
-const BINDING: Record<AddLimit["binding"], string> = {
-  budget: "风险预算",
-  pyramid: `金字塔（不超过上一笔的 ${ROLL_RULES.pyramid * 100}%）`,
-  liquidation: `强平距离（止损要在强平前 ${ROLL_RULES.liqGapAtr} 倍 ATR）`,
-  leverage: `实际杠杆不超过 ${ROLL_RULES.maxLeverage} 倍`,
-  count: `最多加 ${ROLL_RULES.maxAdds} 次`,
-  losing: "浮亏中不加仓",
-  stop: "止损在现价另一边",
-};
+const bindingText = (b: AddLimit["binding"], r: { pyramid: number; maxAdds: number; liqGapAtr: number; maxLeverage: number } = ROLL_RULES) =>
+  ({
+    budget: "风险预算",
+    pyramid: `金字塔（不超过上一笔的 ${r.pyramid * 100}%）`,
+    liquidation: `强平距离（止损要在强平前 ${r.liqGapAtr} 倍 ATR）`,
+    leverage: `实际杠杆不超过 ${r.maxLeverage} 倍`,
+    count: `最多加 ${r.maxAdds} 次`,
+    losing: "浮亏中不加仓",
+    stop: "止损在现价另一边",
+  })[b];
 
 interface Live {
   price: number | null;
@@ -498,7 +499,7 @@ function Ladder({ h, v }: { h: Holding; v: View }) {
   for (const t of h.targets) rungs.push({ price: t, label: "你填的价位", kind: "target" });
   if (v.addLevel != null) {
     const a = v.add(v.addLevel);
-    rungs.push({ price: v.addLevel, label: a && a.qty > 0 ? `${CONFIRM_NAME[h.confirmTf ?? "4h"]}收盘${h.dir > 0 ? "站上" : "跌破"} → 最多可加 ${trimQty(a.qty)}，新均价 ${fmtPrice(a.avg)}` : `${CONFIRM_NAME[h.confirmTf ?? "4h"]}收盘${h.dir > 0 ? "站上" : "跌破"}再看加仓${a ? `（现在${BINDING[a.binding]}，加不了）` : ""}`, kind: "add" });
+    rungs.push({ price: v.addLevel, label: a && a.qty > 0 ? `${CONFIRM_NAME[h.confirmTf ?? "4h"]}收盘${h.dir > 0 ? "站上" : "跌破"} → 最多可加 ${trimQty(a.qty)}，新均价 ${fmtPrice(a.avg)}` : `${CONFIRM_NAME[h.confirmTf ?? "4h"]}收盘${h.dir > 0 ? "站上" : "跌破"}再看加仓${a ? `（现在${bindingText(a.binding, v.rules)}，加不了）` : ""}`, kind: "add" });
   }
   // the cuts as planned: after the add when there is one, so the sizes match the table above
   v.steps.filter((s) => s.kind === "cut").forEach((c, i) => rungs.push({ price: c.price, label: `${i ? "第二个" : "前方第一个"}关键位：减 ${trimQty(c.qty)}，落袋 ${money(c.realized)}`, kind: "cut" }));
@@ -530,7 +531,7 @@ function AddPanel({ h, v, acc, onRecord }: { h: Holding; v: View; acc: Account; 
   // 0: follow the page (next add level or the price, the current stop) until the visitor types
   const at = atIn > 0 ? atIn : +(v.addLevel ?? v.price ?? 0).toPrecision(6);
   const stop = stopIn > 0 ? stopIn : (v.stop ?? 0);
-  const limit = stop > 0 && at > 0 ? maxAdd({ pos: v.pos, price: at, stop, budget: v.budget, mode: h.mode, leverage: lev, account: acc.total, atr: v.atr, fee: acc.fee }) : null;
+  const limit = stop > 0 && at > 0 ? maxAdd({ pos: v.pos, price: at, stop, budget: v.budget, mode: h.mode, leverage: lev, account: acc.total, atr: v.atr, fee: acc.fee, rules: v.rules }) : null;
   const [qty, setQty] = useState<number>(0);
   const q = qty > 0 ? qty : (limit?.qty ?? 0);
   const p = q > 0 && at > 0 ? previewAdd({ pos: v.pos, price: at, qty: q, stop: stop > 0 ? stop : null, mode: h.mode, leverage: lev, account: acc.total, fee: acc.fee }) : null;
@@ -546,9 +547,9 @@ function AddPanel({ h, v, acc, onRecord }: { h: Holding; v: View; acc: Account; 
       {limit && (
         <p className="text-sm">
           {limit.qty > 0 ? (
-            <>按规则最多加 <b className="num">{trimQty(limit.qty)}</b>（这次受“{BINDING[limit.binding]}”限制）。</>
+            <>按规则最多加 <b className="num">{trimQty(limit.qty)}</b>（这次受“{bindingText(limit.binding, v.rules)}”限制）。</>
           ) : (
-            <span className="text-warn">按规则这次不加：{BINDING[limit.binding]}。</span>
+            <span className="text-warn">按规则这次不加：{bindingText(limit.binding, v.rules)}。</span>
           )}
         </p>
       )}
@@ -562,7 +563,7 @@ function AddPanel({ h, v, acc, onRecord }: { h: Holding; v: View; acc: Account; 
       )}
       {p && !p.stopBeforeLiq && <p className="text-sm text-down">这样加，强平价会跑到止损之前：价格还没到止损就会被强平。减少数量或降低杠杆。</p>}
       <p className="text-[11px] leading-relaxed text-ink-3">
-        规则：只在赚钱的一边、价格收盘越过关键位后加；先把止损移到新的保护位，再按“加完整笔打到止损最多亏{acc.budget === "even" ? " 0（保本）" : `每笔风险 ${acc.riskPct}%`}”算数量。数量可以自己改，结果照样算给你看。
+        规则：只在赚钱的一边、价格收盘越过关键位后加；先把止损移到新的保护位，再按“加完整笔打到止损最多亏{v.budget === 0 ? " 0（保本）" : `每笔风险 ${acc.riskPct}%`}”算数量。数量可以自己改，结果照样算给你看。
       </p>
       <button disabled={!(q > 0 && at > 0)} className="rounded-lg bg-ink px-3 py-1.5 text-sm text-bg disabled:opacity-40" onClick={() => (onRecord({ kind: "add", price: at, qty: q }, lev), setQty(0))}>
         我按这个加了
@@ -623,6 +624,13 @@ function Settings({ h, v, onChange }: { h: Holding; v: View; onChange: (p: Parti
           </button>
         )}
       </div>
+      <label className="space-y-1">
+        <span>滚仓风格</span>
+        <select id="h-style" className={field} value={h.style ?? "steady"} onChange={(e) => onChange({ style: e.target.value === "bold" ? "bold" : undefined })}>
+          <option value="steady">稳健（默认）</option>
+          <option value="bold">进取：保本滚</option>
+        </select>
+      </label>
       <label className="space-y-1">
         <span>加仓确认用哪根收盘</span>
         <select id="h-confirm" className={field} value={h.confirmTf ?? "4h"} onChange={(e) => onChange({ confirmTf: e.target.value as ConfirmTf })}>
@@ -828,7 +836,7 @@ function Rules() {
         <li>每次加完，整笔打到止损最多亏“每笔风险”（或选“保本滚仓”：不亏）；每次不超过上一笔的 {ROLL_RULES.pyramid * 100}%，最多加 {ROLL_RULES.maxAdds} 次；止损要在强平前至少 {ROLL_RULES.liqGapAtr} 倍 ATR；实际杠杆不超过 {ROLL_RULES.maxLeverage} 倍。</li>
         <li>减仓：前方第一个、第二个关键位各减三分之一，剩下跟着移动认错位。离强平不到 {ROLL_RULES.nearLiqAtr} 倍 ATR 时先减仓或补保证金。</li>
         <li>
-          回测（E31，10 个币的 4 小时 K 线，2020 年起 2,027 笔，入场和计划页同一套）：按这套规则滚仓比不滚平均每笔只多 0.05R，没到 0.1R 的门槛，换预算、金字塔比例、加仓次数或改用日线也一样；在“收盘越过摆动点”时加，和持仓期间随便挑时间加差不多。加过仓的交易里约七成比不滚更差（平均少 0.29R），三成更好（平均多 1.09R），多出来的全靠少数大行情；连续亏损时的最大回撤大了约三成。风险预算是守住了的：打到止损亏超过 1.1 倍初始风险的只有 0.5%。所以滚仓不会让你更常赚，只是在大行情里拿得更重。加仓确认改用 1 小时或 15 分钟收盘（同一个摆动点）：结果和 4 小时差不多（每笔多 0.01–0.02R，不显著），加仓价离突破点近一些（中位从 0.11R 变成 0.07R / 0.05R），最大回撤略大；所以三种都可以选，默认 4 小时。另外测了两条：① 浮盈到过 2 倍 ATR 后吐回一半就减三分之一，平均每笔少 0.03–0.08R，最大回撤小两到三成，所以只做成可选的提醒；② 价格离摆动点超过 1.5 倍 ATR 就不加，和不限制差不多（加仓数量本来就被“打到止损最多亏多少”压小了），没有加这条。
+          回测（E31，10 个币的 4 小时 K 线，2020 年起 2,027 笔，入场和计划页同一套）：按这套规则滚仓比不滚平均每笔只多 0.05R，没到 0.1R 的门槛，换预算、金字塔比例、加仓次数或改用日线也一样；在“收盘越过摆动点”时加，和持仓期间随便挑时间加差不多。加过仓的交易里约七成比不滚更差（平均少 0.29R），三成更好（平均多 1.09R），多出来的全靠少数大行情；连续亏损时的最大回撤大了约三成。风险预算是守住了的：打到止损亏超过 1.1 倍初始风险的只有 0.5%。所以滚仓不会让你更常赚，只是在大行情里拿得更重。加仓确认改用 1 小时或 15 分钟收盘（同一个摆动点）：结果和 4 小时差不多（每笔多 0.01–0.02R，不显著），加仓价离突破点近一些（中位从 0.11R 变成 0.07R / 0.05R），最大回撤略大；所以三种都可以选，默认 4 小时。“进取：保本滚”就是“止损移到开仓价、用利润滚”：加完整笔打到止损不亏，每次可以加到和上一笔一样多，最多 5 次。回测每笔平均 +0.24R（稳健 +0.22R、不滚 +0.16R），对不滚多 0.07R，没到 0.1R 的标准；亏超过本金 1.1 倍的只有 0.1%，最大回撤 78R（稳健 82R）。允许加完打到止损亏 1 倍、2 倍本金的更激进做法平均更高（+0.26R、+0.42R），但那只是仓位放大：按波动折算不比不滚划算，亏超过本金的笔数到 1.5%、10.6%，所以不提供。另外测了两条：① 浮盈到过 2 倍 ATR 后吐回一半就减三分之一，平均每笔少 0.03–0.08R，最大回撤小两到三成，所以只做成可选的提醒；② 价格离摆动点超过 1.5 倍 ATR 就不加，和不限制差不多（加仓数量本来就被“打到止损最多亏多少”压小了），没有加这条。
         </li>
       </ul>
     </details>

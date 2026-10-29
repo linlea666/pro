@@ -4,7 +4,7 @@
  */
 
 import type { TrendPlan } from "./trendplan.ts";
-import { cutPlan, DEFAULT_FEE, planSteps, fundingCost, liquidationPrice, maxAdd, nextAddLevel, pnlAt, positionOf, rollStatus, trimQty, type Dir, type Fill, type MarginMode } from "./ta/roll.ts";
+import { cutPlan, DEFAULT_FEE, ROLL_RULES, planSteps, fundingCost, liquidationPrice, maxAdd, nextAddLevel, pnlAt, positionOf, rollStatus, trimQty, type Dir, type Fill, type MarginMode } from "./ta/roll.ts";
 
 export interface Holding {
   id: string;
@@ -22,6 +22,8 @@ export interface Holding {
   confirmTf?: ConfirmTf;
   /** mail when the floating profit gives back half (E31c: smoother, not more) */
   giveback?: boolean;
+  /** "bold": break-even rolling, each add up to the previous fill, up to 5 adds (E31d) */
+  style?: "bold";
   example?: boolean;
 }
 
@@ -29,6 +31,9 @@ export type ConfirmTf = "4h" | "1h" | "15m";
 export const CONFIRM_TFS: ConfirmTf[] = ["4h", "1h", "15m"];
 export const CONFIRM_NAME: Record<ConfirmTf, string> = { "4h": "4 小时", "1h": "1 小时", "15m": "15 分钟" };
 /** E31c: the best price at least `atr` ATR beyond the average, then a price that keeps ≤ `keep` of that profit → cut `cut` */
+/** E31d: the user's "stop at the entry, roll with the profit" — break-even budget, adds as big as the last fill, 5 adds */
+export const BOLD_RULES = { pyramid: 1, maxAdds: 5 };
+export const rulesOf = (h: Pick<Holding, "style">) => (h.style === "bold" ? BOLD_RULES : undefined);
 export const GIVEBACK = { atr: 2, keep: 0.5, cut: 1 / 3 };
 const confirmOf = (h: Holding): ConfirmTf => (h.confirmTf && CONFIRM_TFS.includes(h.confirmTf) ? h.confirmTf : "4h");
 
@@ -92,6 +97,7 @@ export function cleanBook(input: unknown, coins: string[]): RollBook {
         targets: (Array.isArray(h.targets) ? h.targets : []).filter((x) => typeof x === "number" && x > 0).slice(0, 10),
         realizedBase: num(h.realizedBase, -1e12, 1e12, 0),
         ...(h.giveback === true ? { giveback: true } : {}),
+        ...(h.style === "bold" ? { style: "bold" as const } : {}),
         ...(h.confirmTf && CONFIRM_TFS.includes(h.confirmTf) && h.confirmTf !== "4h" ? { confirmTf: h.confirmTf } : {}),
       }))
       .filter((h) => h.fills.length),
@@ -153,8 +159,9 @@ export function holdingView(h: Holding, acc: Account, m: Market) {
   const st = m.swingStop[String(h.dir) as "1" | "-1"];
   const stop = h.stop ?? st?.stop ?? null;
   const liq = liquidationPrice({ dir: h.dir, qty: pos.qty, avg: pos.avg, mode: h.mode, leverage: h.leverage, account: acc.total });
-  const budget = acc.budget === "even" ? 0 : (acc.total * acc.riskPct) / 100;
-  const add = (at: number, atStop = stop) => (atStop != null ? maxAdd({ pos, price: at, stop: atStop, budget, mode: h.mode, leverage: h.leverage, account: acc.total, atr, fee: acc.fee }) : null);
+  const rules = rulesOf(h);
+  const budget = acc.budget === "even" || h.style === "bold" ? 0 : (acc.total * acc.riskPct) / 100;
+  const add = (at: number, atStop = stop) => (atStop != null ? maxAdd({ pos, price: at, stop: atStop, budget, mode: h.mode, leverage: h.leverage, account: acc.total, atr, fee: acc.fee, rules }) : null);
   // the next level is where to add after a close beyond it while adding is still allowed; otherwise it is the first cut
   const next = price != null ? nextAddLevel(h.dir, price, m.levels) : null;
   const canAdd = next != null && (add(next)?.qty ?? 0) > 0;
@@ -166,7 +173,7 @@ export function holdingView(h: Holding, acc: Account, m: Market) {
   const fundDay = m.funding != null && price != null ? fundingCost(h.dir, pos.qty * price, m.funding, 3) : null;
   const addAt = canAdd ? add(next!) : null;
   const steps = price != null ? planSteps({ pos, price, stop, add: addAt && next != null ? { price: next, qty: addAt.qty } : null, levels: m.levels, fee: acc.fee }) : [];
-  return { pos, price, atr, st, stop, liq, levels: m.levels, cuts, addLevel, budget, add, status, open, atStop, fundDay, funding: m.funding, steps };
+  return { pos, price, atr, st, stop, liq, levels: m.levels, cuts, addLevel, budget, rules: { pyramid: rules?.pyramid ?? ROLL_RULES.pyramid, maxAdds: rules?.maxAdds ?? ROLL_RULES.maxAdds, liqGapAtr: ROLL_RULES.liqGapAtr as number, maxLeverage: ROLL_RULES.maxLeverage as number }, add, status, open, atStop, fundDay, funding: m.funding, steps };
 }
 export type HoldingView = ReturnType<typeof holdingView>;
 
