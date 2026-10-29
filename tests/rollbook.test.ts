@@ -123,3 +123,15 @@ test("bold style: break-even budget, adds as big as the last fill", async () => 
   const steady = holdingView({ ...b.accounts[0].holdings[0], style: undefined }, b.accounts[0], m);
   assert.equal(steady.rules.pyramid, 0.5);
 });
+
+test("aggressive style: the per-trade risk as the budget even when the account rolls break-even", async () => {
+  const { holdingView } = await import("../src/lib/rollbook.ts");
+  const b = book({ stop: 2320, style: "aggressive" });
+  b.accounts[0].budget = "even";
+  assert.equal(cleanBook(b, ["ETH"]).accounts[0].holdings[0].style, "aggressive");
+  const v = holdingView(b.accounts[0].holdings[0], b.accounts[0], mk(2360).ETH);
+  assert.equal(v.budget, 200);
+  assert.equal(v.rules.maxAdds, 5);
+  // (200 + 4 × 20) / 40 = 7 > the pyramid's 4
+  assert.equal(v.add(2360)!.binding, "pyramid");
+});
