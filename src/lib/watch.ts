@@ -12,8 +12,9 @@ import { coinIds } from "./server/coins.ts";
 import * as ta from "./ta/core.ts";
 import { alignHigher } from "./ta/plan.ts";
 import { atrSeries, bufferAtr } from "./ta/risk.ts";
-import { BREAK_ATR, PIERCE_ATR, structureSeries } from "./ta/structure.ts";
-import { BEYOND_ATR, FRESH_BARS, keyLevelName, levelSource, pickLevels, watchState, type KeyLevelKind, type WatchInput, type WatchLevel, type WatchSide, type WatchStateName } from "./ta/watch.ts";
+import { BREAK_ATR, PIERCE_ATR, structureSeries, type StructureState } from "./ta/structure.ts";
+import { BEYOND_ATR, FRESH_BARS, keyLevelName, levelSource, pickLevels, turnAt, watchState, type KeyLevelKind, type WatchInput, type WatchLevel, type WatchSide, type WatchStateName } from "./ta/watch.ts";
+import { EARLY_FACT, EARLY_SWING_ATR, PHASE_NAMES, phaseAt, phaseFact, type Phase, type PhaseDir } from "./ta/phase.ts";
 import { SIGN_SHORT, SIGNS, signsAt, type SignData, type SignKey } from "./ta/watchsigns.ts";
 import { latestReport, scoreRow, type ScoreRow } from "./trendplan.ts";
 import { TF_SECONDS, type Candle, type Timeframe } from "./types.ts";
@@ -77,6 +78,61 @@ export interface WatchResearch {
   text: string;
 }
 
+export type PhaseTf = "15m" | "1h" | "4h";
+
+export interface PhaseRow extends Phase {
+  tf: PhaseTf;
+  /** the five cells' names for this ladder */
+  names: readonly string[];
+  /** what history says after this cell (1h / 4h only, null otherwise) */
+  fact: string | null;
+}
+
+export interface PhaseLeg {
+  dir: PhaseDir;
+  /** the swing the leg started from (the high before the low, for dir 1) and its bar's open time */
+  from: number;
+  fromT: number;
+  /** the leg's extreme so far */
+  extreme: number;
+  /** key levels between the two that a 15-minute close went through by 0.1 hour ATR, nearest the start first */
+  through: { price: number; name: string }[];
+}
+
+export interface PhaseEarly {
+  dir: PhaseDir;
+  /** open time of the 15-minute bar whose close gave the hint, and that close */
+  t: number;
+  price: number;
+  /** the stop the watch would use now (beyond the newest extreme) */
+  stop: number;
+  text: string;
+}
+
+/** While the watch waits for the turn: the turn's two conditions as they stand now (the same as `turnAt`). */
+export interface PhaseAhead {
+  dir: PhaseDir;
+  /** a 15-minute close beyond this turns it (the last swing on the other side + 0.1 ATR) */
+  trigger: number;
+  /** the last close is beyond it already */
+  closedPast: boolean;
+  /** the higher low (lower high) after the newest extreme is there */
+  haveBetter: boolean;
+  /** the stop the watch would use now */
+  stop: number;
+}
+
+/** 行情阶段：15 分钟 / 1 小时 / 4 小时各在梯子的哪一格（src/lib/ta/phase.ts），和页首一句话。 */
+export interface PhaseView {
+  rows: PhaseRow[];
+  headline: string;
+  /** the hour chart's current leg while it is at ① – ③ */
+  leg: PhaseLeg | null;
+  /** E33a: the finer 15-minute turn while the watch is still waiting for the turn */
+  early: PhaseEarly | null;
+  ahead: PhaseAhead | null;
+}
+
 export interface WatchView {
   coin: string;
   source: string;
@@ -103,6 +159,8 @@ export interface WatchView {
   /** the nearest three key levels below and above the last close, lowest first */
   levels: WatchLevelRow[];
   move24: Move24 | null;
+  /** null: not enough closed bars on the hour chart */
+  phases: PhaseView | null;
   research: WatchResearch | null;
   /** why research numbers are missing, when they are */
   researchNote: string | null;
@@ -349,6 +407,112 @@ function headlineOf(coin: string, s: WatchSide): string {
   return `${coin} ${what}：${w.dont}，${w.wait}${bounce}。`;
 }
 
+// ---------------------------------------------------------------- 行情阶段
+
+const PHASE_TF_WORD: Record<PhaseTf, string> = { "15m": "15 分钟", "1h": "1 小时", "4h": "4 小时" };
+
+const phaseWords = (dir: PhaseDir) =>
+  dir > 0
+    ? { x: "低", newX: "创新低", move: "反弹", up: "站上", down: "跌破", better: "更高的低点", bounce: "反弹高点", fix: "修复" }
+    : { x: "高", newX: "创新高", move: "回落", up: "跌破", down: "涨破", better: "更低的高点", bounce: "回落低点", fix: "转弱" };
+
+/** One cell in words: where it is, what is still missing (with prices) and what undoes it. */
+export function phaseSummary(p: Phase, tf: PhaseTf): string {
+  const t = PHASE_TF_WORD[tf];
+  const names = PHASE_NAMES[p.dir];
+  const w = phaseWords(p.dir);
+  const back = `${w.down} ${fmtPrice(p.invalid)} 就回到${names[0]}`;
+  if (p.stage === 1) return `${t}还在${names[0]}：最近 ${FRESH_BARS} 根里还在${w.newX}（最${w.x} ${fmtPrice(p.low)}）。`;
+  if (p.stage === 2) return `${t}在${names[1]}：${fmtPrice(p.low)} 之后没有再${w.newX}；还要${w.move}到 ${fmtPrice(p.heldAt)}，这个${w.x}点才算站住。${back}。`;
+  if (p.stage === 4) return `${t}已${names[3]}：${w.better} ${fmtPrice(p.higherLow)}，收盘已${w.up}${w.bounce} ${fmtPrice(p.bounce)}。${w.down} ${fmtPrice(p.invalid)} 就算${names[3]}失败。`;
+  const need: string[] = [];
+  if (!p.checks[2]) need.push(p.candidate != null ? `${fmtPrice(p.candidate)} 确认成${w.better}（现在还没确认）` : `${w.move === "反弹" ? "回踩" : "反抽"}出一个${w.better}`);
+  if (!p.checks[3]) need.push(`收盘${w.up} ${fmtPrice(p.trigger)}（${w.bounce} ${fmtPrice(p.bounce)} 外 0.1 倍 ATR）`);
+  const v = p.vShape ? `已经收盘${w.up}${w.bounce} ${fmtPrice(p.bounce)}，但还没有${w.better}；` : "";
+  return `${t}是${names[2]}，还没${w.fix}：${v}还差${/^\d/.test(need[0] ?? "") ? " " : ""}${need.join("，再")}。${back}。`;
+}
+
+interface PhaseInput {
+  c: Candle[];
+  atr15: number[];
+  ss: StructureState[];
+  h: Candle[];
+  hatr: number[];
+  hss: StructureState[];
+  c4: Candle[];
+  atr4: number[];
+  w: WatchInput;
+  mult: number;
+  long: WatchSide;
+  short: WatchSide;
+}
+
+/** The three ladders, the headline (the hour chart first), the hour chart's leg, and E33a's early hint. */
+function phasesOf(x: PhaseInput): PhaseView | null {
+  const { c, atr15, ss, h, hatr, hss, c4, atr4, w, mult } = x;
+  const n = c.length - 1;
+  const row = (tf: PhaseTf, cc: Candle[], at: number[], s: StructureState[]): PhaseRow | null => {
+    const p = cc.length ? phaseAt(cc, at, s, cc.length - 1, mult) : null;
+    return p ? { ...p, tf, names: PHASE_NAMES[p.dir], fact: tf === "15m" ? null : phaseFact(tf, p) } : null;
+  };
+  const r15 = row("15m", c, atr15, ss);
+  const r1 = row("1h", h, hatr, hss);
+  const r4 = c4.length > 50 ? row("4h", c4, atr4, structureSeries(c4, atr4, mult)) : null;
+  if (!r1) return null;
+  const rows = [r15, r1, r4].filter((r): r is PhaseRow => !!r);
+
+  const others = [r4, r15].filter((r): r is PhaseRow => !!r).map((r) => `${PHASE_TF_WORD[r.tf]}${r.names[r.stage - 1]}`);
+  const headline = `${phaseSummary(r1, "1h")}${others.length ? `（${others.join("，")}）` : ""}`;
+
+  // the hour chart's leg: from the swing before its extreme, and the key levels a 15-minute close went through on the way
+  let leg: PhaseLeg | null = null;
+  if (r1.stage < 4) {
+    const j = h.findIndex((b) => b.t === r1.lowT);
+    const s = j >= 0 ? hss[j] : null;
+    const o = s ? (r1.dir > 0 ? s.lastHigh : s.lastLow) : null;
+    const a = w.atr[n];
+    if (o && o.i < j && a > 0) {
+      const k0 = c.findIndex((b) => b.t >= o.t);
+      const cands = k0 >= 0 ? pickLevels(w.levels(k0, r1.dir), r1.dir, o.price, a, 0).filter((l) => (l.price - r1.low) * r1.dir > 0) : [];
+      const through = cands.filter((l) => {
+        for (let k = k0; k <= n; k++) if ((l.price - c[k].c) * r1.dir > BEYOND_ATR * (w.atr[k] > 0 ? w.atr[k] : a)) return true;
+        return false;
+      });
+      leg = { dir: r1.dir, from: o.price, fromT: o.t, extreme: r1.low, through: through.map((l) => ({ price: l.price, name: keyLevelName(l.kind, r1.dir) })) };
+    }
+  }
+
+  const waiting = [x.long, x.short].filter((s) => s.event && !s.event.turn).sort((p, q) => q.event!.startT - p.event!.startT);
+  // what the watch's turn still needs, for the newest event still waiting
+  let ahead: PhaseAhead | null = null;
+  // only once the 15-minute chart has stopped making new extremes that way: while it still does, the stop keeps moving
+  if (waiting.length && atr15[n] > 0 && r15 && r15.dir === waiting[0].dir && r15.stage >= 2) {
+    const s = waiting[0], ev = s.event!, st = ss[n];
+    const other = s.dir > 0 ? st.lastHigh : st.lastLow, sw = s.dir > 0 ? st.lastLow : st.lastHigh;
+    if (other) {
+      const trigger = other.price + s.dir * BEYOND_ATR * atr15[n];
+      ahead = { dir: s.dir, trigger, closedPast: (c[n].c - trigger) * s.dir > 0, haveBetter: !!sw && sw.t > ev.extremeT && sw.label === (s.dir > 0 ? "HL" : "LH"), stop: ev.stop };
+    }
+  }
+  // E33a: while the watch waits for the turn, the same turn on a finer 15-minute structure (swings at 1 ATR)
+  let early: PhaseEarly | null = null;
+  if (waiting.length) {
+    const fast = structureSeries(c, atr15, EARLY_SWING_ATR);
+    for (const s of waiting) {
+      const ev = s.event!;
+      const xi = c.findIndex((b) => b.t === ev.extremeT);
+      if (xi < 0) continue;
+      for (let k = xi + 1; k <= n; k++)
+        if (turnAt(fast[k], s.dir, ev.extremeT)) {
+          early = { dir: s.dir, t: c[k].t, price: c[k].c, stop: ev.stop, text: EARLY_FACT };
+          break;
+        }
+      if (early) break;
+    }
+  }
+  return { rows, headline, leg, early, ahead };
+}
+
 // ---------------------------------------------------------------- the view
 
 /**
@@ -376,9 +540,11 @@ export async function computeWatch(coin: string, ep: EngineParams = DEFAULT_ENGI
   const hss = structureSeries(h, hatr, mult);
   const hIdx = alignHigher(c, "15m", h, "1h");
   const atr = hIdx.map((j) => (j >= 0 ? hatr[j] : NaN));
-  const ss = structureSeries(c, atrSeries(c), mult);
+  const atr15 = atrSeries(c);
+  const ss = structureSeries(c, atr15, mult);
+  const atr4 = atrSeries(c4);
   const idx4 = alignHigher(c, "15m", c4, "4h"), idx1 = alignHigher(c, "15m", d1, "1d");
-  const w: WatchInput = { c, atr, ss, h, hss, hIdx, levels: levelSource(c, d1, atrSeries(d1), idx1, c4, atrSeries(c4), idx4) };
+  const w: WatchInput = { c, atr, ss, h, hss, hIdx, levels: levelSource(c, d1, atrSeries(d1), idx1, c4, atr4, idx4) };
   // the stored calibration is measured on the whole history: a replay uses the defaults
   const cal = live ? getCalibration(coin, "1h") : null;
   const buf = bufferAtr(cal, 80);
@@ -448,6 +614,7 @@ export async function computeWatch(coin: string, ep: EngineParams = DEFAULT_ENGI
     short,
     levels,
     move24: move24Of(coin, h, end, research.rows),
+    phases: phasesOf({ c, atr15, ss, h, hatr, hss, c4, atr4, w, mult, long, short }),
     research: research.view,
     researchNote: research.note,
     replay: !live,
@@ -506,6 +673,8 @@ export interface WatchSummary {
   headline: string;
   level: WatchLevel | null;
   distAtr: number | null;
+  /** the hour chart's cell on the ladder, e.g. "反弹"（null: not enough data） */
+  phase1h: { dir: PhaseDir; stage: number; name: string } | null;
   updatedAt: number;
 }
 
@@ -516,7 +685,9 @@ export async function watchOverview(): Promise<WatchSummary[]> {
     try {
       const v = await getWatch(coin);
       const s = v.side ? v[v.side] : [v.long, v.short].filter((x) => x.level).sort((x, y) => Math.abs(x.distAtr!) - Math.abs(y.distAtr!))[0];
-      out.push({ coin, state: v.state, side: v.side, headline: v.headline, level: s?.level ?? null, distAtr: s?.distAtr ?? null, updatedAt: v.updatedAt });
+      const r1 = v.phases?.rows.find((r) => r.tf === "1h");
+      const phase1h = r1 ? { dir: r1.dir, stage: r1.stage, name: r1.names[r1.stage - 1] } : null;
+      out.push({ coin, state: v.state, side: v.side, headline: v.headline, level: s?.level ?? null, distAtr: s?.distAtr ?? null, phase1h, updatedAt: v.updatedAt });
     } catch (e) {
       logger.warn("engine", `盯盘失败 ${coin}`, { error: (e as Error).message });
     }

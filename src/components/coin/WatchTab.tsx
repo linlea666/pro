@@ -16,6 +16,7 @@ import { ReplayContext, useReplay } from "./replay";
 import { Section } from "./shared";
 import { FamilyTag, watchLevelFamily } from "./level-tags";
 import { BreachBadge } from "./TrendMap";
+import { PhaseCard } from "./PhaseCard";
 import { fmtAtr, ruleLine, sideName, StatePill, stateWord } from "./watch-ui";
 
 /**
@@ -38,6 +39,7 @@ export function WatchTab({ v, mode, onPick }: { v: WatchView; mode: Mode; onPick
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div className="min-w-0 space-y-4">
+        <PhaseCard v={v} mode={mode} />
         <HeadCard v={v} s={rel} />
         <WhyWait v={v} dir={rel.dir} mode={mode} />
         <div className="grid items-start gap-4 md:grid-cols-2">

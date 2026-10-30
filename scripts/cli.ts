@@ -330,6 +330,18 @@ async function main() {
       console.log(`${coin} 盯盘：${bj(v.lastClosedT)} 那根 15 分钟 K 线收盘（北京时间）`);
       console.log(`收盘价 ${fp(v.closedPrice)}${v.forming ? `，最新价 ${fp(v.price)}` : ""}，1 小时 ATR ${fp(v.atr1h)}，扫损缓冲 ${v.buf} 倍 ATR${v.calibrated ? "" : "（默认值）"}，数据源 ${v.source}`);
       console.log(`\n${v.headline}`);
+      if (v.phases) {
+        console.log(`\n行情阶段：${v.phases.headline}`);
+        for (const r of v.phases.rows) {
+          const ck = ["不再创新" + (r.dir > 0 ? "低" : "高"), (r.dir > 0 ? "低" : "高") + "点站住", r.dir > 0 ? "更高的低点" : "更低的高点", r.dir > 0 ? "收盘站上反弹高点" : "收盘跌破回落低点"];
+          console.log(`  ${r.tf.padEnd(3)} ${r.names.map((x, k) => (k === r.stage - 1 ? `【${x}】` : x)).join(" → ")}  ${r.checks.map((x, k) => `${x ? "✓" : "○"}${ck[k]}`).join(" ")}；作废 ${fp(r.invalid)}`);
+          if (r.fact) console.log(`      ${r.fact}`);
+        }
+        const g = v.phases.leg;
+        if (g) console.log(`  这一段从 ${fp(g.from)}（${bj(g.fromT)}）到 ${fp(g.extreme)}，收盘${g.dir > 0 ? "跌穿" : "涨过"} ${g.through.length} 个关键位${g.through.length ? `：${g.through.map((x) => `${x.name} ${fp(x.price)}`).join("、")}` : ""}`);
+        const e = v.phases.early;
+        if (e) console.log(`  早提示：${bj(e.t)} 细一级 15 分钟已${e.dir > 0 ? "转强" : "转弱"}，收盘 ${fp(e.price)}，止损会在 ${fp(e.stop)}`);
+      }
       for (const s of [v.long, v.short]) {
         const short = s.dir < 0;
         const state = short ? STATE[s.state].replace("别接（还在往下打）", "别急着空（还在往上冲）").replace("已转强", "已转弱") : STATE[s.state];

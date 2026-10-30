@@ -79,6 +79,7 @@ export function WatchBoard() {
                   <div className="flex items-center gap-2">
                     <span className="text-[15px] font-semibold">{r.coin}</span>
                     <StatePill state={r.state} dir={dirOf(r)} />
+                    {r.phase1h && <span className="text-[12px] text-ink-3">1 小时{r.phase1h.name}</span>}
                     <span className="ml-auto text-[11px] text-ink-3">{ago(r.updatedAt)}</span>
                   </div>
                   <p className="mt-1.5 text-[13px] leading-relaxed text-ink">{r.headline}</p>
@@ -93,9 +94,10 @@ export function WatchBoard() {
 
           {/* wider screens: a table */}
           <div className="card hidden overflow-hidden md:block">
-            <div className="grid grid-cols-[4.5rem_7rem_minmax(0,1fr)_15rem_5.5rem] gap-3 border-b border-line px-4 py-2 text-xs text-ink-3">
+            <div className="grid grid-cols-[4.5rem_7rem_5.5rem_minmax(0,1fr)_15rem_5.5rem] gap-3 border-b border-line px-4 py-2 text-xs text-ink-3">
               <span>币种</span>
               <span>状态</span>
+              <span>1 小时阶段</span>
               <span>现在</span>
               <span>最近的关键位</span>
               <span className="text-right">更新</span>
@@ -103,11 +105,12 @@ export function WatchBoard() {
             <ul className="divide-y divide-line">
               {sorted.map((r) => (
                 <li key={r.coin}>
-                  <Link href={`/coin/${r.coin}?tab=watch`} className="grid grid-cols-[4.5rem_7rem_minmax(0,1fr)_15rem_5.5rem] items-center gap-3 px-4 py-2.5 hover:bg-panel-2">
+                  <Link href={`/coin/${r.coin}?tab=watch`} className="grid grid-cols-[4.5rem_7rem_5.5rem_minmax(0,1fr)_15rem_5.5rem] items-center gap-3 px-4 py-2.5 hover:bg-panel-2">
                     <span className="font-semibold">{r.coin}</span>
                     <span>
                       <StatePill state={r.state} dir={dirOf(r)} />
                     </span>
+                    <span className="text-[13px] text-ink-2">{r.phase1h?.name ?? "—"}</span>
                     <span className="text-[13px] leading-relaxed text-ink-2">{r.headline}</span>
                     <span className="num text-[13px]">
                       {levelText(r)}
