@@ -21,6 +21,10 @@
  *   watch [--coin BTC] [--at "2026-10-15 21:00"]
  *                                 the key-level watch now, or at the close of the 15-minute bar containing --at
  *                                 (Beijing time unless a zone is given): both sides' state, the levels, the signs
+ *   timeline [--coin BTC] --from "2026-09-15" [--to "2026-10-31 08:00"] [--step 4h] [--out FILE]
+ *                                 the judgment log: what the pages said at every close in that span (Beijing time),
+ *                                 recomputed from closed bars: big trend and structure changes, phase changes, every
+ *                                 watch turn with its outcome, triggered plans, a snapshot per --step
  *   spot [--sync]                 BTC spot valuation for the 现货囤币 page: the rulers now, the opinion zones as prices,
  *                                 the past episodes of each zone; --sync downloads the new days first
  *   flows [--sync]                the ETF 买盘 page: the latest ETF flow and its ranks, today's premarket premium Z and
@@ -364,6 +368,34 @@ async function main() {
         console.log(`历史最大的日跌幅：${m.topDrops.map((x) => `${bj(x.t).slice(0, 10)} ${x.pct}%`).join("；") || "—"}`);
       }
       console.log(`\n研究：${v.research?.text ?? v.researchNote ?? "—"}`);
+      break;
+    }
+    case "timeline": {
+      const { currentParams } = await import("../src/lib/server/params-store.ts");
+      const { buildTimeline, parseBj, parseStep } = await import("../src/lib/timeline.ts");
+      const coin = (opt("coin") ?? "BTC").toUpperCase();
+      const now = Math.floor(Date.now() / 1000);
+      const from = opt("from") ? parseBj(opt("from")!) : now - 30 * 86400;
+      const to = opt("to") ? parseBj(opt("to")!) : now;
+      const step = parseStep(opt("step"));
+      if (to - from > 400 * 86400) throw new Error("一次最多导出 400 天，请缩短 --from / --to");
+      const out = opt("out");
+      let lastPct = -1;
+      const text = await buildTimeline({
+        coin,
+        from,
+        to,
+        step,
+        ep: currentParams().engine,
+        progress: (d, t) => {
+          const pct = Math.floor((d / t) * 10) * 10;
+          if (pct !== lastPct) (lastPct = pct), process.stderr.write(`  已完成 ${pct}%\n`);
+        },
+      });
+      if (out) {
+        fs.writeFileSync(out, text);
+        console.log(`判断日志已保存：${out}（${Math.round(text.length / 1024)} KB），把这个文件发给开发者分析即可。`);
+      } else process.stdout.write(text);
       break;
     }
     case "spot": {

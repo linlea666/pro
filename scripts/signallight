@@ -50,6 +50,11 @@ case "$cmd" in
   plan) require_root; cli "$CUR" plan "$@" ;;
   watch) require_root; cli "$CUR" watch "$@" ;;
   spot) require_root; cli "$CUR" spot "$@" ;;
+  timeline)
+    require_root
+    out="$SL_DATA/timeline-$(date +%Y%m%d-%H%M%S).txt"
+    as_service nice -n 10 node --no-warnings --experimental-strip-types "$CUR/scripts/cli.ts" timeline "$@" --out "$out"
+    ;;
   flows) require_root; cli "$CUR" flows "$@" ;;
   help|*)
     cat <<HELP
@@ -75,6 +80,9 @@ case "$cmd" in
                                 盯盘：价格到关键高低点时是别接、观察还是已转强；--at 回放那一刻（北京时间）所在 15 分钟 K 线收盘时
   signallight spot [--sync]     现货囤币：BTC 估值尺子（200 周均线、MVRV、Mayer 倍数、恐惧贪婪）、观点区间折成价格、历史上的几段；--sync 先下载新数据（平时后台每 6 小时自动下载）
   signallight flows [--sync]    ETF 买盘：昨天的 ETF 净流入和排名、今天的盘前溢价 Z、Z 分档表；--sync 先下载流入和溢价历史（平时后台自动下载）
+  signallight timeline [--coin BTC] --from "2026-09-15" [--to "2026-10-31"] [--step 4h]
+                                判断日志：这段时间里页面每个收盘时刻的大趋势、各周期结构、行情阶段、盯盘转强 / 转弱及之后结果、
+                                已触发的计划，按收盘 K 线重算（北京时间）；保存在 /var/lib/signallight/timeline-<时间>.txt，可发给开发者分析
   signallight diagnose          生成体检报告（只读；密钥和访问者 IP 已隐藏，可发给开发者分析）
   signallight version           查看当前版本
 HELP
