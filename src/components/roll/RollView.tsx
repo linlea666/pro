@@ -473,6 +473,19 @@ function NextSteps({ h, v }: { h: Holding; v: View }) {
   );
 }
 
+/** For a blocked add at `at`: how far the stop must move for a full / half / quarter add (break-even or the budget). */
+function unlockOptions(h: Holding, v: View, at: number) {
+  const { pos } = v;
+  const gap = ROLL_RULES.nearStopAtr * (v.atr ?? 0);
+  const want = Math.max(pos.lastAdd * (v.rules.pyramid ?? 0.5), 0) || pos.qty * 0.5;
+  return [1, 0.5, 0.25].map((f) => {
+    const q = want * f;
+    const need = stopForAdd({ pos, price: at, qty: q, budget: v.budget });
+    // when the add happens the price is at `at`: a stop closer to it than half an ATR is not a real stop
+    return { q, need, margin: (q * at) / Math.max(1, h.leverage), ok: h.dir * (at - need) >= gap };
+  });
+}
+
 /** Where to add, how much margin, and the average after it; when the rules say no, what would have to change. */
 function AddPlan({ h, v }: { h: Holding; v: View }) {
   const { pos, price, stop } = v;
@@ -498,17 +511,29 @@ function AddPlan({ h, v }: { h: Holding; v: View }) {
       </div>
     );
   }
-  // not allowed: say why, and for the budget, which stop would allow a normal-size add
-  const want = Math.max(pos.lastAdd * (v.rules.pyramid ?? 0.5), 0) || pos.qty * 0.5;
-  const need = stopForAdd({ pos, price: at, qty: want, budget: v.budget });
+  // not allowed: say why, and for the budget, which stop would allow an add of each size
+  const opts = unlockOptions(h, v, at);
   return (
     <div className="space-y-1 rounded-lg border border-warn/40 bg-warn-soft p-3 text-sm">
       <p className="font-semibold">加仓：现在还不能加{lim ? `（${bindingText(lim.binding, v.rules)}）` : ""}</p>
       {lim?.binding === "budget" ? (
         <p className="text-ink-2">
           你选的是“{style}”：{rule}。止损现在在 {fmtPrice(stop)}，{h.dir * (stop - pos.avg) < 0 ? `还在均价 ${fmtPrice(pos.avg)} 的亏损一边，现在打到止损就要${money(v.atStop ?? 0)}` : "离得还太远"}，加了只会亏得更多。
-          要在 {fmtPrice(at)} 加 {trimQty(want)}（保证金约 {margin(want)} USDT），止损要先移到 <b className="num">{fmtPrice(need)}</b> {side}。止损跟着结构走：{h.dir > 0 ? "出现新的更高低点" : "出现新的更低高点"}以后，把止损移到它外面，这里就会变成“可以加”。
+          {when}想加仓，止损要先移到：
         </p>
+      ) : null}
+      {lim?.binding === "budget" ? (
+        <>
+          <ul className="num space-y-0.5 text-ink-2">
+            {opts.map((o) => (
+              <li key={o.q}>
+                · 加 {trimQty(o.q)}（保证金约 {margin(o.q)} USDT）→ 止损移到 <b>{fmtPrice(o.need)}</b> {side}
+                {!o.ok && <span className="text-ink-3">（离加仓价不到半个 ATR，太近，等价格{h.dir > 0 ? "涨" : "跌"}得更远再看）</span>}
+              </li>
+            ))}
+          </ul>
+          <p className="text-ink-2">止损跟着结构走：{h.dir > 0 ? "出现新的更高低点" : "出现新的更低高点"}以后，把止损移到它外面（或者自己在下面“止损”里填），这里就会变成“可以加”，并写出加多少、加完均价。</p>
+        </>
       ) : (
         <p className="text-ink-2">{lim?.binding === "count" ? "已经加满次数，剩下只做减仓和移动止损。" : lim?.binding === "liquidation" ? "再加强平会离止损太近：降低杠杆，或先把止损移近一些。" : lim?.binding === "leverage" ? "账户实际杠杆已到上限；逐仓可以在下面勾“不受实际杠杆限制”。" : "按规则这里不加。"}</p>
       )}
@@ -545,6 +570,16 @@ function Ladder({ h, v }: { h: Holding; v: View }) {
     const a = v.add(v.addLevel);
     rungs.push({ price: v.addLevel, label: a && a.qty > 0 ? `${CONFIRM_NAME[h.confirmTf ?? "4h"]}收盘${h.dir > 0 ? "站上" : "跌破"} → 最多可加 ${trimQty(a.qty)}，新均价 ${fmtPrice(a.avg)}` : `${CONFIRM_NAME[h.confirmTf ?? "4h"]}收盘${h.dir > 0 ? "站上" : "跌破"}再看加仓${a ? `（现在${bindingText(a.binding, v.rules)}，加不了）` : ""}`, kind: "add" });
   }
+  else if (price != null && stop != null && v.budget >= 0) {
+    // no add allowed yet: show where it would be, and what the stop needs for it
+    const lvl = nextAddLevel(h.dir, price, v.levels);
+    const a = lvl != null ? v.add(lvl) : null;
+    if (lvl != null && a?.binding === "budget") {
+      const o = unlockOptions(h, v, lvl).find((x) => x.ok);
+      const tf = `${CONFIRM_NAME[h.confirmTf ?? "4h"]}收盘${h.dir > 0 ? "站上" : "跌破"}`;
+      rungs.push({ price: lvl, label: o ? `${tf}后可以加仓：前提是止损已移到 ${fmtPrice(o.need)} ${h.dir > 0 ? "以上" : "以下"}，加 ${trimQty(o.q)}（保证金约 ${Math.round(o.margin).toLocaleString("en-US")} USDT）` : `${tf}后想加仓：止损离得太远，要等价格走得更远、止损跟上来`, kind: "add" });
+    }
+  }
   // the cuts as planned: after the add when there is one, so the sizes match the table above
   v.steps.filter((s) => s.kind === "cut").forEach((c, i) => rungs.push({ price: c.price, label: `${i ? "第二个" : "前方第一个"}关键位：减 ${trimQty(c.qty)}，落袋 ${money(c.realized)}`, kind: "cut" }));
   rungs.sort((a, b) => b.price - a.price);
@@ -573,7 +608,7 @@ function AddPanel({ h, v, acc, onRecord }: { h: Holding; v: View; acc: Account; 
   const [lev, setLev] = useState(h.leverage);
   const [stopIn, setStop] = useState(0);
   // 0: follow the page (next add level or the price, the current stop) until the visitor types
-  const at = atIn > 0 ? atIn : +(v.addLevel ?? v.price ?? 0).toPrecision(6);
+  const at = atIn > 0 ? atIn : +(v.addLevel ?? (v.price != null ? nextAddLevel(h.dir, v.price, v.levels) : null) ?? v.price ?? 0).toPrecision(6);
   const stop = stopIn > 0 ? stopIn : (v.stop ?? 0);
   const limit = stop > 0 && at > 0 ? maxAdd({ pos: v.pos, price: at, stop, budget: v.budget, mode: h.mode, leverage: lev, account: acc.total, atr: v.atr, fee: acc.fee, rules: v.rules }) : null;
   // the add is typed as margin (USDT); 0 follows the rules' limit
@@ -600,7 +635,13 @@ function AddPanel({ h, v, acc, onRecord }: { h: Holding; v: View; acc: Account; 
           {limit.qty > 0 ? (
             <>按规则最多加 <b className="num">{trimQty(limit.qty)}</b>（这次受“{bindingText(limit.binding, v.rules)}”限制）。</>
           ) : (
-            <span className="text-warn">按规则这次不加：{bindingText(limit.binding, v.rules)}。</span>
+            <span className="text-warn">
+              按规则这次不加：{bindingText(limit.binding, v.rules)}。
+              {limit.binding === "budget" && (() => {
+                const o = unlockOptions(h, v, at).find((x) => x.ok);
+                return o ? ` 止损移到 ${fmtPrice(o.need)} ${h.dir > 0 ? "以上" : "以下"}，就能在这里加 ${trimQty(o.q)}（保证金约 ${Math.round(o.margin).toLocaleString("en-US")} USDT）；把上面“加完的止损”改成这个数就能看到结果。` : " 现在止损离得太远，要等价格走得更远、止损跟上来。";
+              })()}
+            </span>
           )}
         </p>
       )}
