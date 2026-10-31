@@ -146,7 +146,7 @@ export interface TrendPlan {
   calibrated: boolean;
   noise: [number, number][] | null;
   noiseHorizon: string | null;
-  levels: { price: number; side: "support" | "resistance"; strength: number; methods: string[] }[];
+  levels: { price: number; side: "support" | "resistance"; strength: number; methods: string[]; methodCount?: number; tfs?: string[] }[];
   /** recent bars of the entry timeframe; the bar still forming last, when there is one */
   candles: Candle[];
   forming: boolean;
@@ -486,7 +486,7 @@ export async function computeTrendPlan(coin: string, fw: Framework, ep: EnginePa
     calibrated: !!cal,
     noise: cal?.noise ?? null,
     noiseHorizon: cal ? horizonText(F.tf, cal.horizon) : null,
-    levels: [...all.supports.slice(0, 4), ...all.resistances.slice(0, 4)].map((l) => ({ price: l.price, side: l.side, strength: l.strength, methods: l.methods.slice(0, 3) })),
+    levels: [...all.supports.slice(0, 4), ...all.resistances.slice(0, 4)].map((l) => ({ price: l.price, side: l.side, strength: l.strength, methods: l.methods.slice(0, 3), methodCount: l.methods.length, tfs: [...l.timeframes].sort((a, b) => TF_SECONDS[b] - TF_SECONDS[a]).map((t) => TF_LABEL[t]) })),
     candles: formingBar ? [...E.c.slice(-CHART_BARS), formingBar] : E.c.slice(-CHART_BARS),
     forming: !!formingBar,
     daily: daily.slice(-91).map((x) => x.c),

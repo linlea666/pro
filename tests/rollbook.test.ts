@@ -185,3 +185,11 @@ test("cut modes: the default decides at the 4-hour close, touch cuts at the pric
   ({ mem } = pickRollAlerts(n, bar(1000, 2350, 2340, 2352), {}));
   assert.equal(pickRollAlerts(n, bar(2000, 2350, 2340, 2365), mem).alerts.length, 0);
 });
+
+test("levelSource names a level's methods and timeframes", async () => {
+  const { levelSource } = await import("../src/lib/rollbook.ts");
+  const info = [{ price: 79121.6, methods: ["前日/周/月高低", "Fibonacci Pivot", "摆动高低"], methodCount: 5, tfs: ["周线", "日线", "1小时"], strength: 100 }];
+  assert.equal(levelSource(info, 79121.6), "前日/周/月高低、Fibonacci Pivot、摆动高低 等 5 种方法 · 周线 / 日线 / 1小时");
+  assert.equal(levelSource(info, 80000), null);
+  assert.equal(levelSource(undefined, 1), null);
+});

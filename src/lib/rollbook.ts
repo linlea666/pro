@@ -123,6 +123,22 @@ export function cleanBook(input: unknown, coins: string[]): RollBook {
   return { accounts, alert: { enabled: !!al.enabled, to, dailyCap: Math.floor(num(al.dailyCap, 1, 200, DEFAULT_ROLL_ALERT.dailyCap)) } };
 }
 
+export interface LevelInfo {
+  price: number;
+  methods: string[];
+  methodCount: number;
+  tfs: string[];
+  strength: number;
+}
+
+/** "前日/周/月高低、Fib Pivot 等 5 种方法 · 周线 / 日线 / 1小时": what a level is made of. */
+export function levelSource(info: LevelInfo[] | undefined, price: number): string | null {
+  const l = info?.find((x) => Math.abs(x.price - price) <= price * 1e-9);
+  if (!l || !l.methods.length) return null;
+  const m = l.methods.join("、") + (l.methodCount > l.methods.length ? ` 等 ${l.methodCount} 种方法` : l.methods.length > 1 ? ` ${l.methods.length} 种方法` : "");
+  return l.tfs.length ? `${m} · ${l.tfs.join(" / ")}` : m;
+}
+
 /** What the page and the alerts need of one coin's market. */
 export interface Market {
   price: number | null;
@@ -130,6 +146,8 @@ export interface Market {
   atr: number | null;
   /** key levels of the 4-hour plan */
   levels: number[];
+  /** where each key level comes from (the key-level card's methods and timeframes) */
+  levelInfo?: LevelInfo[];
   /** the plan's structure stop for a long (1) and a short (−1) */
   swingStop: Record<"1" | "-1", { stop: number; anchor: number } | null>;
   funding: number | null;
@@ -159,6 +177,7 @@ export function marketOf(p: TrendPlan | null, price: number | null, funding: num
     price: price ?? p.price,
     atr: p.atr,
     levels: p.levels.map((x) => x.price),
+    levelInfo: p.levels.map((x) => ({ price: x.price, methods: x.methods, methodCount: x.methodCount ?? x.methods.length, tfs: x.tfs ?? [], strength: x.strength })),
     swingStop: { "1": stopOf(1), "-1": stopOf(-1) },
     funding,
     lastClose: n >= 2 ? { t: closed[n - 1].t, c: closed[n - 1].c, prev: closed[n - 2].c, hi: closed[n - 1].h, lo: closed[n - 1].l } : null,
@@ -188,7 +207,7 @@ export function holdingView(h: Holding, acc: Account, m: Market) {
   const fundDay = m.funding != null && price != null ? fundingCost(h.dir, pos.qty * price, m.funding, 3) : null;
   const addAt = canAdd ? add(next!) : null;
   const steps = price != null ? planSteps({ pos, price, stop, add: addAt && next != null ? { price: next, qty: addAt.qty } : null, levels: m.levels, fee: acc.fee, cuts: cutMode !== "none" }) : [];
-  return { cutMode, pos, price, atr, st, stop, liq, levels: m.levels, cuts, addLevel, budget, rules: { pyramid: rules?.pyramid ?? ROLL_RULES.pyramid, maxAdds: rules?.maxAdds ?? ROLL_RULES.maxAdds, liqGapAtr: ROLL_RULES.liqGapAtr as number, maxLeverage: rules?.maxLeverage ?? (ROLL_RULES.maxLeverage as number) }, add, status, open, atStop, fundDay, funding: m.funding, steps };
+  return { levelInfo: m.levelInfo ?? [], cutMode, pos, price, atr, st, stop, liq, levels: m.levels, cuts, addLevel, budget, rules: { pyramid: rules?.pyramid ?? ROLL_RULES.pyramid, maxAdds: rules?.maxAdds ?? ROLL_RULES.maxAdds, liqGapAtr: ROLL_RULES.liqGapAtr as number, maxLeverage: rules?.maxLeverage ?? (ROLL_RULES.maxLeverage as number) }, add, status, open, atStop, fundDay, funding: m.funding, steps };
 }
 export type HoldingView = ReturnType<typeof holdingView>;
 
@@ -239,6 +258,7 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
       if (!was) continue;
       const head = `${acc.name} · ${h.coin} ${h.dir > 0 ? "多单" : "空单"}`;
       const base = `现价 ${fp(price)}，均价 ${fp(v.pos.avg)}，数量 ${trimQty(v.pos.qty)}，浮动盈亏 ${usd(v.open ?? 0)}`;
+      const srcLine = (x: number) => { const t = levelSource(m.levelInfo, x); return t ? [`这个位来自：${t}。`] : []; };
       const crossed = (x: number) => was.price != null && was.price !== x && (was.price - x) * (price - x) <= 0;
 
       if (v.status && URGENT.has(v.status.title) && was.status !== v.status.title) {
@@ -249,7 +269,7 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
       if (v.cutMode === "touch" && was.price != null)
         for (const c of cutPlan(v.pos, was.price, v.addLevel != null ? m.levels.filter((x) => h.dir * (x - v.addLevel!) > 0) : m.levels, acc.fee))
           if (crossed(c.price))
-            alerts.push({ key: `${h.id}:cut:${c.price}`, kind: "cut", title: `${head}：到减仓位 ${fp(c.price)}`, lines: [`按计划减 ${trimQty(c.qty)}，这部分落袋约 ${usd(c.realized)}，剩下 ${trimQty(c.left)}，均价不变。`, base] });
+            alerts.push({ key: `${h.id}:cut:${c.price}`, kind: "cut", title: `${head}：到减仓位 ${fp(c.price)}`, lines: [`按计划减 ${trimQty(c.qty)}，这部分落袋约 ${usd(c.realized)}，剩下 ${trimQty(c.left)}，均价不变。`, ...srcLine(c.price), base] });
       // E31e: a 4-hour bar that reached a level beyond the average decides at its close: back inside → cut 1/3, held → keep
       const b4 = m.lastClose;
       if (v.cutMode === "close" && b4 && b4.hi != null && b4.lo != null && was.bar4 != null && b4.t > was.bar4) {
@@ -261,8 +281,8 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
           const q = v.pos.qty / 3;
           alerts.push(
             held
-              ? { key: `${h.id}:held:${b4.t}`, kind: "cut", title: `${head}：4 小时收盘${h.dir > 0 ? "站上" : "跌破"} ${fp(L)}，站稳了`, lines: [`收盘 ${fp(b4.c)} 在 ${fp(L)} ${h.dir > 0 ? "上面" : "下面"}。按“收盘没站稳才减”，这里不减，拿着，止损跟着结构移。`, base] }
-              : { key: `${h.id}:reject:${b4.t}`, kind: "cut", title: `${head}：冲击 ${fp(L)} 没站稳，减三分之一`, lines: [`这根 4 小时最${h.dir > 0 ? "高" : "低"}到 ${fp(ext)}，收盘 ${fp(b4.c)} 又回到 ${fp(L)} ${h.dir > 0 ? "下面" : "上面"}。按“收盘没站稳才减”，减 ${trimQty(q)}（三分之一），这部分落袋约 ${usd(h.dir * (b4.c - v.pos.avg) * q)}，剩下跟着移动止损。`, base] },
+              ? { key: `${h.id}:held:${b4.t}`, kind: "cut", title: `${head}：4 小时收盘${h.dir > 0 ? "站上" : "跌破"} ${fp(L)}，站稳了`, lines: [`收盘 ${fp(b4.c)} 在 ${fp(L)} ${h.dir > 0 ? "上面" : "下面"}。按“收盘没站稳才减”，这里不减，拿着，止损跟着结构移。`, ...srcLine(L), base] }
+              : { key: `${h.id}:reject:${b4.t}`, kind: "cut", title: `${head}：冲击 ${fp(L)} 没站稳，减三分之一`, lines: [`这根 4 小时最${h.dir > 0 ? "高" : "低"}到 ${fp(ext)}，收盘 ${fp(b4.c)} 又回到 ${fp(L)} ${h.dir > 0 ? "下面" : "上面"}。按“收盘没站稳才减”，减 ${trimQty(q)}（三分之一），这部分落袋约 ${usd(h.dir * (b4.c - v.pos.avg) * q)}，剩下跟着移动止损。`, ...srcLine(L), base] },
           );
         }
       }

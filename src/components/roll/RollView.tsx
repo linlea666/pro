@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { TrendPlan } from "@/lib/trendplan";
 import { DEFAULT_FEE, maxAdd, nextAddLevel, stopForAdd, pnlAt, positionOf, previewAdd, previewReduce, ROLL_RULES, trimQty, type AddLimit, type Dir, type Fill, type MarginMode, type Tone } from "@/lib/ta/roll";
-import { ACCOUNT_RISK_PCT, CONFIRM_NAME, CONFIRM_TFS, CUT_MODES, CUT_NAME, DEFAULT_ROLL_ALERT, type ConfirmTf, holdingView, marketOf, type Account, type Holding, type HoldingView as View, type RollAlertConfig } from "@/lib/rollbook";
+import { ACCOUNT_RISK_PCT, levelSource, CONFIRM_NAME, CONFIRM_TFS, CUT_MODES, CUT_NAME, DEFAULT_ROLL_ALERT, type ConfirmTf, holdingView, marketOf, type Account, type Holding, type HoldingView as View, type RollAlertConfig } from "@/lib/rollbook";
 import type { CoinMeta } from "@/lib/symbols";
 import { fmtPrice } from "../coin/format";
 import { track } from "../track";
@@ -447,7 +447,10 @@ function NextSteps({ h, v }: { h: Holding; v: View }) {
               </tr>
               {v.steps.map((s, i) => (
                 <tr key={i} className="border-t border-line">
-                  <td className="px-3 py-2">{"①②③④⑤"[i]} {s.kind === "add" ? beyond(s.price) : v.cutMode === "close" ? `冲击 ${fmtPrice(s.price)}` : `到 ${fmtPrice(s.price)}`}</td>
+                  <td className="px-3 py-2">
+                    {"①②③④⑤"[i]} {s.kind === "add" ? beyond(s.price) : v.cutMode === "close" ? `冲击 ${fmtPrice(s.price)}` : `到 ${fmtPrice(s.price)}`}
+                    {levelSource(v.levelInfo, s.price) && <span className="block text-xs text-ink-3">{levelSource(v.levelInfo, s.price)}</span>}
+                  </td>
                   <td className="px-3 py-2">{s.kind === "add" ? <span className="text-up">加 {trimQty(s.qty)}</span> : v.cutMode === "close" ? <span className="text-warn">4 小时收盘没站稳 → 减 {trimQty(s.qty)}（三分之一）；站稳就不减</span> : <span className="text-warn">减 {trimQty(s.qty)}（三分之一）</span>}</td>
                   <td className="px-3 py-2 text-right">{fmtPrice(s.avg)} · {trimQty(s.left)}</td>
                   <td className={`px-3 py-2 text-right ${s.kind === "add" ? "text-ink-3" : toneColor(s.realized)}`}>{s.kind === "add" ? `手续费 ${Math.abs(s.realized).toFixed(1)}` : money(s.realized)}</td>
@@ -467,7 +470,7 @@ function NextSteps({ h, v }: { h: Holding; v: View }) {
       {!losing && !v.steps.length && <p className="text-sm text-ink-2">{v.cutMode === "none" ? "你选的是“不减，只跟移动止损”：没有减仓位，跟着移动认错位拿着。" : "前方 4 小时图上没有关键位，没有加仓位和减仓位：跟着移动认错位拿着。"}</p>}
       <p className="text-[11px] leading-relaxed text-ink-3">
         {v.steps.some((s) => s.kind === "add") && <>加仓前先把止损移到新的保护位；表里“之后打到止损”还按现在的止损 {fmtPrice(stop)} 算，移了以后亏得更少或者变成赚。</>}
-        如果反着走：到止损 {fmtPrice(stop)} {v.atStop != null ? money(v.atStop) : ""}{liq != null ? `，强平 ${fmtPrice(liq)}` : ""}。加仓位和减仓位来自趋势与计划页的 4 小时关键位，只是“可能停顿的地方”，不是会到的目标。
+        如果反着走：到止损 {fmtPrice(stop)} {v.atStop != null ? money(v.atStop) : ""}{liq != null ? `，强平 ${fmtPrice(liq)}` : ""}。加仓位和减仓位来自币页的“关键价位”（15 分钟到周线、多种方法合并，下面写着每个位由什么组成），只是“可能停顿的地方”，不是会到的目标。
       </p>
     </div>
   );
@@ -545,6 +548,8 @@ interface Rung {
   price: number;
   label: string;
   kind: "liq" | "stop" | "avg" | "now" | "target" | "add" | "cut";
+  /** what a key level is made of */
+  src?: string | null;
 }
 const DOT: Record<Rung["kind"], string> = {
   liq: "bg-down border-down",
@@ -582,6 +587,7 @@ function Ladder({ h, v }: { h: Holding; v: View }) {
   }
   // the cuts as planned: after the add when there is one, so the sizes match the table above
   v.steps.filter((s) => s.kind === "cut").forEach((c, i) => rungs.push({ price: c.price, label: v.cutMode === "close" ? `${i ? "第二个" : "前方第一个"}关键位：4 小时收盘没站稳就减 ${trimQty(c.qty)}（落袋约 ${money(c.realized)}），站稳就拿着` : `${i ? "第二个" : "前方第一个"}关键位：减 ${trimQty(c.qty)}，落袋 ${money(c.realized)}`, kind: "cut" }));
+  for (const r of rungs) if (r.kind === "add" || r.kind === "cut") r.src = levelSource(v.levelInfo, r.price);
   rungs.sort((a, b) => b.price - a.price);
   return (
     <div className="space-y-2">
@@ -591,7 +597,10 @@ function Ladder({ h, v }: { h: Holding; v: View }) {
           <li key={i} className={`relative grid grid-cols-[84px_1fr] items-center gap-x-3 py-1.5 pl-4 text-sm sm:grid-cols-[96px_1fr_auto] ${r.kind === "now" ? "bg-accent-soft" : ""}`}>
             <span className={`absolute -left-[7px] top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border-2 bg-panel ${DOT[r.kind]}`} />
             <span className="num font-semibold">{fmtPrice(r.price)}</span>
-            <span className={`min-w-0 ${r.kind === "now" ? "font-semibold" : ""}`}>{r.label}</span>
+            <span className={`min-w-0 ${r.kind === "now" ? "font-semibold" : ""}`}>
+              {r.label}
+              {r.src && <span className="block text-xs text-ink-3">来自：{r.src}</span>}
+            </span>
             <span className={`num col-start-2 sm:col-start-3 sm:text-right ${r.kind === "liq" ? "text-down" : toneColor(pnlAt(pos, r.price, 0))}`}>
               {r.kind === "liq" ? "保证金亏光" : money(pnlAt(pos, r.price))}
             </span>
@@ -961,7 +970,7 @@ function Rules() {
       <summary className="cursor-pointer font-semibold">这页按什么规则算</summary>
       <ul className="mt-2 list-disc space-y-1 pl-5 text-ink-2">
         <li>只在赚钱的一边加仓，亏损的单不加仓摊平（马丁格尔会把一笔错单放大）。</li>
-        <li>加仓等价格<b>收盘</b>越过前方关键位（来自趋势与计划页的 4 小时关键位），先把止损移到新的保护位，再算能加多少。</li>
+        <li>加仓等价格<b>收盘</b>越过前方关键位（来自币页的“关键价位”：15 分钟到周线多种方法合并，离得近的已合在一起），先把止损移到新的保护位，再算能加多少。</li>
         <li>每次加完，整笔打到止损最多亏“每笔风险”（或选“保本滚仓”：不亏）；每次不超过上一笔的 {ROLL_RULES.pyramid * 100}%，最多加 {ROLL_RULES.maxAdds} 次；止损要在强平前至少 {ROLL_RULES.liqGapAtr} 倍 ATR；实际杠杆不超过 {ROLL_RULES.maxLeverage} 倍。</li>
         <li>减仓：前方第一个、第二个关键位各减三分之一，剩下跟着移动认错位。离强平不到 {ROLL_RULES.nearLiqAtr} 倍 ATR 时先减仓或补保证金。</li>
         <li>
