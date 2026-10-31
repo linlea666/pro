@@ -10,7 +10,10 @@
  * - S 看收盘：碰到关键位的那根收盘回到关键位以内（没站稳）→ 这根收盘减 1/3；收盘在关键位之外（站稳）→ 不减，这个位作废。
  * - S2 看两根收盘：碰到的那根和下一根都收在关键位之外才算站稳；其中任意一根收回来 → 那根收盘减 1/3。
  * - S5 没站稳减一半：同 S，但减 1/2。
+ * - SD / S4 加趋势判断：同 S，但碰到时日线（SD）/ 4 小时（S4）结构和持仓同向就不减，只在不同向时没站稳才减。
  * - 变体（环境变量）：NEAR=x 冲到离关键位 x 倍 ATR 内就算“冲击”（没碰到也算，比如冲到 78,800 没上 79,000）；
+ *   LEVELS=fused 改用页面的关键位（关键价位卡片：15 分钟 / 1 小时 / 4 小时 / 日线 14 种方法聚类，前方最多 5 个，
+ *   同 analysis.ts 的 keyLevels；15 分钟只有 e31-fetch 下载的那段）；LEVELS=strong 只用其中强度 ≥ STRONG（默认 50）的；
  *   ROUND=1 关键位再加整数关口（价格的上一位整数，BTC 1,000、ETH 100）。另按做多 / 做空分开列。
  * - 成本、资金费、R、切分、达标同 E31。
  *
@@ -22,6 +25,9 @@ import { atrSeries, bufferAtr, calibrate } from "../../src/lib/ta/risk.ts";
 import { structureDirection, structureSeries, swings, type Swing } from "../../src/lib/ta/structure.ts";
 import { BUILTIN_COINS } from "../../src/lib/symbols.ts";
 import type { Candle, Timeframe } from "../../src/lib/types.ts";
+import { clusterLevels, levelCandidates, periodCandidates } from "../../src/lib/ta/levels.ts";
+import { DEFAULT_ENGINE_PARAMS } from "../../src/lib/params.ts";
+import { existsSync } from "node:fs";
 
 const dir = process.argv[2];
 const TF = (process.env.TF ?? "4h") as Timeframe;
@@ -32,6 +38,10 @@ const HORIZON: Record<string, number> = { "4h": 18, "1d": 10 };
 const WARMUP = 300;
 const MAXBARS = MAX_HOLD_BARS[TF] ?? 120;
 const OOS = Date.UTC(2025, 9, 27) / 1000;
+const LEVELS = process.env.LEVELS ?? "swing";
+const STRONG = Number(process.env.STRONG ?? 50);
+const LP = DEFAULT_ENGINE_PARAMS.levels;
+const TFS_SEC: Record<string, number> = { "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400 };
 const NEAR = Number(process.env.NEAR ?? 0);
 const ROUND = process.env.ROUND === "1";
 const SEC = TF === "4h" ? 14400 : 86400;
@@ -49,7 +59,7 @@ function weekly(d: Candle[]): Candle[] {
   return out;
 }
 
-const KEYS = ["A", "K", "S", "S2", "S5"] as const;
+const KEYS = ["A", "K", "S", "S2", "S5", "SD", "S4"] as const;
 type Key = (typeof KEYS)[number];
 type Res = { coin: string; t: number; dir: number; touched: number; stood: number; cutsS: number } & Record<Key, number>;
 type Cut = { i: number; price: number; frac: number };
@@ -72,6 +82,28 @@ function run(coin: string): Res[] {
   const buf = bufferAtr(cal, 80);
   const evs = findEntries({ tf: TF, c, atr, ss, filterAt: (t) => (fIdx[t] < 0 ? 0 : structureDirection(fss[fIdx[t]])), buf, from: WARMUP });
   const fund = j.funding;
+  const subPath = `${dir}/e31/${coin}.json`;
+  const sub = LEVELS !== "swing" && existsSync(subPath) ? JSON.parse(readFileSync(subPath, "utf8")) : null;
+  const ser: Record<string, Candle[]> = { "15m": sub ? bars(sub.m15) : [], "1h": sub ? bars(sub.h1) : [], "4h": TF === "4h" ? c : bars(j.h4), "1d": d1 };
+  // the last bar of each series closed by a time (binary search)
+  const upto = (arr: Candle[], sec: number, tEnd: number) => {
+    let lo = 0, hi = arr.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m].t + sec <= tEnd) lo = m + 1; else hi = m; }
+    return lo;
+  };
+  // the page's key levels at the entry close (resistances for a long, supports for a short)
+  function fusedAt(i: number, d: 1 | -1, E: number): number[] {
+    const tEnd = c[i].t + SEC;
+    const cands = (["15m", "1h", "4h", "1d"] as const).flatMap((tf) => {
+      const n = upto(ser[tf], TFS_SEC[tf], tEnd);
+      return n >= 250 ? levelCandidates(ser[tf].slice(Math.max(0, n - 600), n), tf, LP) : [];
+    });
+    const nd = upto(d1, 86400, tEnd);
+    cands.push(...periodCandidates(d1.slice(Math.max(0, nd - 400), nd), E, LP));
+    const r = clusterLevels(cands, E, Math.max(atr[i] * LP.bandAtr, (E * LP.bandMinPct) / 100), 5, LP);
+    const side = d > 0 ? r.resistances : r.supports;
+    return side.filter((l) => LEVELS !== "strong" || l.strength >= STRONG).map((l) => l.price).sort((a, b) => d * (a - b));
+  }
   const fSec = TF === "4h" ? 86400 : 7 * 86400;
 
   function path(i: number, d: 1 | -1, stop0: number) {
@@ -94,6 +126,7 @@ function run(coin: string): Res[] {
 
   // the 2 nearest unbroken opposite swings (4h and 1d) beyond the entry, known at the entry close
   function levelsAt(i: number, d: 1 | -1, E: number): number[] {
+    if (LEVELS !== "swing") return fusedAt(i, d, E).slice(0, 2);
     const kind = d > 0 ? "high" : "low";
     const cand: number[] = [];
     for (const s of sw) {
@@ -145,7 +178,7 @@ function run(coin: string): Res[] {
     const beyond = (x: number, L: number) => d * (x - L) > 0;
     const touch = (jj: number, L: number) => (d > 0 ? c[jj].h >= L - NEAR * atr[jj] : c[jj].l <= L + NEAR * atr[jj]);
 
-    const K: Cut[] = [], S: Cut[] = [], S2: Cut[] = [], S5: Cut[] = [];
+    const K: Cut[] = [], S: Cut[] = [], S2: Cut[] = [], S5: Cut[] = [], SD: Cut[] = [], S4: Cut[] = [];
     let touched = 0, stood = 0;
     for (const L of lv) {
       let tj = -1;
@@ -155,14 +188,19 @@ function run(coin: string): Res[] {
       // K is the page's limit order at the level: only filled when the level itself is reached
       for (let jj = tj; jj < p.exitBar; jj++) if (d > 0 ? c[jj].h >= L : c[jj].l <= L) { K.push({ i: jj, price: d > 0 ? Math.max(L, c[jj].o) : Math.min(L, c[jj].o), frac: 1 / 3 }); break; }
       if (beyond(c[tj].c, L)) stood++;
-      else (S.push({ i: tj, price: c[tj].c, frac: 1 / 3 }), S5.push({ i: tj, price: c[tj].c, frac: 1 / 2 }));
+      else {
+        S.push({ i: tj, price: c[tj].c, frac: 1 / 3 });
+        S5.push({ i: tj, price: c[tj].c, frac: 1 / 2 });
+        if ((fIdx[tj] < 0 ? 0 : structureDirection(fss[fIdx[tj]])) !== d) SD.push({ i: tj, price: c[tj].c, frac: 1 / 3 });
+        if (structureDirection(ss[tj]) !== d) S4.push({ i: tj, price: c[tj].c, frac: 1 / 3 });
+      }
       if (!beyond(c[tj].c, L)) S2.push({ i: tj, price: c[tj].c, frac: 1 / 3 });
       else if (tj + 1 < p.exitBar && !beyond(c[tj + 1].c, L)) S2.push({ i: tj + 1, price: c[tj + 1].c, frac: 1 / 3 });
     }
     // S5 can cut 1/2 twice: cap the total at the full position less a share left to trail
     if (S5.length === 2) S5[1].frac = 1 / 3;
     const R = (cuts: Cut[]) => result(E, e.i, d, q0, p.exitBar, p.exitPx, cuts);
-    out.push({ coin, t: c[e.i].t, dir: d, touched, stood, cutsS: S.length, A: R([]), K: R(K), S: R(S), S2: R(S2), S5: R(S5) });
+    out.push({ coin, t: c[e.i].t, dir: d, touched, stood, cutsS: S.length, A: R([]), K: R(K), S: R(S), S2: R(S2), S5: R(S5), SD: R(SD), S4: R(S4) });
   }
   return out;
 }
@@ -193,10 +231,10 @@ function maxDD(rows: Res[], k: Key) {
   }
   return dd;
 }
-const NAME: Record<Key, string> = { A: "A 不减", K: "K 碰到就减（现在）", S: "S 收盘没站稳才减", S2: "S2 两根收盘没站稳才减", S5: "S5 没站稳减一半" };
+const NAME: Record<Key, string> = { A: "A 不减", K: "K 碰到就减（现在）", S: "S 收盘没站稳才减", S2: "S2 两根收盘没站稳才减", S5: "S5 没站稳减一半", SD: "SD 日线同向不减", S4: "S4 4 小时同向不减" };
 
 const is = all.filter((x) => x.t < OOS);
-console.log(`E31e 关键位站稳再决定减不减  周期 ${TF}  冲击 = 离关键位 ${NEAR} ATR 内${ROUND ? "  含整数关口" : ""}（${FILTER} 定方向）  样本外从 2025-10-27`);
+console.log(`E31e 关键位站稳再决定减不减  关键位 ${LEVELS}${LEVELS === "strong" ? ` ≥ ${STRONG}` : ""}  周期 ${TF}  冲击 = 离关键位 ${NEAR} ATR 内${ROUND ? "  含整数关口" : ""}（${FILTER} 定方向）  样本外从 2025-10-27`);
 console.log(`交易 ${all.length} 笔（样本内 ${is.length}），起点 ${new Date(firstT * 1000).toISOString().slice(0, 10)}`);
 const lvT = is.reduce((s, x) => s + x.touched, 0);
 console.log(`碰到关键位 ${lvT} 次（${((is.filter((x) => x.touched > 0).length / is.length) * 100).toFixed(0)}% 的交易碰到过），其中碰到那根收盘站在位外 ${((is.reduce((s, x) => s + x.stood, 0) / lvT) * 100).toFixed(0)}%`);
@@ -231,6 +269,8 @@ function paired(a: Key, b: Key) {
 paired("S", "K");
 paired("S2", "K");
 paired("S5", "K");
+paired("SD", "S");
+paired("S4", "S");
 paired("K", "A");
 paired("S", "A");
 
