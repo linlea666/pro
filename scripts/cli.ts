@@ -15,7 +15,7 @@
  *   compare --set KEY=VALUE [--set ...] [--tf 1h] [--coin BTC] [--step 2]
  *                                 replay the traffic light with the current and the changed parameters on the
  *                                 same past moments and print both records against the random control
- *   plan [--coin BTC] [--fw 4h|1d] [--at "2026-09-23 20:00"]
+ *   plan [--coin BTC] [--fw 4h|1d] [--at "2026-09-23 20:00"]（4 小时节奏先打印行情导视）
  *                                 the trend map and both trading plans now, or as they stood when the bar
  *                                 opening at --at (Beijing time unless a zone is given) closed, with what came next
  *   watch [--coin BTC] [--at "2026-10-15 21:00"]
@@ -37,6 +37,7 @@ import { adminCount, upsertAdmin, validatePassword } from "../src/lib/server/aut
 import { backupNow } from "../src/lib/server/jobs.ts";
 import type { ResearchReport } from "../src/lib/research/run.ts";
 import { weekLineText } from "../src/lib/ta/weekline.ts";
+import { briefText } from "../src/lib/ta/brief.ts";
 import { againstBig, bigTrendLine, bigTrendRows, type BigTrend } from "../src/lib/ta/bigtrend.ts";
 
 const printBig = (b: BigTrend | null) => {
@@ -287,6 +288,7 @@ async function main() {
       console.log(`${coin} ${fw === "4h" ? "日线定方向、4 小时入场" : "周线定方向、日线入场"}：${bj(p.lastClosedT)} 那根 ${tf} K 线收盘（北京时间）`);
       console.log(`收盘价 ${fp(p.closedPrice)}，ATR ${fp(p.atr)}，数据源 ${p.source}${p.calibrated ? "" : "，缓冲用默认值"}`);
       printBig(p.big);
+      if (p.brief) console.log(`\n${briefText(p.brief).join("\n")}`);
       console.log(`\n${p.headline}\n${p.bias}`);
       for (const m of p.map) console.log(`  ${m.tf.padEnd(3)} ${m.view.label}：${m.view.position}`);
       if (p.week50) console.log(`  周线${weekLineText(p.week50)}，均线 ${fp(p.week50.sma)}（只描述长期趋势，不预测涨跌）`);

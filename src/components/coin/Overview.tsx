@@ -15,6 +15,7 @@ import { AiCard } from "./AiCard";
 import { ScorecardCard } from "./ScorecardCard";
 import { PerpCard } from "./PerpCard";
 import { TrendMap } from "./TrendMap";
+import { BriefCard } from "./BriefCard";
 import { PlanScorecardCard } from "./TrendPlanTab";
 import type { Mode } from "./CoinView";
 
@@ -45,7 +46,9 @@ export function Overview({ a, mtf, mode, plan, onTf, onTab }: { a: Analysis; mtf
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div className="min-w-0 space-y-4">
-        {plan && <TrendMap p={plan} mode={mode} compact onOpen={() => onTab("plan")} />}
+        {/* 行情导视：一页看完在哪、盯哪几个收盘价；新手模式有它就不再重复趋势地图（计划页里有完整的） */}
+        {plan?.brief && <BriefCard p={plan} onTab={onTab} />}
+        {plan && (mode === "pro" || !plan.brief) && <TrendMap p={plan} mode={mode} compact onOpen={() => onTab("plan")} />}
 
         {/* the traffic light: a description of the moment, not a forecast */}
         <section className="card overflow-hidden">

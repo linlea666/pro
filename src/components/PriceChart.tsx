@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  BaselineSeries,
   CandlestickSeries,
   ColorType,
   CrosshairMode,
@@ -50,6 +51,14 @@ export interface Segment {
   dashed?: boolean;
 }
 
+/** A shaded price band across the whole chart (e.g. a range's low and high). */
+export interface Band {
+  lo: number;
+  hi: number;
+  /** fill colour, with alpha */
+  color: string;
+}
+
 export interface SubPane {
   title: string;
   kind: "line" | "histogram";
@@ -70,11 +79,14 @@ interface Props {
   markers?: MarkerSpec[];
   segments?: Segment[];
   panes?: SubPane[];
+  bands?: Band[];
   showVolume?: boolean;
   /** bars visible initially */
   initialBars?: number;
   onPick?: (p: { t: number; price: number; index: number }) => void;
 }
+
+const NO_BANDS: Band[] = [];
 
 /** Shift UTC timestamps so the time axis reads in the viewer's local time. */
 const tzShift = () => -new Date().getTimezoneOffset() * 60;
@@ -89,7 +101,7 @@ const fmtTime = (t: number) => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 
-export function PriceChart({ candles, height = 440, lines = [], priceLines = [], markers = [], segments = [], panes = [], showVolume = true, initialBars = 160, onPick }: Props) {
+export function PriceChart({ candles, height = 440, lines = [], priceLines = [], markers = [], segments = [], panes = [], bands = NO_BANDS, showVolume = true, initialBars = 160, onPick }: Props) {
   const box = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const [hover, setHover] = useState<{ c: Candle; extras: { title: string; color: string; v: number | null }[] } | null>(null);
@@ -200,6 +212,25 @@ export function PriceChart({ candles, height = 440, lines = [], priceLines = [],
       s.setData(pts.map((p) => ({ time: T(p.t), value: p.v })));
     }
 
+    // a band: a baseline series held at the top edge, filled down to the bottom edge
+    for (const b of bands) {
+      if (!(b.hi > b.lo)) continue;
+      const s = chart.addSeries(BaselineSeries, {
+        baseValue: { type: "price", price: b.lo },
+        topFillColor1: b.color,
+        topFillColor2: b.color,
+        topLineColor: "transparent",
+        bottomFillColor1: "transparent",
+        bottomFillColor2: "transparent",
+        bottomLineColor: "transparent",
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      s.setData(candles.map((c) => ({ time: T(c.t), value: b.hi })));
+    }
+
     for (const pl of priceLines) {
       main.createPriceLine({ price: pl.price, color: pl.color, lineWidth: pl.width ?? 1, lineStyle: pl.dashed === false ? LineStyle.Solid : LineStyle.Dashed, axisLabelVisible: true, title: pl.title });
     }
@@ -263,7 +294,7 @@ export function PriceChart({ candles, height = 440, lines = [], priceLines = [],
       chartRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candles, lines, priceLines, markers, segments, panes, height, showVolume, themeTick, future]);
+  }, [candles, lines, priceLines, markers, segments, panes, bands, height, showVolume, themeTick, future]);
 
   const last = candles[candles.length - 1];
   const shown = hover?.c ?? last;

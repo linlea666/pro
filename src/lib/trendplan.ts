@@ -13,6 +13,8 @@ import { atrSeries, bufferAtr } from "./ta/risk.ts";
 import { defenseTiers, type DefenseLine } from "./ta/tiers.ts";
 import { weekLine, type WeekLine } from "./ta/weekline.ts";
 import { bigTrendOf, type BigTrend } from "./ta/bigtrend.ts";
+import { marketBrief, type MarketBrief } from "./ta/brief.ts";
+import type { Level } from "./ta/levels.ts";
 import { describeStructure, structureDirection, structureSeries, swings, type StructureState, type StructureView, type Swing } from "./ta/structure.ts";
 import { TF_LABEL, TF_SECONDS, type Candle, type Timeframe } from "./types.ts";
 
@@ -164,6 +166,8 @@ export interface TrendPlan {
   week50: WeekLine | null;
   /** 周线、日线的大趋势（只描述）；数据不够时为 null */
   big: BigTrend | null;
+  /** 行情导视（总览顶部，只组装上面这些结果；只有 4 小时节奏，数据不够时为 null） */
+  brief: MarketBrief | null;
   /** research on defended levels and near stops: rows the lessons quote, and a line per stall sign */
   defendLessons: ScoreRow[];
   defendChecks: Record<"flow" | "oi" | "turn", string> | null;
@@ -468,6 +472,8 @@ export async function computeTrendPlan(coin: string, fw: Framework, ep: EnginePa
   const fView = map.find((m) => m.role === "filter")!.view, eView = map.find((m) => m.role === "entry")!.view;
   const all = relevel([...supports, ...resistances], live);
   const daily = frames.get("1d")?.c ?? [];
+  const big = frames.get("1w") && frames.get("1d") ? bigTrendOf({ w: frames.get("1w")!, d: frames.get("1d")! }, mult) : null;
+  const levelOut = (l: Level) => ({ price: l.price, side: l.side, strength: l.strength, methods: l.methods.slice(0, 3), methodCount: l.methods.length, tfs: [...l.timeframes].sort((a, b) => TF_SECONDS[b] - TF_SECONDS[a]).map((t) => TF_LABEL[t]) });
 
   const out: TrendPlan = {
     coin,
@@ -489,7 +495,7 @@ export async function computeTrendPlan(coin: string, fw: Framework, ep: EnginePa
     calibrated: !!cal,
     noise: cal?.noise ?? null,
     noiseHorizon: cal ? horizonText(F.tf, cal.horizon) : null,
-    levels: [...all.supports.slice(0, 4), ...all.resistances.slice(0, 4)].map((l) => ({ price: l.price, side: l.side, strength: l.strength, methods: l.methods.slice(0, 3), methodCount: l.methods.length, tfs: [...l.timeframes].sort((a, b) => TF_SECONDS[b] - TF_SECONDS[a]).map((t) => TF_LABEL[t]) })),
+    levels: [...all.supports.slice(0, 4), ...all.resistances.slice(0, 4)].map(levelOut),
     candles: formingBar ? [...E.c.slice(-CHART_BARS), formingBar] : E.c.slice(-CHART_BARS),
     forming: !!formingBar,
     daily: daily.slice(-91).map((x) => x.c),
@@ -497,7 +503,8 @@ export async function computeTrendPlan(coin: string, fw: Framework, ep: EnginePa
     scorecard: report ? scorecardOf(report, rows, F.tf) : null,
     lessons: LESSON_KEYS.map((k) => rows.get(k)).filter((x): x is ResearchRow => !!x).map(scoreRow),
     week50: weekLine((frames.get("1w")?.c ?? []).map((x) => x.c)),
-    big: frames.get("1w") && frames.get("1d") ? bigTrendOf({ w: frames.get("1w")!, d: frames.get("1d")! }, mult) : null,
+    big,
+    brief: F.tf === "4h" ? marketBrief({ price: live, h4: E, h1: frames.get("1h") ?? null, big, supports: all.supports.map(levelOut), resistances: all.resistances.map(levelOut), mult }) : null,
     defenses: (() => {
       const tierIn = { tf: F.tf, c: E.c, atr: E.atr, sw: E.sw, higherTf: F.filter, higher: H.ss[H.ss.length - 1] ?? null, daily: frames.get("1d")?.c ?? [], endSec: E.c[L].t + TF_SECONDS[F.tf], live };
       return { long: defenseTiers(tierIn, 1), short: defenseTiers(tierIn, -1) };
