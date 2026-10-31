@@ -12,6 +12,7 @@ import { buildPlans, findEntries, higherDirection, MAX_HOLD_BARS, stopOption, ty
 import { atrSeries, bufferAtr } from "./ta/risk.ts";
 import { defenseTiers, type DefenseLine } from "./ta/tiers.ts";
 import { weekLine, type WeekLine } from "./ta/weekline.ts";
+import { bigTrendOf, type BigTrend } from "./ta/bigtrend.ts";
 import { describeStructure, structureDirection, structureSeries, swings, type StructureState, type StructureView, type Swing } from "./ta/structure.ts";
 import { TF_LABEL, TF_SECONDS, type Candle, type Timeframe } from "./types.ts";
 
@@ -161,6 +162,8 @@ export interface TrendPlan {
   defenses: { long: DefenseLine[]; short: DefenseLine[] };
   /** closed weekly closes against their 50-week average, described only (E24); null under 50 weeks */
   week50: WeekLine | null;
+  /** 周线、日线的大趋势（只描述）；数据不够时为 null */
+  big: BigTrend | null;
   /** research on defended levels and near stops: rows the lessons quote, and a line per stall sign */
   defendLessons: ScoreRow[];
   defendChecks: Record<"flow" | "oi" | "turn", string> | null;
@@ -494,6 +497,7 @@ export async function computeTrendPlan(coin: string, fw: Framework, ep: EnginePa
     scorecard: report ? scorecardOf(report, rows, F.tf) : null,
     lessons: LESSON_KEYS.map((k) => rows.get(k)).filter((x): x is ResearchRow => !!x).map(scoreRow),
     week50: weekLine((frames.get("1w")?.c ?? []).map((x) => x.c)),
+    big: frames.get("1w") && frames.get("1d") ? bigTrendOf({ w: frames.get("1w")!, d: frames.get("1d")! }) : null,
     defenses: (() => {
       const tierIn = { tf: F.tf, c: E.c, atr: E.atr, sw: E.sw, higherTf: F.filter, higher: H.ss[H.ss.length - 1] ?? null, daily: frames.get("1d")?.c ?? [], endSec: E.c[L].t + TF_SECONDS[F.tf], live };
       return { long: defenseTiers(tierIn, 1), short: defenseTiers(tierIn, -1) };

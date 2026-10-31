@@ -1,6 +1,8 @@
 import { binancePage, closedThrough, PRIMARY_SOURCE, type KlineResult } from "./data/klines.ts";
 import { openInterestSeries } from "./data/perp.ts";
 import { cutoff, ReplayError, seriesAt } from "./analysis.ts";
+import { bigTrendAt } from "./bigtrend.ts";
+import type { BigTrend } from "./ta/bigtrend.ts";
 import { logger } from "./server/log.ts";
 import { getDb } from "./server/db.ts";
 import { currentParams } from "./server/params-store.ts";
@@ -164,6 +166,8 @@ export interface WatchView {
   research: WatchResearch | null;
   /** why research numbers are missing, when they are */
   researchNote: string | null;
+  /** 周线、日线的大趋势（只描述）；数据不够时为 null */
+  big: BigTrend | null;
   replay: boolean;
 }
 
@@ -521,7 +525,7 @@ function phasesOf(x: PhaseInput): PhaseView | null {
  */
 export async function computeWatch(coin: string, ep: EngineParams = DEFAULT_ENGINE_PARAMS, replayEnd: number | null = null): Promise<WatchView> {
   const live = replayEnd == null;
-  const raw = await Promise.all(TFS.map((tf) => seriesAt(coin, tf, replayEnd)));
+  const [raw, big] = await Promise.all([Promise.all(TFS.map((tf) => seriesAt(coin, tf, replayEnd))), bigTrendAt(coin, replayEnd, ep.structure.swingAtr).catch(() => null)]);
   const byTf = new Map<Timeframe, KlineResult>(TFS.map((tf, k) => [tf, raw[k]]));
   const main = byTf.get("15m")!;
   const nowSec = closedThrough(main);
@@ -617,6 +621,7 @@ export async function computeWatch(coin: string, ep: EngineParams = DEFAULT_ENGI
     phases: phasesOf({ c, atr15, ss, h, hatr, hss, c4, atr4, w, mult, long, short }),
     research: research.view,
     researchNote: research.note,
+    big,
     replay: !live,
   };
 }

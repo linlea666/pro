@@ -17,6 +17,8 @@ import { Section } from "./shared";
 import { FamilyTag, watchLevelFamily } from "./level-tags";
 import { BreachBadge } from "./TrendMap";
 import { PhaseCard } from "./PhaseCard";
+import { BigTrendCard } from "./BigTrendCard";
+import { againstBig, BIG_TREND_FACTS } from "@/lib/ta/bigtrend";
 import { fmtAtr, ruleLine, sideName, StatePill, stateWord } from "./watch-ui";
 
 /**
@@ -39,6 +41,7 @@ export function WatchTab({ v, mode, onPick }: { v: WatchView; mode: Mode; onPick
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div className="min-w-0 space-y-4">
+        <BigTrendCard big={v.big} />
         <PhaseCard v={v} mode={mode} />
         <HeadCard v={v} s={rel} />
         <WhyWait v={v} dir={rel.dir} mode={mode} />
@@ -72,6 +75,9 @@ function HeadCard({ v, s }: { v: WatchView; s: WatchSideView }) {
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <StatePill state={v.state} dir={s.dir} big />
           {v.side && <span className="text-xs text-ink-3">{sideName(s.dir)}</span>}
+          {turn && againstBig(v.big, s.dir) && (
+            <span className="whitespace-nowrap rounded-full border border-warn px-2 py-0.5 text-[11px] text-warn">逆大趋势 · 按规则半仓</span>
+          )}
           {v.forming && s.piercing && (
             <span className="whitespace-nowrap rounded-full border border-warn px-2 py-0.5 text-[11px] text-warn">正在{s.dir > 0 ? "刺穿" : "冲过"}（以收盘为准）</span>
           )}
@@ -104,9 +110,12 @@ function TurnBox({ v, s }: { v: WatchView; s: WatchSideView }) {
     setRiskPct(readPref("risk", 1));
     setLev(readPref("lev", 5));
   }, []);
-  const r = sizePosition({ capital, riskPct, entry: entryNow, stop: turn.stop, leverage: lev });
+  // against both the week and the day: half the risk, the plan page's rule for trades against the higher timeframe
+  const against = againstBig(v.big, s.dir);
+  const risk = against ? riskPct / 2 : riskPct;
+  const r = sizePosition({ capital, riskPct: risk, entry: entryNow, stop: turn.stop, leverage: lev });
   const valid = capital > 0 && riskPct > 0 && (long ? turn.stop < entryNow : turn.stop > entryNow);
-  const loss = (capital * riskPct) / 100;
+  const loss = (capital * risk) / 100;
   const field = "num w-full rounded-lg border border-line bg-panel-2 px-2 py-1.5 text-sm outline-none focus:border-accent";
   const set = (f: (x: number) => void, key: "capital" | "risk" | "lev") => (e: React.ChangeEvent<HTMLInputElement>) => {
     const x = +e.target.value;
@@ -157,6 +166,11 @@ function TurnBox({ v, s }: { v: WatchView; s: WatchSideView }) {
             <input type="number" className={field} value={lev} min={1} max={125} onChange={set(setLev, "lev")} />
           </label>
         </div>
+        {against && (
+          <div className="mt-2 rounded-md border border-warn/60 bg-warn-soft px-2.5 py-1.5 text-[12px] leading-relaxed text-ink-2">
+            <b className="text-warn">逆大趋势：</b>周线、日线都{long ? "向下" : "向上"}，下面按每笔风险的一半（{risk}%）算。{BIG_TREND_FACTS.rule} {BIG_TREND_FACTS.e37}
+          </div>
+        )}
         <div className="mt-2 space-y-0.5 text-[13px] leading-relaxed">
           {!valid ? (
             <span className="text-ink-3">{long ? "价格已经在止损之下，这次转强已经作废。" : "价格已经在止损之上，这次转弱已经作废。"}</span>
@@ -168,7 +182,7 @@ function TurnBox({ v, s }: { v: WatchView; s: WatchSideView }) {
                 <span className="text-ink-3">（约 {r.qty.toPrecision(4)} {v.coin}）</span>
               </div>
               <div className="text-ink-2">
-                打到止损亏 <b className="num">{loss.toFixed(0)} USDT</b>（1R）；{lev} 倍杠杆占用保证金 <span className="num">{r.margin.toLocaleString("en-US", { maximumFractionDigits: 0 })}</span> USDT
+                打到止损亏 <b className="num">{loss.toFixed(0)} USDT</b>（1R{against ? "，半仓" : ""}）；{lev} 倍杠杆占用保证金 <span className="num">{r.margin.toLocaleString("en-US", { maximumFractionDigits: 0 })}</span> USDT
                 {r.liq != null && (
                   <>
                     ，强平价约 <b className="num">{fmtPrice(r.liq)}</b>

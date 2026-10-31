@@ -1,5 +1,7 @@
 import { closedThrough, type KlineResult } from "./data/klines.ts";
 import { cutoff, ReplayError, seriesAt } from "./analysis.ts";
+import { bigTrendAt } from "./bigtrend.ts";
+import type { BigTrend } from "./ta/bigtrend.ts";
 import { logger } from "./server/log.ts";
 import { currentParams } from "./server/params-store.ts";
 import { DEFAULT_ENGINE_PARAMS, type EngineParams } from "./params.ts";
@@ -165,6 +167,8 @@ export interface PaView {
   nextLevels: PaNextLevel[];
   /** why research numbers are missing, when they are */
   researchNote: string | null;
+  /** 周线、日线的大趋势（只描述）；数据不够时为 null */
+  big: BigTrend | null;
   replay: boolean;
 }
 
@@ -451,7 +455,7 @@ function framesOf(pf: PaTf): Timeframe[] {
 export async function computePa(coin: string, pf: PaTf, ep: EngineParams = DEFAULT_ENGINE_PARAMS, replayEnd: number | null = null): Promise<PaView> {
   const live = replayEnd == null;
   const tfs = framesOf(pf);
-  const raw = await Promise.all(tfs.map((tf) => seriesAt(coin, tf, replayEnd)));
+  const [raw, big] = await Promise.all([Promise.all(tfs.map((tf) => seriesAt(coin, tf, replayEnd))), bigTrendAt(coin, replayEnd, ep.structure.swingAtr).catch(() => null)]);
   const byTf = new Map<Timeframe, KlineResult>(tfs.map((tf, k) => [tf, raw[k]]));
   const main = byTf.get(pf)!;
   const nowSec = closedThrough(main);
@@ -529,6 +533,7 @@ export async function computePa(coin: string, pf: PaTf, ep: EngineParams = DEFAU
     checklists,
     nextLevels,
     researchNote: research.note,
+    big,
     replay: !live,
   };
 }

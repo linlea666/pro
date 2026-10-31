@@ -1,4 +1,5 @@
 import { fmtPrice, getWatch, type WatchView } from "../watch.ts";
+import { againstBig, BIG_TREND_FACTS, tfTrendText, type BigTrend } from "../ta/bigtrend.ts";
 import type { WatchSide } from "../ta/watch.ts";
 import { getDb } from "./db.ts";
 import { coinIds } from "./coins.ts";
@@ -91,6 +92,8 @@ export interface WatchAlert {
   side: WatchSide;
   /** the research sentence of the page, when there is a report */
   research: string | null;
+  /** 周线、日线的大趋势（只描述），没有时省略 */
+  big?: BigTrend | null;
 }
 
 /** One key per event, state and attempt: a turn undone by a new extreme and made again is a new one. */
@@ -107,7 +110,7 @@ export function pickAlerts(views: WatchView[], cfg: Pick<WatchAlertConfig, "turn
       if (kind === "turned" && (!s.event.turn || nowSec - (s.event.turn.t + BAR) > STALE_SEC)) continue;
       const key = alertKey(v.coin, s);
       if (seen[key]) continue;
-      out.push({ key, coin: v.coin, kind, side: s, research: v.research?.text ?? null });
+      out.push({ key, coin: v.coin, kind, side: s, research: v.research?.text ?? null, big: v.big ?? null });
     }
   }
   return out;
@@ -142,10 +145,12 @@ function block(a: WatchAlert, siteUrl: string): string[] {
     lines.push(`止损：${fmtPrice(ev.turn.stop)}（最新${long ? "低点之下" : "高点之上"}，加扫损缓冲）`);
     const size = sizeLine(ev.turn.entry, ev.turn.stop);
     if (size) lines.push(size);
+    if (againstBig(a.big, s.dir)) lines.push(`逆大趋势（周线、日线都${long ? "向下" : "向上"}）：按规则半仓，仓位按上面的一半。${BIG_TREND_FACTS.e37}`);
     lines.push(`之后如果又${long ? "跌破" : "涨破"} ${fmtPrice(ev.extreme)}，这次转${long ? "强" : "弱"}就作废，回到“别接”。`);
   } else {
     lines.push(`现在别接，等 15 分钟走出${long ? "更高的低点、再收盘站上最近的反弹高点" : "更低的高点、再收盘跌破最近的回落低点"}。转${long ? "强" : "弱"}时止损会放在约 ${fmtPrice(ev.stop)}。`);
   }
+  if (a.big) lines.push(`大趋势：${tfTrendText(a.big.week)}；${tfTrendText(a.big.day)}`);
   if (siteUrl) lines.push(`页面：${siteUrl}/coin/${a.coin}?tab=watch`);
   return lines;
 }

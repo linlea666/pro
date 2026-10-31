@@ -14,6 +14,7 @@ import { PositionCheck } from "./PositionCheck";
 import { ReplayContext, useReplay } from "./replay";
 import { Section } from "./shared";
 import { BreachBadge, TrendMap } from "./TrendMap";
+import { BigTrendCard } from "./BigTrendCard";
 
 const ALIGN: Record<SidePlan["alignment"], { text: string; color: string }> = {
   with: { text: "顺大周期", color: "var(--up)" },
@@ -86,6 +87,7 @@ export function TrendPlanTab({ p, mode, fw, onFw, onPick }: { p: TrendPlan; mode
             ))}
           </div>
         )}
+        <BigTrendCard big={p.big} />
         <TrendMap p={p} mode={mode} />
         <PlanChart p={p} ch={ch} onPick={onPick} />
         <div className="grid gap-4 md:grid-cols-2">

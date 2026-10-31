@@ -37,6 +37,12 @@ import { adminCount, upsertAdmin, validatePassword } from "../src/lib/server/aut
 import { backupNow } from "../src/lib/server/jobs.ts";
 import type { ResearchReport } from "../src/lib/research/run.ts";
 import { weekLineText } from "../src/lib/ta/weekline.ts";
+import { againstBig, bigTrendLine, tfTrendText, type BigTrend } from "../src/lib/ta/bigtrend.ts";
+
+const printBig = (b: BigTrend | null) => {
+  if (!b) return;
+  console.log(`\n大趋势：${bigTrendLine(b)}\n  ${tfTrendText(b.week)}\n  ${tfTrendText(b.day)}`);
+};
 
 const [cmd, ...rest] = process.argv.slice(2);
 const opt = (name: string) => {
@@ -280,6 +286,7 @@ async function main() {
       const fp = (x: number | null | undefined) => (x == null ? "—" : x >= 1000 ? Math.round(x).toLocaleString("en-US") : String(Math.round(x * 100) / 100));
       console.log(`${coin} ${fw === "4h" ? "日线定方向、4 小时入场" : "周线定方向、日线入场"}：${bj(p.lastClosedT)} 那根 ${tf} K 线收盘（北京时间）`);
       console.log(`收盘价 ${fp(p.closedPrice)}，ATR ${fp(p.atr)}，数据源 ${p.source}${p.calibrated ? "" : "，缓冲用默认值"}`);
+      printBig(p.big);
       console.log(`\n${p.headline}\n${p.bias}`);
       for (const m of p.map) console.log(`  ${m.tf.padEnd(3)} ${m.view.label}：${m.view.position}`);
       if (p.week50) console.log(`  周线${weekLineText(p.week50)}，均线 ${fp(p.week50.sma)}（只描述长期趋势，不预测涨跌）`);
@@ -334,6 +341,7 @@ async function main() {
       console.log(`${coin} 盯盘：${bj(v.lastClosedT)} 那根 15 分钟 K 线收盘（北京时间）`);
       console.log(`收盘价 ${fp(v.closedPrice)}${v.forming ? `，最新价 ${fp(v.price)}` : ""}，1 小时 ATR ${fp(v.atr1h)}，扫损缓冲 ${v.buf} 倍 ATR${v.calibrated ? "" : "（默认值）"}，数据源 ${v.source}`);
       console.log(`\n${v.headline}`);
+      printBig(v.big);
       if (v.phases) {
         console.log(`\n行情阶段：${v.phases.headline}`);
         for (const r of v.phases.rows) {
@@ -354,7 +362,7 @@ async function main() {
         if (!e) continue;
         console.log(`  ${bj(e.startT)} 碰到，已过 ${e.bars} 根；最新${short ? "高点" : "低点"} ${fp(e.extreme)}（${bj(e.extremeT)}）${e.bounce != null ? `，${short ? "回落低点" : "反弹高点"} ${fp(e.bounce)}` : ""}${e.reclaimed ? "，扫过后收回" : ""}；第 ${e.attempt} 次等待`);
         console.log(`  创新${short ? "高" : "低"}：${e.newExtremes.map((x) => `${bj(x.t)} ${fp(x.price)}`).join("；")}`);
-        if (e.turn) console.log(`  ${bj(e.turn.t)} 15 分钟${short ? "转弱" : "转强"}：入场 ${fp(e.turn.entry)}，止损 ${fp(e.turn.stop)}（${short ? "高点" : "低点"} ${fp(e.turn.extreme)} 之外）`);
+        if (e.turn) console.log(`  ${bj(e.turn.t)} 15 分钟${short ? "转弱" : "转强"}：入场 ${fp(e.turn.entry)}，止损 ${fp(e.turn.stop)}（${short ? "高点" : "低点"} ${fp(e.turn.extreme)} 之外）${againstBig(v.big, s.dir) ? "；逆大趋势，按规则半仓" : ""}`);
         else console.log(`  还没${short ? "转弱" : "转强"}；现在的止损位会在 ${fp(e.stop)}`);
         console.log(`  1 小时${e.hourTurned ? "也已" : "还没"}${short ? "转弱" : "转强"}`);
         for (const g of s.signs ?? []) console.log(`  迹象 ${g.name}：${g.value == null ? "数据缺" : g.value ? "有" : "没有"}${g.text ? `。${g.text}` : ""}`);

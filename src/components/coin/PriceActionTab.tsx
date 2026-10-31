@@ -15,6 +15,7 @@ import { fmtR, fmtWhen, readPref, writePref } from "./plan-ui";
 import { ReplayContext, useReplay } from "./replay";
 import { Section } from "./shared";
 import { FamilyTag, paLevelFamily } from "./level-tags";
+import { BigTrendCard } from "./BigTrendCard";
 
 /**
  * 裸 K: three steps on one screen — ① the trend (structure), ② the location (support / resistance / middle),
@@ -48,6 +49,7 @@ export function PriceActionTab({ v, mode, pf, onPf, onPick }: { v: PaView; mode:
         </span>
       </div>
 
+      <BigTrendCard big={v.big} />
       <div className="grid gap-3 md:grid-cols-3">
         <StepCard n="①" title="趋势">
           <p className="text-[14px] font-medium leading-snug">{v.trend.sentence}</p>
