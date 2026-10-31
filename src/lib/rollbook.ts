@@ -4,7 +4,7 @@
  */
 
 import type { TrendPlan } from "./trendplan.ts";
-import { cutPlan, DEFAULT_FEE, ROLL_RULES, planSteps, fundingCost, liquidationPrice, maxAdd, nextAddLevel, pnlAt, positionOf, rollStatus, trimQty, type Dir, type Fill, type MarginMode } from "./ta/roll.ts";
+import { cutPlan, DEFAULT_FEE, ROLL_RULES, planSteps, fundingCost, liquidationPrice, maxAdd, nextAddLevel, pnlAt, positionOf, rollStatus, trimQty, type CutMode, type Dir, type Fill, type MarginMode } from "./ta/roll.ts";
 
 export interface Holding {
   id: string;
@@ -27,6 +27,8 @@ export interface Holding {
   style?: "bold" | "aggressive";
   /** isolated only: adds not capped by the account's real leverage (the stop-before-liquidation rule stays) */
   noLevCap?: boolean;
+  /** cuts at the levels ahead: absent = "close" (E31e) */
+  cutMode?: "touch" | "none";
   example?: boolean;
 }
 
@@ -41,6 +43,9 @@ export const rulesOf = (h: Pick<Holding, "style" | "noLevCap" | "mode">) => {
   if (h.noLevCap && h.mode === "isolated") r.maxLeverage = Infinity;
   return Object.keys(r).length ? r : undefined;
 };
+export const CUT_MODES: CutMode[] = ["close", "touch", "none"];
+export const CUT_NAME: Record<CutMode, string> = { close: "4 小时收盘没站稳才减", touch: "碰到关键位就减", none: "不减，只跟移动止损" };
+export const cutModeOf = (h: Pick<Holding, "cutMode">): CutMode => (h.cutMode === "touch" || h.cutMode === "none" ? h.cutMode : "close");
 export const GIVEBACK = { atr: 2, keep: 0.5, cut: 1 / 3 };
 const confirmOf = (h: Holding): ConfirmTf => (h.confirmTf && CONFIRM_TFS.includes(h.confirmTf) ? h.confirmTf : "4h");
 
@@ -106,6 +111,7 @@ export function cleanBook(input: unknown, coins: string[]): RollBook {
         ...(h.giveback === true ? { giveback: true } : {}),
         ...(h.style === "bold" || h.style === "aggressive" ? { style: h.style } : {}),
         ...(h.noLevCap === true ? { noLevCap: true } : {}),
+        ...(h.cutMode === "touch" || h.cutMode === "none" ? { cutMode: h.cutMode } : {}),
         ...(h.confirmTf && CONFIRM_TFS.includes(h.confirmTf) && h.confirmTf !== "4h" ? { confirmTf: h.confirmTf } : {}),
       }))
       .filter((h) => h.fills.length),
@@ -127,8 +133,8 @@ export interface Market {
   /** the plan's structure stop for a long (1) and a short (−1) */
   swingStop: Record<"1" | "-1", { stop: number; anchor: number } | null>;
   funding: number | null;
-  /** the last two closed 4-hour closes */
-  lastClose: { t: number; c: number; prev: number } | null;
+  /** the last two closed 4-hour closes, and the last one's high and low */
+  lastClose: { t: number; c: number; prev: number; hi?: number; lo?: number } | null;
   /** the last two closed 1-hour / 15-minute closes, when a holding confirms adds on them */
   closes?: Partial<Record<"1h" | "15m", { t: number; c: number; prev: number }>>;
 }
@@ -155,7 +161,7 @@ export function marketOf(p: TrendPlan | null, price: number | null, funding: num
     levels: p.levels.map((x) => x.price),
     swingStop: { "1": stopOf(1), "-1": stopOf(-1) },
     funding,
-    lastClose: n >= 2 ? { t: closed[n - 1].t, c: closed[n - 1].c, prev: closed[n - 2].c } : null,
+    lastClose: n >= 2 ? { t: closed[n - 1].t, c: closed[n - 1].c, prev: closed[n - 2].c, hi: closed[n - 1].h, lo: closed[n - 1].l } : null,
   };
 }
 
@@ -173,15 +179,16 @@ export function holdingView(h: Holding, acc: Account, m: Market) {
   // the next level is where to add after a close beyond it while adding is still allowed; otherwise it is the first cut
   const next = price != null ? nextAddLevel(h.dir, price, m.levels) : null;
   const canAdd = next != null && (add(next)?.qty ?? 0) > 0;
-  const cuts = price != null ? cutPlan(pos, price, canAdd ? m.levels.filter((x) => h.dir * (x - next!) > 0) : m.levels, acc.fee) : [];
+  const cutMode = cutModeOf(h);
+  const cuts = price != null && cutMode !== "none" ? cutPlan(pos, price, canAdd ? m.levels.filter((x) => h.dir * (x - next!) > 0) : m.levels, acc.fee) : [];
   const addLevel = canAdd || (next != null && !cuts.some((c) => c.price === next)) ? next : null;
-  const status = price != null ? rollStatus({ pos, price, stop, liq, atr, cuts, addLevel, fee: acc.fee, confirm: CONFIRM_NAME[confirmOf(h)] }) : null;
+  const status = price != null ? rollStatus({ pos, price, stop, liq, atr, cuts, addLevel, fee: acc.fee, confirm: CONFIRM_NAME[confirmOf(h)], cutMode }) : null;
   const open = price != null ? pnlAt(pos, price, acc.fee) : null;
   const atStop = stop != null && pos.qty > 0 ? pnlAt(pos, stop, acc.fee) : null;
   const fundDay = m.funding != null && price != null ? fundingCost(h.dir, pos.qty * price, m.funding, 3) : null;
   const addAt = canAdd ? add(next!) : null;
-  const steps = price != null ? planSteps({ pos, price, stop, add: addAt && next != null ? { price: next, qty: addAt.qty } : null, levels: m.levels, fee: acc.fee }) : [];
-  return { pos, price, atr, st, stop, liq, levels: m.levels, cuts, addLevel, budget, rules: { pyramid: rules?.pyramid ?? ROLL_RULES.pyramid, maxAdds: rules?.maxAdds ?? ROLL_RULES.maxAdds, liqGapAtr: ROLL_RULES.liqGapAtr as number, maxLeverage: rules?.maxLeverage ?? (ROLL_RULES.maxLeverage as number) }, add, status, open, atStop, fundDay, funding: m.funding, steps };
+  const steps = price != null ? planSteps({ pos, price, stop, add: addAt && next != null ? { price: next, qty: addAt.qty } : null, levels: m.levels, fee: acc.fee, cuts: cutMode !== "none" }) : [];
+  return { cutMode, pos, price, atr, st, stop, liq, levels: m.levels, cuts, addLevel, budget, rules: { pyramid: rules?.pyramid ?? ROLL_RULES.pyramid, maxAdds: rules?.maxAdds ?? ROLL_RULES.maxAdds, liqGapAtr: ROLL_RULES.liqGapAtr as number, maxLeverage: rules?.maxLeverage ?? (ROLL_RULES.maxLeverage as number) }, add, status, open, atStop, fundDay, funding: m.funding, steps };
 }
 export type HoldingView = ReturnType<typeof holdingView>;
 
@@ -195,7 +202,7 @@ export interface RollAlert {
 }
 
 /** what the previous round saw, per holding id (and per account for the account risk) */
-export type RollMemory = Record<string, { price?: number; status?: string; barT?: number; best?: number; fills?: number; gave?: number }>;
+export type RollMemory = Record<string, { price?: number; status?: string; barT?: number; bar4?: number; best?: number; fills?: number; gave?: number }>;
 
 const fp = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? "—" : v >= 1000 ? v.toLocaleString("en-US", { maximumFractionDigits: 1 }) : v >= 1 ? v.toFixed(v >= 100 ? 2 : 3) : v.toPrecision(4));
 const usd = (v: number) => `${v >= 0 ? "+" : "−"}${Math.abs(Math.round(v)).toLocaleString("en-US")} USDT`;
@@ -227,7 +234,7 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
       // the best price since the fills last changed, for the giveback alert
       const nf = h.fills.length;
       const best = was?.fills === nf && was.best != null ? (h.dir > 0 ? Math.max(was.best, price) : Math.min(was.best, price)) : price;
-      next[h.id] = { price, status: v.status?.title, barT: lc?.t ?? was?.barT, best, fills: nf, ...(was?.fills === nf && was.gave != null ? { gave: was.gave } : {}) };
+      next[h.id] = { price, status: v.status?.title, barT: lc?.t ?? was?.barT, bar4: m.lastClose?.t ?? was?.bar4, best, fills: nf, ...(was?.fills === nf && was.gave != null ? { gave: was.gave } : {}) };
       if (v.atStop != null) (loss += Math.max(0, -v.atStop)), known++;
       if (!was) continue;
       const head = `${acc.name} · ${h.coin} ${h.dir > 0 ? "多单" : "空单"}`;
@@ -238,9 +245,27 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
         const kind = v.status.title.includes("强平") ? "liq" : "stop";
         alerts.push({ key: `${h.id}:${v.status.title}:${Math.round(price)}`, kind, title: `${head}：${v.status.title}`, lines: [v.status.detail, base] });
       }
-      for (const c of v.cuts)
-        if (crossed(c.price))
-          alerts.push({ key: `${h.id}:cut:${c.price}`, kind: "cut", title: `${head}：到减仓位 ${fp(c.price)}`, lines: [`按计划减 ${trimQty(c.qty)}，这部分落袋约 ${usd(c.realized)}，剩下 ${trimQty(c.left)}，均价不变。`, base] });
+      // the cut levels as they stood before this round's move (the ones just crossed are behind the price now)
+      if (v.cutMode === "touch" && was.price != null)
+        for (const c of cutPlan(v.pos, was.price, v.addLevel != null ? m.levels.filter((x) => h.dir * (x - v.addLevel!) > 0) : m.levels, acc.fee))
+          if (crossed(c.price))
+            alerts.push({ key: `${h.id}:cut:${c.price}`, kind: "cut", title: `${head}：到减仓位 ${fp(c.price)}`, lines: [`按计划减 ${trimQty(c.qty)}，这部分落袋约 ${usd(c.realized)}，剩下 ${trimQty(c.left)}，均价不变。`, base] });
+      // E31e: a 4-hour bar that reached a level beyond the average decides at its close: back inside → cut 1/3, held → keep
+      const b4 = m.lastClose;
+      if (v.cutMode === "close" && b4 && b4.hi != null && b4.lo != null && was.bar4 != null && b4.t > was.bar4) {
+        const ext = h.dir > 0 ? b4.hi : b4.lo;
+        const L = m.levels.filter((x) => h.dir * (x - v.pos.avg) > 0 && h.dir * (b4.prev - x) < 0 && h.dir * (ext - x) >= 0).sort((a, b) => h.dir * (b - a))[0];
+        const held = L != null && h.dir * (b4.c - L) > 0;
+        // a held level that is also an add on the 4-hour close gets the add alert below instead
+        if (L != null && !(held && tf === "4h" && v.stop != null && (v.add(b4.c)?.qty ?? 0) > 0)) {
+          const q = v.pos.qty / 3;
+          alerts.push(
+            held
+              ? { key: `${h.id}:held:${b4.t}`, kind: "cut", title: `${head}：4 小时收盘${h.dir > 0 ? "站上" : "跌破"} ${fp(L)}，站稳了`, lines: [`收盘 ${fp(b4.c)} 在 ${fp(L)} ${h.dir > 0 ? "上面" : "下面"}。按“收盘没站稳才减”，这里不减，拿着，止损跟着结构移。`, base] }
+              : { key: `${h.id}:reject:${b4.t}`, kind: "cut", title: `${head}：冲击 ${fp(L)} 没站稳，减三分之一`, lines: [`这根 4 小时最${h.dir > 0 ? "高" : "低"}到 ${fp(ext)}，收盘 ${fp(b4.c)} 又回到 ${fp(L)} ${h.dir > 0 ? "下面" : "上面"}。按“收盘没站稳才减”，减 ${trimQty(q)}（三分之一），这部分落袋约 ${usd(h.dir * (b4.c - v.pos.avg) * q)}，剩下跟着移动止损。`, base] },
+          );
+        }
+      }
       for (const t of h.targets)
         if (crossed(t)) alerts.push({ key: `${h.id}:target:${t}`, kind: "target", title: `${head}：到了你填的价位 ${fp(t)}`, lines: [`在这里全部平掉约 ${usd(pnlAt(v.pos, t, acc.fee))}（已扣手续费）。`, base] });
 

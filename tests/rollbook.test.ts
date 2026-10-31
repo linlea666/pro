@@ -150,3 +150,38 @@ test("isolated holdings can drop the account leverage cap; cross cannot", async 
   assert.equal(holdingView({ ...big, noLevCap: true, mode: "cross" }, b.accounts[0], mk(2360).ETH).add(2360, 2340)!.binding, "leverage");
   assert.equal(cleanBook({ ...b, accounts: [{ ...b.accounts[0], holdings: [{ ...h, noLevCap: true }] }] }, ["ETH"]).accounts[0].holdings[0].noLevCap, true);
 });
+
+test("cut modes: the default decides at the 4-hour close, touch cuts at the price, none never cuts", async () => {
+  const { holdingView } = await import("../src/lib/rollbook.ts");
+  // a bold holding (break-even budget) at stop 2250: no add allowed, so 2360 is the first cut level
+  const b = book({ targets: [], style: "bold" });
+  const bar = (t: number, c: number, prev: number, hi: number) => mk(c, { lastClose: { t, c, prev, hi, lo: c - 10 } });
+  let { mem } = pickRollAlerts(b, bar(1000, 2340, 2330, 2345), {});
+  // reached 2365 but closed back at 2350: rejected → cut a third
+  let r = pickRollAlerts(b, bar(2000, 2350, 2340, 2365), mem);
+  const rej = r.alerts.find((a) => a.kind === "cut");
+  assert.ok(rej && /没站稳/.test(rej.title), "rejection alert");
+  assert.match(rej!.lines[0], /减 1\.33/);
+  // the same bar again: nothing
+  assert.equal(pickRollAlerts(b, bar(2000, 2352, 2340, 2365), r.mem).alerts.length, 0);
+  // closed beyond: held
+  ({ mem } = pickRollAlerts(b, bar(1000, 2340, 2330, 2345), {}));
+  r = pickRollAlerts(b, bar(2000, 2370, 2340, 2372), mem);
+  assert.ok(r.alerts.some((a) => /站稳了/.test(a.title)));
+  // a near miss (2355 < 2360) is not a test of the level
+  ({ mem } = pickRollAlerts(b, bar(1000, 2340, 2330, 2345), {}));
+  assert.equal(pickRollAlerts(b, bar(2000, 2350, 2340, 2355), mem).alerts.length, 0);
+  // touch: the price crossing the level, no close alerts
+  const t = book({ targets: [], style: "bold", cutMode: "touch" });
+  ({ mem } = pickRollAlerts(t, bar(1000, 2350, 2340, 2352), {}));
+  r = pickRollAlerts(t, bar(2000, 2362, 2340, 2365), mem);
+  assert.deepEqual(r.alerts.map((a) => a.title.includes("到减仓位")), [true]);
+  // none: no cuts at all
+  const n = book({ targets: [], style: "bold", cutMode: "none" });
+  assert.equal(cleanBook(n, ["ETH"]).accounts[0].holdings[0].cutMode, "none");
+  const v = holdingView(n.accounts[0].holdings[0], n.accounts[0], mk(2340).ETH);
+  assert.equal(v.cuts.length, 0);
+  assert.equal(v.steps.filter((s) => s.kind === "cut").length, 0);
+  ({ mem } = pickRollAlerts(n, bar(1000, 2350, 2340, 2352), {}));
+  assert.equal(pickRollAlerts(n, bar(2000, 2350, 2340, 2365), mem).alerts.length, 0);
+});
