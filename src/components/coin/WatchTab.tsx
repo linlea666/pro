@@ -76,7 +76,7 @@ function HeadCard({ v, s }: { v: WatchView; s: WatchSideView }) {
           <StatePill state={v.state} dir={s.dir} big />
           {v.side && <span className="text-xs text-ink-3">{sideName(s.dir)}</span>}
           {turn && againstBig(v.big, s.dir) && (
-            <span className="whitespace-nowrap rounded-full border border-warn px-2 py-0.5 text-[11px] text-warn">逆大趋势 · 按规则半仓</span>
+            <span className="whitespace-nowrap rounded-full border border-warn px-2 py-0.5 text-[11px] text-warn">逆日线 · 按规则半仓</span>
           )}
           {v.forming && s.piercing && (
             <span className="whitespace-nowrap rounded-full border border-warn px-2 py-0.5 text-[11px] text-warn">正在{s.dir > 0 ? "刺穿" : "冲过"}（以收盘为准）</span>
@@ -168,7 +168,7 @@ function TurnBox({ v, s }: { v: WatchView; s: WatchSideView }) {
         </div>
         {against && (
           <div className="mt-2 rounded-md border border-warn/60 bg-warn-soft px-2.5 py-1.5 text-[12px] leading-relaxed text-ink-2">
-            <b className="text-warn">逆大趋势：</b>周线、日线都{long ? "向下" : "向上"}，下面按每笔风险的一半（{risk}%）算。{BIG_TREND_FACTS.rule} {BIG_TREND_FACTS.e37}
+            <b className="text-warn">逆日线：</b>日线{long ? "向下" : "向上"}，下面按每笔风险的一半（{risk}%）算。{BIG_TREND_FACTS.rule} {BIG_TREND_FACTS.e37}
           </div>
         )}
         <div className="mt-2 space-y-0.5 text-[13px] leading-relaxed">

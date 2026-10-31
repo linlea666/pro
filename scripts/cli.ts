@@ -37,11 +37,11 @@ import { adminCount, upsertAdmin, validatePassword } from "../src/lib/server/aut
 import { backupNow } from "../src/lib/server/jobs.ts";
 import type { ResearchReport } from "../src/lib/research/run.ts";
 import { weekLineText } from "../src/lib/ta/weekline.ts";
-import { againstBig, bigTrendLine, tfTrendText, type BigTrend } from "../src/lib/ta/bigtrend.ts";
+import { againstBig, bigTrendLine, bigTrendRows, type BigTrend } from "../src/lib/ta/bigtrend.ts";
 
 const printBig = (b: BigTrend | null) => {
   if (!b) return;
-  console.log(`\n大趋势：${bigTrendLine(b)}\n  ${tfTrendText(b.week)}\n  ${tfTrendText(b.day)}`);
+  console.log(`\n大趋势：${bigTrendLine(b)}\n  ${bigTrendRows(b).join("\n  ")}`);
 };
 
 const [cmd, ...rest] = process.argv.slice(2);
@@ -362,7 +362,7 @@ async function main() {
         if (!e) continue;
         console.log(`  ${bj(e.startT)} 碰到，已过 ${e.bars} 根；最新${short ? "高点" : "低点"} ${fp(e.extreme)}（${bj(e.extremeT)}）${e.bounce != null ? `，${short ? "回落低点" : "反弹高点"} ${fp(e.bounce)}` : ""}${e.reclaimed ? "，扫过后收回" : ""}；第 ${e.attempt} 次等待`);
         console.log(`  创新${short ? "高" : "低"}：${e.newExtremes.map((x) => `${bj(x.t)} ${fp(x.price)}`).join("；")}`);
-        if (e.turn) console.log(`  ${bj(e.turn.t)} 15 分钟${short ? "转弱" : "转强"}：入场 ${fp(e.turn.entry)}，止损 ${fp(e.turn.stop)}（${short ? "高点" : "低点"} ${fp(e.turn.extreme)} 之外）${againstBig(v.big, s.dir) ? "；逆大趋势，按规则半仓" : ""}`);
+        if (e.turn) console.log(`  ${bj(e.turn.t)} 15 分钟${short ? "转弱" : "转强"}：入场 ${fp(e.turn.entry)}，止损 ${fp(e.turn.stop)}（${short ? "高点" : "低点"} ${fp(e.turn.extreme)} 之外）${againstBig(v.big, s.dir) ? "；逆日线，按规则半仓" : ""}`);
         else console.log(`  还没${short ? "转弱" : "转强"}；现在的止损位会在 ${fp(e.stop)}`);
         console.log(`  1 小时${e.hourTurned ? "也已" : "还没"}${short ? "转弱" : "转强"}`);
         for (const g of s.signs ?? []) console.log(`  迹象 ${g.name}：${g.value == null ? "数据缺" : g.value ? "有" : "没有"}${g.text ? `。${g.text}` : ""}`);

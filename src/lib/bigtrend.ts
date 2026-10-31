@@ -15,5 +15,5 @@ export async function bigTrendAt(coin: string, replayEnd: number | null, mult = 
     const atr = atrSeries(c);
     return { c, atr, ss: structureSeries(c, atr, mult), sw: swings(c, atr, mult) };
   };
-  return bigTrendOf({ w: frame(w, "1w"), d: frame(d, "1d") });
+  return bigTrendOf({ w: frame(w, "1w"), d: frame(d, "1d") }, mult);
 }

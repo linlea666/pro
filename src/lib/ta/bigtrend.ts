@@ -6,9 +6,14 @@
  * 单看周线一次都没变，所以页面上把两个周期分开写。方向用 `structureDirection`（同计划页的大周期方向）。
  * 失效价 = 保护位外 0.8 倍 ATR 的收盘（E9 的“失效”），刺穿价 = 0.1 倍。
  * E37：逆大趋势的盯盘转强、计划入场和顺势没有可证明的差别，所以只写“按规则半仓”（计划页已定的规则），不说更差。
+ *
+ * 2026-10-31 第二版（用户看完 8/19 上涨的回放后定）：顺逆只看日线，和计划页 4 小时节奏“日线定方向、逆大周期半仓”同一条规则；
+ * 周线只当背景。8/17–9/22 从 62,685 涨到 87,374（+39%），周线结构全程“下降趋势”（失效价约 87,500–88,000），
+ * 周线、日线合成的方向整段都是“不一致”，所以卡片以日线为主，周线一行加周线阶段和离失效价还差多少。
  */
-import { BREAK_ATR, describeStructure, PIERCE_ATR, structureDirection, type StructureState, type Swing } from "./structure.ts";
+import { BREAK_ATR, DEFAULT_SWING_ATR, describeStructure, PIERCE_ATR, structureDirection, type StructureState, type Swing } from "./structure.ts";
 import { TF_SECONDS, type Candle } from "../types.ts";
+import { PHASE_NAMES, phaseAt } from "./phase.ts";
 
 
 export interface TfTrend {
@@ -26,19 +31,23 @@ export interface TfTrend {
   protective: number | null;
   pierceAt: number | null;
   flipAt: number | null;
+  /** 最后一根已收盘 K 线的收盘价 */
+  close: number;
+  /** 这个周期在行情阶段梯的哪一格（同 phase.ts，如“反弹”）；数据不够时为 null */
+  phase: string | null;
 }
 
 export interface BigTrend {
   week: TfTrend;
   day: TfTrend;
-  /** 周线和日线方向一致时为那个方向，否则 0（盯盘、计划的“逆大趋势”只在 ≠ 0 时成立） */
+  /** 周线和日线方向一致时为那个方向，否则 0（只用于描述；顺逆看 `againstBig`，只看日线） */
   dir: 1 | -1 | 0;
 }
 
 const r = (x: number) => (x >= 1000 ? Math.round(x) : Math.round(x * 100) / 100);
 
 /** 一个周期的大趋势描述。c 只含已收盘的 K 线。 */
-export function tfTrend(tf: "1w" | "1d", c: Candle[], atr: number[], ss: StructureState[], sw: Swing[]): TfTrend | null {
+export function tfTrend(tf: "1w" | "1d", c: Candle[], atr: number[], ss: StructureState[], sw: Swing[], mult = DEFAULT_SWING_ATR): TfTrend | null {
   const n = c.length - 1;
   if (n < 30 || !ss[n]) return null;
   const s = ss[n];
@@ -49,6 +58,7 @@ export function tfTrend(tf: "1w" | "1d", c: Candle[], atr: number[], ss: Structu
   const atLeast = k === 0;
   const trend = (s.state === "up" || s.state === "down") && s.breach !== "broken" && s.protective && atr[n] > 0;
   const sg = s.state === "up" ? -1 : 1;
+  const ph = phaseAt(c, atr, ss, n, mult);
   return {
     tf,
     dir,
@@ -60,6 +70,8 @@ export function tfTrend(tf: "1w" | "1d", c: Candle[], atr: number[], ss: Structu
     protective: trend ? s.protective!.price : null,
     pierceAt: trend ? r(s.protective!.price + sg * PIERCE_ATR * atr[n]) : null,
     flipAt: trend ? r(s.protective!.price + sg * BREAK_ATR * atr[n]) : null,
+    close: c[n].c,
+    phase: ph ? PHASE_NAMES[ph.dir][ph.stage - 1] : null,
   };
 }
 
@@ -68,9 +80,9 @@ export function bigTrend(week: TfTrend | null, day: TfTrend | null): BigTrend | 
   return { week, day, dir: week.dir !== 0 && week.dir === day.dir ? week.dir : 0 };
 }
 
-/** 交易方向相对大趋势：只在周线、日线方向一致且相反时算逆 */
+/** 交易方向是否逆日线（日线有方向且和交易方向相反）。和计划页 4 小时节奏的“逆大周期”同一条规则；周线不参与。 */
 export function againstBig(b: BigTrend | null | undefined, dir: 1 | -1): boolean {
-  return !!b && b.dir !== 0 && b.dir !== dir;
+  return !!b && b.day.dir !== 0 && b.day.dir !== dir;
 }
 
 const fmt = (x: number) => (x >= 1000 ? Math.round(x).toLocaleString("en-US") : String(x));
@@ -80,29 +92,44 @@ const DIR_WORD = { 1: "向上", [-1]: "向下", 0: "没有方向" } as const;
 const UNIT = { "1w": "周", "1d": "天" } as const;
 const NAME = { "1w": "周线", "1d": "日线" } as const;
 
-/** 一个周期一句：“周线下降趋势，自 2025-10-27 那周收盘起第 53 周；周收盘站上 85,100 才算失效（保护高点 82,829）” */
-export function tfTrendText(x: TfTrend): string {
+/**
+ * 一个周期一句：“日线下降趋势，10-22 收盘起第 8 天（当时 84,050）；日收盘站上 86,465 才算失效（保护高点 84,875，离现价还差 11.5%）”。
+ * `ref` = 量“离现价”用的价格（默认这个周期自己的最后收盘；卡片上周线行用日线的最后收盘）。周线另加周线阶段。
+ */
+export function tfTrendText(x: TfTrend, ref = x.close): string {
   const since = x.sinceT == null ? "" : x.atLeast ? `，至少 ${x.bars} ${UNIT[x.tf]}` : `，${day(x.sinceT, x.tf)} 收盘起第 ${x.bars} ${UNIT[x.tf]}${x.tf === "1d" ? `（当时 ${fmt(r(x.sincePrice!))}）` : ""}`;
   const head = `${NAME[x.tf]}${x.label}${x.dir !== 0 && !/上升|下降/.test(x.label) ? `（${DIR_WORD[x.dir]}脱离中）` : ""}${since}`;
-  if (x.flipAt == null) return x.dir === 0 ? `${head}；等${NAME[x.tf]}走出更高或更低的高低点` : head;
+  const tail = x.tf === "1w" && x.phase ? `；周线阶段：${x.phase}` : "";
+  if (x.flipAt == null) return (x.dir === 0 ? `${head}；等${NAME[x.tf]}走出更高或更低的高低点` : head) + tail;
   const up = x.dir < 0;
-  return `${head}；${x.tf === "1w" ? "周" : "日"}收盘${up ? "站上" : "跌破"} ${fmt(x.flipAt)} 才算失效（保护${up ? "高" : "低"}点 ${fmt(r(x.protective!))}）`;
+  const gap = ref > 0 ? Math.abs(x.flipAt / ref - 1) * 100 : NaN;
+  const far = Number.isFinite(gap) && (up ? ref < x.flipAt : ref > x.flipAt) ? `，离现价还差 ${gap.toFixed(1)}%` : "";
+  return `${head}；${x.tf === "1w" ? "周" : "日"}收盘${up ? "站上" : "跌破"} ${fmt(x.flipAt)} 才算失效（保护${up ? "高" : "低"}点 ${fmt(r(x.protective!))}${far}）${tail}`;
 }
 
-/** 页首一句：两个周期各自的方向，加一句定位 */
+/** 卡片、邮件、命令行共用的两行：日线在前，周线在后（周线“离现价”按日线的最后收盘算） */
+export function bigTrendRows(b: BigTrend): [string, string] {
+  return [tfTrendText(b.day), tfTrendText(b.week, b.day.close)];
+}
+
+const WAY = { 1: "向上", [-1]: "向下", 0: "没有方向" } as const;
+
+/** 页首一句：以日线为主，周线作背景，再说顺逆怎么算 */
 export function bigTrendLine(b: BigTrend): string {
-  const both = b.dir > 0 ? "周线、日线都向上" : b.dir < 0 ? "周线、日线都向下" : "周线、日线方向不一致";
-  return `${both}。小周期的反弹、回调都在这个背景里看。`;
+  const d = b.day.dir, w = b.week.dir;
+  if (d === 0) return `日线没有方向（区间），周线${WAY[w]}，只当背景。日线没有方向时，盯盘不按逆势算。`;
+  const head = w === d ? `日线、周线都${WAY[d]}。` : `日线${WAY[d]}，周线${w === 0 ? "没有方向" : `还${WAY[w]}`}，只当背景。`;
+  return `${head}顺逆按日线算：${d > 0 ? "做空" : "做多"}的转${d > 0 ? "弱" : "强"}是逆日线，按规则半仓。`;
 }
 
 /** E37 的结论，页面唯一能说的“逆大趋势”的话 */
 export const BIG_TREND_FACTS = {
-  rule: "逆大趋势（周线、日线都和你的方向相反）按规则只用半仓，和计划页的逆大周期同一条规则。",
-  e37: "研究（E37，10 个币，2022 年起）：逆大趋势的转强和顺势的转强没有可证明的差别；只有最近 12 个月，逆大趋势做多平均每笔 −0.19R。所以这只是提醒仓位，不是说它一定更差。",
+  rule: "逆日线（日线方向和你的方向相反）按规则只用半仓，和计划页的“逆大周期”同一条规则；周线只当背景。",
+  e37: "研究（E37，10 个币，2022 年起）：逆日线的转强和顺日线的转强没有可证明的差别；只有最近 12 个月，逆日线做多平均每笔 −0.20R（251 笔）。所以这只是提醒仓位，不是说它一定更差。",
 } as const;
 
 /** 已收盘的周线 / 日线 → 大趋势；不够 30 根时为 null */
-export function bigTrendOf(frames: { w: { c: Candle[]; atr: number[]; ss: StructureState[]; sw: Swing[] }; d: { c: Candle[]; atr: number[]; ss: StructureState[]; sw: Swing[] } }): BigTrend | null {
-  return bigTrend(tfTrend("1w", frames.w.c, frames.w.atr, frames.w.ss, frames.w.sw), tfTrend("1d", frames.d.c, frames.d.atr, frames.d.ss, frames.d.sw));
+export function bigTrendOf(frames: { w: { c: Candle[]; atr: number[]; ss: StructureState[]; sw: Swing[] }; d: { c: Candle[]; atr: number[]; ss: StructureState[]; sw: Swing[] } }, mult = DEFAULT_SWING_ATR): BigTrend | null {
+  return bigTrend(tfTrend("1w", frames.w.c, frames.w.atr, frames.w.ss, frames.w.sw, mult), tfTrend("1d", frames.d.c, frames.d.atr, frames.d.ss, frames.d.sw, mult));
 }
 

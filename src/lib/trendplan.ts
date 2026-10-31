@@ -497,7 +497,7 @@ export async function computeTrendPlan(coin: string, fw: Framework, ep: EnginePa
     scorecard: report ? scorecardOf(report, rows, F.tf) : null,
     lessons: LESSON_KEYS.map((k) => rows.get(k)).filter((x): x is ResearchRow => !!x).map(scoreRow),
     week50: weekLine((frames.get("1w")?.c ?? []).map((x) => x.c)),
-    big: frames.get("1w") && frames.get("1d") ? bigTrendOf({ w: frames.get("1w")!, d: frames.get("1d")! }) : null,
+    big: frames.get("1w") && frames.get("1d") ? bigTrendOf({ w: frames.get("1w")!, d: frames.get("1d")! }, mult) : null,
     defenses: (() => {
       const tierIn = { tf: F.tf, c: E.c, atr: E.atr, sw: E.sw, higherTf: F.filter, higher: H.ss[H.ss.length - 1] ?? null, daily: frames.get("1d")?.c ?? [], endSec: E.c[L].t + TF_SECONDS[F.tf], live };
       return { long: defenseTiers(tierIn, 1), short: defenseTiers(tierIn, -1) };
