@@ -225,3 +225,41 @@ test("break-even: the price with fees, the first level past it, an alert at the 
   const moved = book({ targets: [], style: "bold", breakeven: true, stop: 2301 });
   assert.equal(pickRollAlerts(moved, bar(2000, 2370, 2340, 2372), mem).alerts.filter((x) => x.title.includes("保本价")).length, 0);
 });
+
+test("E31g probe: adds as big as the probe, two of them, overriding the style", async () => {
+  const { holdingView, PROBE_RULES } = await import("../src/lib/rollbook.ts");
+  const b = book({ stop: 2320, probe: true, style: "bold" });
+  const h = cleanBook(b, ["ETH"]).accounts[0].holdings[0];
+  assert.equal(h.probe, true);
+  const v = holdingView(h, b.accounts[0], mk(2360).ETH);
+  assert.equal(v.rules.pyramid, PROBE_RULES.pyramid);
+  assert.equal(v.rules.maxAdds, PROBE_RULES.maxAdds);
+});
+
+test("E31g add stops: the broken level less the buffer, kept by cleanBook, an alert when one is crossed", async () => {
+  const { holdingView, addStopOf, crossedLevel } = await import("../src/lib/rollbook.ts");
+  assert.equal(crossedLevel(1, [2360, 2450], 2300, 2370), 2360);
+  assert.equal(crossedLevel(1, [2360, 2450], 2300, 2350), null);
+  assert.ok(Math.abs(addStopOf(1, 2360, 20, 0.5, 2250, 2370)! - 2350) < 1e-9);
+  // the common stop already tighter: share it
+  assert.equal(addStopOf(1, 2360, 20, 0.5, 2355, 2370), null);
+  const fills = [{ kind: "open" as const, price: 2300, qty: 4 }, { kind: "add" as const, price: 2370, qty: 2, stop: 2350 }];
+  const b = book({ stop: 2250, addStops: true, fills });
+  const h = cleanBook(b, ["ETH"]).accounts[0].holdings[0];
+  assert.equal(h.addStops, true);
+  assert.equal(h.fills[1].stop, 2350);
+  const m = mk(2380, { buf: 0.5 });
+  const v = holdingView(h, b.accounts[0], m.ETH);
+  assert.equal(v.lots.length, 1);
+  assert.ok(Math.abs(v.lots[0].atStop! - -40) < 1e-9);
+  const { mem } = pickRollAlerts(b, m, {});
+  const r = pickRollAlerts(b, mk(2345, { buf: 0.5 }), mem);
+  const hit = r.alerts.find((a) => a.key.includes(":addstop:"));
+  assert.ok(hit, "add-stop alert");
+  assert.match(hit!.title, /2,370/);
+  // closed: no longer listed, and its slot is free again
+  const closed = { ...h, fills: [h.fills[0], { ...h.fills[1], closed: true }, { kind: "reduce" as const, price: 2350, qty: 2 }] };
+  const v2 = holdingView(closed, b.accounts[0], m.ETH);
+  assert.equal(v2.lots.length, 0);
+  assert.equal(v2.rules.maxAdds, 4);
+});

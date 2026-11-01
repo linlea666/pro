@@ -18,6 +18,10 @@ export interface Fill {
   qty: number;
   /** unix seconds, when known */
   t?: number;
+  /** E31g: an add's own stop (hit → close only this add) */
+  stop?: number;
+  /** E31g: this add was closed at its own stop (the reduce fill is recorded beside it) */
+  closed?: boolean;
 }
 
 export interface Position {

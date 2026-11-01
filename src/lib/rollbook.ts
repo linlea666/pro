@@ -31,6 +31,10 @@ export interface Holding {
   breakeven?: boolean;
   /** cuts at the levels ahead: absent = "close" (E31e) */
   cutMode?: "touch" | "none";
+  /** E31g (Livermore / Tony): the first fill is a probe of a third; adds as big as the probe, two of them */
+  probe?: boolean;
+  /** E31g (Tony): each add carries its own stop beyond the level it broke; a hit closes only that add */
+  addStops?: boolean;
   example?: boolean;
 }
 
@@ -40,8 +44,12 @@ export const CONFIRM_NAME: Record<ConfirmTf, string> = { "4h": "4 小时", "1h":
 /** E31c: the best price at least `atr` ATR beyond the average, then a price that keeps ≤ `keep` of that profit → cut `cut` */
 /** E31d: the user's "stop at the entry, roll with the profit" — break-even budget, adds as big as the last fill, 5 adds */
 export const BOLD_RULES = { pyramid: 1, maxAdds: 5 };
-export const rulesOf = (h: Pick<Holding, "style" | "noLevCap" | "mode">) => {
-  const r: { pyramid?: number; maxAdds?: number; maxLeverage?: number } = h.style === "bold" || h.style === "aggressive" ? { ...BOLD_RULES } : {};
+/** E31g: probe a third, then two adds as big as the probe (the full size after both) */
+export const PROBE_RULES = { pyramid: 1, maxAdds: 2, share: 1 / 3 };
+export const rulesOf = (h: Pick<Holding, "style" | "noLevCap" | "mode" | "probe">) => {
+  const r: { pyramid?: number; maxAdds?: number; maxLeverage?: number } = h.probe
+    ? { pyramid: PROBE_RULES.pyramid, maxAdds: PROBE_RULES.maxAdds }
+    : h.style === "bold" || h.style === "aggressive" ? { ...BOLD_RULES } : {};
   if (h.noLevCap && h.mode === "isolated") r.maxLeverage = Infinity;
   return Object.keys(r).length ? r : undefined;
 };
@@ -61,6 +69,21 @@ export function breakevenOf(dir: Dir, avg: number, fee: number, levels: number[]
   return { price, level: stood ?? level, met: stood != null, done: stop != null && dir * (stop - price) >= 0 };
 }
 export const GIVEBACK = { atr: 2, keep: 0.5, cut: 1 / 3 };
+/** E31g: the key level an add at `at` broke: the nearest one past `from` (the last open fill) up to `at` */
+export function crossedLevel(dir: Dir, levels: number[], from: number, at: number): number | null {
+  return levels.filter((x) => dir * (x - from) > 0 && dir * (at - x) >= 0).sort((a, b) => dir * (b - a))[0] ?? null;
+}
+/**
+ * E31g: an add's own stop, the broken level less the p80 sweep buffer; null when there is no level,
+ * no ATR, or the common stop is already as tight (then the add simply shares it).
+ */
+export function addStopOf(dir: Dir, level: number | null, atr: number | null, buf: number | null | undefined, stop: number | null, at: number): number | null {
+  if (level == null || !(atr != null && atr > 0)) return null;
+  const own = level - dir * (buf ?? 0.5) * atr;
+  if (dir * (at - own) <= 0) return null;
+  if (stop != null && dir * (stop - own) >= 0) return null;
+  return own;
+}
 const confirmOf = (h: Holding): ConfirmTf => (h.confirmTf && CONFIRM_TFS.includes(h.confirmTf) ? h.confirmTf : "4h");
 
 export interface Account {
@@ -118,12 +141,14 @@ export function cleanBook(input: unknown, coins: string[]): RollBook {
         fills: (Array.isArray(h.fills) ? h.fills : [])
           .filter((f) => f && ["open", "add", "reduce"].includes(f.kind) && f.price > 0 && f.qty > 0)
           .slice(0, 200)
-          .map((f) => ({ kind: f.kind, price: +f.price, qty: +f.qty, ...(f.t ? { t: Math.floor(+f.t) } : {}) })),
+          .map((f) => ({ kind: f.kind, price: +f.price, qty: +f.qty, ...(f.t ? { t: Math.floor(+f.t) } : {}), ...(f.kind === "add" && typeof f.stop === "number" && f.stop > 0 ? { stop: +f.stop } : {}), ...(f.kind === "add" && f.closed === true ? { closed: true } : {}) })),
         stop: typeof h.stop === "number" && h.stop > 0 ? h.stop : null,
         targets: (Array.isArray(h.targets) ? h.targets : []).filter((x) => typeof x === "number" && x > 0).slice(0, 10),
         realizedBase: num(h.realizedBase, -1e12, 1e12, 0),
         ...(h.giveback === true ? { giveback: true } : {}),
         ...(h.breakeven === true ? { breakeven: true } : {}),
+        ...(h.probe === true ? { probe: true } : {}),
+        ...(h.addStops === true ? { addStops: true } : {}),
         ...(h.style === "bold" || h.style === "aggressive" ? { style: h.style } : {}),
         ...(h.noLevCap === true ? { noLevCap: true } : {}),
         ...(h.cutMode === "touch" || h.cutMode === "none" ? { cutMode: h.cutMode } : {}),
@@ -163,6 +188,8 @@ export interface Market {
   levels: number[];
   /** where each key level comes from (the key-level card's methods and timeframes) */
   levelInfo?: LevelInfo[];
+  /** the coin's p80 sweep buffer, ATR (E31g's add stops) */
+  buf?: number;
   /** the plan's structure stop for a long (1) and a short (−1) */
   swingStop: Record<"1" | "-1", { stop: number; anchor: number } | null>;
   funding: number | null;
@@ -193,6 +220,7 @@ export function marketOf(p: TrendPlan | null, price: number | null, funding: num
     atr: p.atr,
     levels: p.levels.map((x) => x.price),
     levelInfo: p.levels.map((x) => ({ price: x.price, methods: x.methods, methodCount: x.methodCount ?? x.methods.length, tfs: x.tfs ?? [], strength: x.strength })),
+    buf: p.buffers.p80,
     swingStop: { "1": stopOf(1), "-1": stopOf(-1) },
     funding,
     lastClose: n >= 2 ? { t: closed[n - 1].t, c: closed[n - 1].c, prev: closed[n - 2].c, hi: closed[n - 1].h, lo: closed[n - 1].l } : null,
@@ -208,8 +236,11 @@ export function holdingView(h: Holding, acc: Account, m: Market) {
   const stop = h.stop ?? st?.stop ?? null;
   const liq = liquidationPrice({ dir: h.dir, qty: pos.qty, avg: pos.avg, mode: h.mode, leverage: h.leverage, account: acc.total });
   const rules = rulesOf(h);
+  // E31g: an add closed at its own stop frees its slot (up to 5 adds in all)
+  const closedAdds = h.addStops ? h.fills.filter((f) => f.kind === "add" && f.closed).length : 0;
+  const rulesUsed = closedAdds ? { ...rules, maxAdds: Math.min(5, (rules?.maxAdds ?? ROLL_RULES.maxAdds) + closedAdds) } : rules;
   const budget = h.style === "bold" || (acc.budget === "even" && h.style !== "aggressive") ? 0 : (acc.total * acc.riskPct) / 100;
-  const add = (at: number, atStop = stop) => (atStop != null ? maxAdd({ pos, price: at, stop: atStop, budget, mode: h.mode, leverage: h.leverage, account: acc.total, atr, fee: acc.fee, rules }) : null);
+  const add = (at: number, atStop = stop) => (atStop != null ? maxAdd({ pos, price: at, stop: atStop, budget, mode: h.mode, leverage: h.leverage, account: acc.total, atr, fee: acc.fee, rules: rulesUsed }) : null);
   // the next level is where to add after a close beyond it while adding is still allowed; otherwise it is the first cut
   const next = price != null ? nextAddLevel(h.dir, price, m.levels) : null;
   const canAdd = next != null && (add(next)?.qty ?? 0) > 0;
@@ -223,7 +254,13 @@ export function holdingView(h: Holding, acc: Account, m: Market) {
   const addAt = canAdd ? add(next!) : null;
   const steps = price != null ? planSteps({ pos, price, stop, add: addAt && next != null ? { price: next, qty: addAt.qty } : null, levels: m.levels, fee: acc.fee, cuts: cutMode !== "none" }) : [];
   const be = h.breakeven && pos.qty > 0 ? breakevenOf(h.dir, pos.avg, acc.fee, m.levels, m.lastClose?.c ?? null, stop) : null;
-  return { be, levelInfo: m.levelInfo ?? [], cutMode, pos, price, atr, st, stop, liq, levels: m.levels, cuts, addLevel, budget, rules: { pyramid: rules?.pyramid ?? ROLL_RULES.pyramid, maxAdds: rules?.maxAdds ?? ROLL_RULES.maxAdds, liqGapAtr: ROLL_RULES.liqGapAtr as number, maxLeverage: rules?.maxLeverage ?? (ROLL_RULES.maxLeverage as number) }, add, status, open, atStop, fundDay, funding: m.funding, steps };
+  // E31g: the adds still open with their own stops, and the stop a new add at `at` would get
+  const lastOpen = h.fills.filter((f) => f.kind !== "reduce" && !f.closed).at(-1)?.price ?? pos.avg;
+  const lots = h.addStops && pos.qty > 0
+    ? h.fills.flatMap((f, i) => (f.kind === "add" && !f.closed ? [{ i, price: f.price, qty: f.qty, from: h.fills.slice(0, i).filter((x) => x.kind !== "reduce").at(-1)?.price ?? f.price, stop: f.stop ?? null, atStop: f.stop != null ? h.dir * (f.stop - f.price) * f.qty - acc.fee * (f.price + f.stop) * f.qty : null }] : []))
+    : [];
+  const ownStop = (at: number) => (h.addStops ? addStopOf(h.dir, crossedLevel(h.dir, m.levels, lastOpen, at), atr, m.buf, stop, at) : null);
+  return { be, lots, ownStop, lastOpen, buf: m.buf ?? null, levelInfo: m.levelInfo ?? [], cutMode, pos, price, atr, st, stop, liq, levels: m.levels, cuts, addLevel, budget, rules: { pyramid: rulesUsed?.pyramid ?? ROLL_RULES.pyramid, maxAdds: rulesUsed?.maxAdds ?? ROLL_RULES.maxAdds, liqGapAtr: ROLL_RULES.liqGapAtr as number, maxLeverage: rules?.maxLeverage ?? (ROLL_RULES.maxLeverage as number) }, add, status, open, atStop, fundDay, funding: m.funding, steps };
 }
 export type HoldingView = ReturnType<typeof holdingView>;
 
@@ -316,6 +353,18 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
           );
         }
       }
+      // E31g: an open add crossing its own stop → close only that add
+      for (const l of v.lots)
+        if (l.stop != null && crossed(l.stop))
+          alerts.push({
+            key: `${h.id}:addstop:${l.i}:${l.stop}`,
+            kind: "stop",
+            title: `${head}：${fp(l.price)} 那笔加仓打到自己的止损 ${fp(l.stop)}`,
+            lines: [
+              `按“加仓单单独止损”，只平这一笔 ${trimQty(l.qty)}（约${l.atStop != null ? usd(l.atStop) : "—"}），底仓和其他仓位照常拿，下次收盘重新站上关键位可以再加。平完在页面上点“这笔已平”。`,
+              base,
+            ],
+          });
       for (const t of h.targets)
         if (crossed(t)) alerts.push({ key: `${h.id}:target:${t}`, kind: "target", title: `${head}：到了你填的价位 ${fp(t)}`, lines: [`在这里全部平掉约 ${usd(pnlAt(v.pos, t, acc.fee))}（已扣手续费）。`, base] });
 
@@ -337,7 +386,7 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
         }
       }
       if (lc && was.barT != null && lc.t > was.barT && v.stop != null) {
-        const last = h.fills.filter((f) => f.kind !== "reduce").at(-1)?.price ?? v.pos.avg;
+        const last = v.lastOpen;
         const lvl = m.levels.filter((L) => h.dir * (L - last) > 0 && h.dir * (lc.prev - L) <= 0 && h.dir * (lc.c - L) > 0).sort((a, b) => h.dir * (b - a))[0];
         const lim = lvl != null ? v.add(lc.c) : null;
         if (lvl != null && lim && lim.qty > 0)
@@ -347,6 +396,7 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
             title: `${head}：${CONFIRM_NAME[tf]}收盘${h.dir > 0 ? "站上" : "跌破"} ${fp(lvl)}，可以加仓`,
             lines: [
               `按规则最多加 ${trimQty(lim.qty)}（约 ${fp(lc.c)}），加完均价 ${fp(lim.avg)}，强平 ${fp(lim.liq)}，打到止损 ${fp(v.stop)} ${lim.atStop >= 0 ? "也赚" : "亏"} ${Math.abs(Math.round(lim.atStop)).toLocaleString("en-US")} USDT。`,
+              ...(h.addStops ? (() => { const o = addStopOf(h.dir, lvl, v.atr, m.buf, v.stop, lc.c); return [o != null ? `这笔加仓单独止损：${fp(o)}（${fp(lvl)} 外加扫损缓冲），打到只平这一笔。` : `这笔加仓和底仓共用止损 ${fp(v.stop)}（已经比单独止损更紧）。`]; })() : []),
               "先确认止损已经移到新的保护位；规则只给上限，不是一定要加。回测（E31）里滚仓没有可证明比不滚多赚。",
               base,
             ],

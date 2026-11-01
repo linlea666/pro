@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { TrendPlan } from "@/lib/trendplan";
 import { DEFAULT_FEE, maxAdd, nextAddLevel, stopForAdd, pnlAt, positionOf, previewAdd, previewReduce, ROLL_RULES, trimQty, type AddLimit, type Dir, type Fill, type MarginMode, type Tone } from "@/lib/ta/roll";
-import { ACCOUNT_RISK_PCT, levelSource, CONFIRM_NAME, CONFIRM_TFS, CUT_MODES, CUT_NAME, DEFAULT_ROLL_ALERT, type ConfirmTf, holdingView, marketOf, type Account, type Holding, type HoldingView as View, type RollAlertConfig } from "@/lib/rollbook";
+import { ACCOUNT_RISK_PCT, addStopOf, crossedLevel, PROBE_RULES, levelSource, CONFIRM_NAME, CONFIRM_TFS, CUT_MODES, CUT_NAME, DEFAULT_ROLL_ALERT, type ConfirmTf, holdingView, marketOf, type Account, type Holding, type HoldingView as View, type RollAlertConfig } from "@/lib/rollbook";
 import type { CoinMeta } from "@/lib/symbols";
 import { fmtPrice } from "../coin/format";
 import { track } from "../track";
@@ -422,6 +422,7 @@ function NextSteps({ h, v, onChange }: { h: Holding; v: View; onChange: (p: Part
       <h3 className="text-[15px] font-semibold">接下来怎么做（如果价格往你的方向{away}）</h3>
       <BreakevenPlan h={h} v={v} onChange={onChange} />
       {!losing && <AddPlan h={h} v={v} />}
+      <AddLots h={h} v={v} onChange={onChange} />
       {losing ? (
         <p className="text-sm text-ink-2">现在浮亏，按规则不加仓。先守住止损{stop != null ? ` ${fmtPrice(stop)}` : ""}，等回到均价 {fmtPrice(pos.avg)} 另一边再看。</p>
       ) : (
@@ -529,7 +530,7 @@ function AddPlan({ h, v }: { h: Holding; v: View }) {
   const lim = v.add(at);
   const margin = (q: number) => Math.round((q * at) / Math.max(1, h.leverage)).toLocaleString("en-US");
   const side = h.dir > 0 ? "以上" : "以下";
-  const style = h.style === "bold" ? "进取：保本滚" : h.style === "aggressive" ? "激进" : "稳健";
+  const style = (h.style === "bold" ? "进取：保本滚" : h.style === "aggressive" ? "激进" : "稳健") + (h.probe ? " · 试仓分批（每次和试仓一样多，最多两次）" : "");
   const rule = v.budget === 0 ? "加完以后打到止损也不能亏" : `加完以后打到止损最多亏 ${Math.round(v.budget).toLocaleString("en-US")} USDT`;
   if (stop == null)
     return <div className="rounded-lg border border-line p-3 text-sm text-ink-2">还没有止损：在下面“止损”里填一个，或点“用结构认错位”，才能算能加多少。</div>;
@@ -540,6 +541,10 @@ function AddPlan({ h, v }: { h: Holding; v: View }) {
         <p className="text-ink-2">
           加完均价 <b className="num">{fmtPrice(lim.avg)}</b>、共 {trimQty(pos.qty + lim.qty)}；强平 {fmtPrice(lim.liq)}；打到止损 {fmtPrice(stop)} <b className={toneColor(lim.atStop)}>{money(lim.atStop)}</b>。这是规则给的上限（{style}：{rule}；这次受“{bindingText(lim.binding, v.rules)}”限制），可以在下面“加仓预览”里改保证金。
         </p>
+        {h.addStops && lvl != null && (() => {
+          const o = v.ownStop(lvl);
+          return <p className="text-ink-2">{o != null ? <>这笔加仓单独止损 <b className="num">{fmtPrice(o)}</b>（{fmtPrice(lvl)} 外加扫损缓冲）：打到只平这一笔，底仓照常拿。</> : <>这笔加仓和底仓共用止损 {fmtPrice(stop)}（已经比单独止损更紧）。</>}</p>;
+        })()}
         {lim.liq != null && h.dir * (stop - lim.liq) <= 0 && <p className="text-down">按 {h.leverage} 倍杠杆，强平会跑到止损前面，先降低杠杆或少加。</p>}
       </div>
     );
@@ -621,6 +626,7 @@ function Ladder({ h, v }: { h: Holding; v: View }) {
     rungs.push({ price: v.be.price, label: "保本价（均价加来回手续费）：站稳第一个关键位后把止损移到这里", kind: "stop" });
     if (v.be.level != null && !v.be.met) rungs.push({ price: v.be.level, label: `4 小时收盘${h.dir > 0 ? "站上" : "跌破"} → 止损移到保本价 ${fmtPrice(v.be.price)}`, kind: "target" });
   }
+  for (const l of v.lots) if (l.stop != null) rungs.push({ price: l.stop, label: `${fmtPrice(l.price)} 那笔加仓的单独止损：打到只平这 ${trimQty(l.qty)}`, kind: "stop" });
   for (const r of rungs) if (r.kind === "add" || r.kind === "cut") r.src = levelSource(v.levelInfo, r.price);
   rungs.sort((a, b) => b.price - a.price);
   return (
@@ -646,6 +652,51 @@ function Ladder({ h, v }: { h: Holding; v: View }) {
   );
 }
 
+/** E31g: the open adds with their own stops; a hit closes only that add */
+function AddLots({ h, v, onChange }: { h: Holding; v: View; onChange: (p: Partial<Holding>) => void }) {
+  if (!h.addStops || !v.lots.length) return null;
+  const setStop = (i: number, x: number) => onChange({ fills: h.fills.map((f, j) => (j === i ? { ...f, stop: x > 0 ? x : undefined } : f)) });
+  const close = (i: number, at: number, qty: number) =>
+    onChange({ fills: [...h.fills.map((f, j) => (j === i ? { ...f, closed: true } : f)), { kind: "reduce", price: at, qty: Math.min(qty, v.pos.qty), t: Math.floor(Date.now() / 1000) }] });
+  return (
+    <div className="space-y-2 rounded-lg border border-line p-3 text-sm">
+      <p className="font-semibold">加仓单的单独止损</p>
+      <table className="num w-full text-sm">
+        <thead className="text-xs text-ink-3">
+          <tr>
+            <th className="py-1 text-left font-normal">加仓价 · 数量</th>
+            <th className="py-1 text-right font-normal">单独止损</th>
+            <th className="py-1 text-right font-normal">打到这笔</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {v.lots.map((l) => {
+            const hit = l.stop != null && v.price != null && h.dir * (v.price - l.stop) <= 0;
+            const sug = l.stop == null ? addStopOf(h.dir, crossedLevel(h.dir, v.levels, l.from, l.price), v.atr, v.buf, v.stop, l.price) : null;
+            return (
+              <tr key={l.i} className="border-t border-line">
+                <td className="py-1">{fmtPrice(l.price)} · {trimQty(l.qty)}</td>
+                <td className="py-1 pl-2 text-right">
+                  <input aria-label="单独止损" type="number" inputMode="decimal" className="w-28 rounded border border-line bg-transparent px-1.5 py-1 text-right" value={l.stop ?? ""} placeholder="共用止损" onChange={(e) => setStop(l.i, +e.target.value)} />
+                  {sug != null && <button className="block w-full text-right text-xs text-accent" onClick={() => setStop(l.i, +sug.toPrecision(6))}>用 {fmtPrice(sug)}</button>}
+                </td>
+                <td className={`py-1 pl-2 text-right ${toneColor(l.atStop ?? 0)}`}>{l.atStop != null ? money(l.atStop) : "—"}</td>
+                <td className="py-1 pl-2 text-right">
+                  <button className={`whitespace-nowrap rounded border px-2 py-0.5 text-xs ${hit ? "border-down text-down" : "border-line text-ink-3"}`} onClick={() => close(l.i, l.stop ?? v.price ?? l.price, l.qty)}>
+                    这笔已平{hit ? "（已到止损）" : ""}
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="text-[11px] leading-relaxed text-ink-3">每笔加仓的止损放在它越过的那个关键位外（加扫损缓冲），打到只平这一笔，底仓和其他仓位照常跟着共用止损 {fmtPrice(v.stop)} 拿；之后收盘重新站上关键位可以再加。“这笔已平”会按止损价补记一笔减仓。在交易所要给这笔单独挂一张同数量的止损单。</p>
+    </div>
+  );
+}
+
 function AddPanel({ h, v, acc, onRecord }: { h: Holding; v: View; acc: Account; onRecord: (f: Fill, leverage: number) => void }) {
   const [atIn, setAt] = useState(0);
   const [lev, setLev] = useState(h.leverage);
@@ -659,6 +710,9 @@ function AddPanel({ h, v, acc, onRecord }: { h: Holding; v: View; acc: Account; 
   const q = mIn > 0 && at > 0 ? (mIn * lev) / at : (limit?.qty ?? 0);
   const marginOf = (x: number) => (at > 0 ? (x * at) / lev : 0);
   const over = limit != null && q > limit.qty * 1.001 + 1e-12;
+  const own = v.ownStop(at);
+  const [ownIn, setOwn] = useState(0);
+  const ownStop = ownIn > 0 ? ownIn : own;
   const p = q > 0 && at > 0 ? previewAdd({ pos: v.pos, price: at, qty: q, stop: stop > 0 ? stop : null, mode: h.mode, leverage: lev, account: acc.total, fee: acc.fee }) : null;
   return (
     <div className="space-y-3 rounded-lg border border-line p-3">
@@ -672,6 +726,7 @@ function AddPanel({ h, v, acc, onRecord }: { h: Holding; v: View; acc: Account; 
           <span className="block text-ink-3">= {trimQty(q)} 个{mIn > 0 && <button className="ml-2 text-accent" onClick={() => setM(0)}>回到规则上限</button>}</span>
         </label>
         <Num id="add-lev" label="杠杆倍数" value={lev} onChange={(x) => setLev(Math.max(1, x))} />
+        {h.addStops && <Num id="add-own" label="这笔的单独止损（空着共用）" value={ownStop ?? 0} onChange={setOwn} />}
       </div>
       {limit && (
         <p className="text-sm">
@@ -703,7 +758,7 @@ function AddPanel({ h, v, acc, onRecord }: { h: Holding; v: View; acc: Account; 
       <p className="text-[11px] leading-relaxed text-ink-3">
         规则：只在赚钱的一边、价格收盘越过关键位后加；先把止损移到新的保护位，再按“加完整笔打到止损最多亏{v.budget === 0 ? " 0（保本）" : `每笔风险 ${acc.riskPct}%`}”算数量。保证金可以自己改，均价、强平和打到止损的结果跟着重算。
       </p>
-      <button disabled={!(q > 0 && at > 0)} className="rounded-lg bg-ink px-3 py-1.5 text-sm text-bg disabled:opacity-40" onClick={() => (onRecord({ kind: "add", price: at, qty: q }, lev), setM(0))}>
+      <button disabled={!(q > 0 && at > 0)} className="rounded-lg bg-ink px-3 py-1.5 text-sm text-bg disabled:opacity-40" onClick={() => (onRecord({ kind: "add", price: at, qty: q, ...(h.addStops && ownStop != null && ownStop > 0 && h.dir * (at - ownStop) > 0 ? { stop: ownStop } : {}) }, lev), setM(0), setOwn(0))}>
         我按这个加了
       </button>
     </div>
@@ -799,6 +854,18 @@ function Settings({ h, v, onChange }: { h: Holding; v: View; onChange: (p: Parti
         <input id="h-be" type="checkbox" className="mt-0.5" checked={!!h.breakeven} onChange={(e) => onChange({ breakeven: e.target.checked || undefined })} />
         <span>
           站稳第一个关键位后保本（可选）：4 小时收盘越过开仓价之外的第一个关键位后，提醒你把止损移到保本价（均价加来回手续费，打到不亏）。回测里平均不更赚（每笔少 0.04–0.09R），最大回撤小约 27%，约三成的单最后在保本价出场；太早保本明显更差。
+        </span>
+      </label>
+      <label className="col-span-2 flex items-start gap-2 sm:col-span-4">
+        <input id="h-addstops" type="checkbox" className="mt-0.5" checked={!!h.addStops} onChange={(e) => onChange({ addStops: e.target.checked || undefined })} />
+        <span>
+          加仓单单独止损（可选，Tony 的做法）：每笔加仓的止损放在它越过的关键位外，打到只平这一笔，底仓照常拿。回测（E31g）同样的加仓数量每笔只多 0.01R，但最大回撤从 82R 降到 73R，亏超 1.1 倍风险的单从 0.5% 降到 0.1%；加仓单约三分之二最后是被自己的止损平掉的。更稳，不更赚。
+        </span>
+      </label>
+      <label className="col-span-2 flex items-start gap-2 sm:col-span-4">
+        <input id="h-probe" type="checkbox" className="mt-0.5" checked={!!h.probe} onChange={(e) => onChange({ probe: e.target.checked || undefined })} />
+        <span>
+          试仓分批（可选，利弗莫尔 / Tony 的做法）：开仓只开计划的三分之一，之后每次收盘站上关键位再加一份同样大小的，最多两次（打到止损仍不超过每笔风险）。回测（E31g）每笔少 0.04R、大行情少赚约两成，但最大回撤从 63R 降到 40R。打开后会替代“滚仓风格”里的加仓比例和次数。
         </span>
       </label>
       <label className="col-span-2 flex items-start gap-2 sm:col-span-4">
@@ -932,7 +999,8 @@ function HoldingForm({ coins, price, onAdd, onCancel }: { coins: string[]; price
   const [stop, setStop] = useState(0);
   const [style, setStyle] = useState<Holding["style"]>(undefined);
   const [noLevCap, setNoLevCap] = useState(false);
-  const qty = by === "qty" ? amount : entry > 0 ? (amount * lev) / entry : 0;
+  const [probe, setProbe] = useState(false);
+  const qty = (by === "qty" ? amount : entry > 0 ? (amount * lev) / entry : 0) * (probe ? PROBE_RULES.share : 1);
   const stopOk = !(stop > 0) || dir * (entry - stop) > 0;
   const ok = entry > 0 && qty > 0 && lev >= 1 && stopOk;
   const live = price(coin);
@@ -984,6 +1052,10 @@ function HoldingForm({ coins, price, onAdd, onCancel }: { coins: string[]; price
             <span>逐仓不受“实际杠杆不超过 {ROLL_RULES.maxLeverage} 倍”限制（风险预算和“止损要在强平之前”照旧）</span>
           </label>
         )}
+        <label className="col-span-2 flex items-start gap-2 sm:col-span-4">
+          <input id="new-probe" type="checkbox" className="mt-0.5" checked={probe} onChange={(e) => setProbe(e.target.checked)} />
+          <span>试仓分批：上面填计划的总仓位，这里只开三分之一，之后每次收盘站上关键位再加一份（最多两次）</span>
+        </label>
         <div className="space-y-1">
           <span>换算</span>
           <div className="num py-1.5 text-sm text-ink">{qty > 0 && entry > 0 ? `${trimQty(qty)} ${coin} · 仓位价值 ${Math.round(qty * entry).toLocaleString("en-US")}` : "—"}</div>
@@ -994,7 +1066,7 @@ function HoldingForm({ coins, price, onAdd, onCancel }: { coins: string[]; price
         <button
           disabled={!ok}
           className="rounded-lg bg-ink px-3 py-1.5 text-sm text-bg disabled:opacity-40"
-          onClick={() => onAdd({ id: uid(), coin, dir, mode, leverage: lev, fills: [{ kind: "open", price: entry, qty, t: Math.floor(Date.now() / 1000) }], stop: stop > 0 ? stop : null, targets: [], realizedBase: 0, ...(style ? { style } : {}), ...(noLevCap && mode === "isolated" ? { noLevCap: true } : {}) })}
+          onClick={() => onAdd({ id: uid(), coin, dir, mode, leverage: lev, fills: [{ kind: "open", price: entry, qty, t: Math.floor(Date.now() / 1000) }], stop: stop > 0 ? stop : null, targets: [], realizedBase: 0, ...(style ? { style } : {}), ...(noLevCap && mode === "isolated" ? { noLevCap: true } : {}), ...(probe ? { probe: true } : {}) })}
         >
           添加
         </button>
@@ -1015,6 +1087,9 @@ function Rules() {
         <li>减仓：前方第一个、第二个关键位各减三分之一，剩下跟着移动认错位。离强平不到 {ROLL_RULES.nearLiqAtr} 倍 ATR 时先减仓或补保证金。</li>
         <li>
           回测（E31，10 个币的 4 小时 K 线，2020 年起 2,027 笔，入场和计划页同一套）：按这套规则滚仓比不滚平均每笔只多 0.05R，没到 0.1R 的门槛，换预算、金字塔比例、加仓次数或改用日线也一样；在“收盘越过摆动点”时加，和持仓期间随便挑时间加差不多。加过仓的交易里约七成比不滚更差（平均少 0.29R），三成更好（平均多 1.09R），多出来的全靠少数大行情；连续亏损时的最大回撤大了约三成。风险预算是守住了的：打到止损亏超过 1.1 倍初始风险的只有 0.5%。所以滚仓不会让你更常赚，只是在大行情里拿得更重。加仓确认改用 1 小时或 15 分钟收盘（同一个摆动点）：结果和 4 小时差不多（每笔多 0.01–0.02R，不显著），加仓价离突破点近一些（中位从 0.11R 变成 0.07R / 0.05R），最大回撤略大；所以三种都可以选，默认 4 小时。“进取：保本滚”就是“止损移到开仓价、用利润滚”：加完整笔打到止损不亏，每次可以加到和上一笔一样多，最多 5 次。回测每笔平均 +0.24R（稳健 +0.22R、不滚 +0.16R），对不滚多 0.07R，没到 0.1R 的标准；亏超过本金 1.1 倍的只有 0.1%，最大回撤 78R（稳健 82R）。允许加完打到止损亏 1 倍、2 倍本金的更激进做法平均更高（+0.26R、+0.42R），但那只是仓位放大：按波动折算不比不滚划算，亏超过本金的笔数到 1.5%、10.6%。“激进：可亏一笔风险”就是其中亏 1 倍的那档：加完整笔打到止损最多亏“每笔风险”（账户设置里的那个百分比），每次可以加到和上一笔一样多，最多 5 次，平均 +0.26R，但最大回撤 102R，比不滚大六成，76% 的加仓笔比不滚差，靠少数大行情拉高；按波动折算并不比不滚划算。2 倍那档不提供。减仓方式（E31e，同一批交易、不加仓，比较在前方关键位怎么减）：不减 +0.16R / 笔，赚钱的笔数 36%，最大回撤 63R，最赚的那 32 笔大行情平均 +12.7R；碰到关键位就减三分之一 +0.05R，赚钱 48%，回撤 40R，大行情只剩 +5.0R，比不减少 0.11R、各段都更差，按波动折算也更差；4 小时收盘没站稳才减 +0.10R，赚钱 41%，回撤 48R，大行情 +8.3R，比碰到就减多 0.05R（没到 0.1R 的标准，最近 12 个月约 0）。碰到关键位的那根约 45% 收盘站在位外。把“冲到离位 0.25 倍 ATR 内没碰到”也算冲击反而略差；做空和做多一样对称，没有额外优势。所以默认“收盘没站稳才减”，三种都可以选。保本时机（E31f，同一批交易）：不移保本 +0.16R、最大回撤 63R；站稳第一个关键位后把止损移到开仓价 +0.11R、回撤 47R，约 32% 的单在开仓价出场（其中一成本来能赚 1R 以上），最赚的那批大行情从 12.7R 变成 8.2R；浮盈 1R 后保本几乎和不移一样（结构止损通常已经更高）；下一根一赚钱就保本 +0.02R，比不移少 0.14R、各段都更差。保本之后再用“激进”滚：+0.22R、回撤 74R（不保本的激进 +0.26R、102R）。所以保本是让结果更平稳的选项，默认不开。另外测了两条：① 浮盈到过 2 倍 ATR 后吐回一半就减三分之一，平均每笔少 0.03–0.08R，最大回撤小两到三成，所以只做成可选的提醒；② 价格离摆动点超过 1.5 倍 ATR 就不加，和不限制差不多（加仓数量本来就被“打到止损最多亏多少”压小了），没有加这条。
+        </li>
+        <li>
+          知名交易员的做法（E31g，同一批交易，对照文档见研究记录）：① 加仓单单独止损（Tony）：同样的加仓数量，每笔多 0.01R，最大回撤 82R → 73R，亏超 1.1 倍风险的单 0.5% → 0.1%；每笔加仓按自己的止损亏 0.5R 那种平均多 0.15R，但按波动折算是 0，只是仓位更大，亏超 1.1 倍的到 2.9%，不提供。② 试仓三分之一分批（利弗莫尔 / 米勒维尼 / Tony）：每笔少 0.04R，最大回撤 63R → 40R。③ 海龟式每 0.5 / 1 倍 ATR 加、加完把全部止损收紧到 2 倍 ATR：每笔少 0.11–0.12R，4 小时上 2 倍 ATR 太近，常被扫。④ 冲太远（离 20 均线超过 3 倍 ATR、连涨 5 根）就减三分之一：各段都少赚。所以 ① ② 做成可选（默认关），③ ④ 不做。
         </li>
       </ul>
     </details>
