@@ -10,7 +10,8 @@ import { PriceChart, type MarkerSpec, type PriceLineSpec } from "../PriceChart";
 import { Term } from "../Term";
 import { track } from "../track";
 import type { Mode } from "./CoinView";
-import { ago, fmtPrice } from "./format";
+import { ago, fmtBjTime, fmtPrice } from "./format";
+import { barShapeText, WICK_FACT } from "@/lib/ta/barshape";
 import { fmtR, fmtWhen, readPref, writePref } from "./plan-ui";
 import { ReplayContext, useReplay } from "./replay";
 import { Section } from "./shared";
@@ -212,6 +213,22 @@ function WhyWait({ v, dir, mode }: { v: WatchView; dir: 1 | -1; mode: Mode }) {
         <p className="rounded-lg bg-panel-2 px-3 py-2 text-[13px] text-ink">
           {ruleLine(dir)}（<Term k="转强">什么叫转{dir > 0 ? "强" : "弱"}</Term>）
         </p>
+        <p className="text-[13px] text-ink-2">{WICK_FACT}</p>
+        {mode === "pro" && v.bars && (v.bars["15m"] || v.bars["1h"]) && (
+          <div className="rounded-lg border border-line px-3 py-2 text-[12px] text-ink-3">
+            <div className="mb-0.5 font-medium text-ink-2">最近这根 K 线（只描述）</div>
+            {(["15m", "1h"] as const).map((tf) => {
+              const b = v.bars[tf];
+              if (!b) return null;
+              return (
+                <div key={tf} className="num">
+                  {tf === "15m" ? "15 分钟" : "1 小时"}（{fmtBjTime(b.t + (tf === "15m" ? 900 : 3600))} 收盘）：{barShapeText(b)}
+                </div>
+              );
+            })}
+            <div className="mt-0.5">长影线按裸 K 的标准（影线占全长一半以上、收盘在另一头三分之一里），量 = 这根 ÷ 前 20 根的中位数，放量 ≥ 1.5 倍、缩量 ≤ 0.8 倍。</div>
+          </div>
+        )}
         {mode === "pro" && res && res.rows.length > 0 && (
           <ul className="space-y-1 text-[12px] text-ink-3">
             {res.rows.map((r) => (

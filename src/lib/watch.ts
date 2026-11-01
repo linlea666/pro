@@ -17,6 +17,7 @@ import { atrSeries, bufferAtr } from "./ta/risk.ts";
 import { BREAK_ATR, PIERCE_ATR, structureSeries, type StructureState } from "./ta/structure.ts";
 import { BEYOND_ATR, FRESH_BARS, keyLevelName, levelSource, pickLevels, turnAt, watchState, type KeyLevelKind, type WatchInput, type WatchLevel, type WatchSide, type WatchStateName } from "./ta/watch.ts";
 import { EARLY_FACT, EARLY_SWING_ATR, PHASE_NAMES, phaseAt, phaseFact, type Phase, type PhaseDir } from "./ta/phase.ts";
+import { barShape, type BarShape } from "./ta/barshape.ts";
 import { SIGN_SHORT, SIGNS, signsAt, type SignData, type SignKey } from "./ta/watchsigns.ts";
 import { latestReport, scoreRow, type ScoreRow } from "./trendplan.ts";
 import { TF_SECONDS, type Candle, type Timeframe } from "./types.ts";
@@ -168,6 +169,8 @@ export interface WatchView {
   researchNote: string | null;
   /** 周线、日线的大趋势（只描述）；数据不够时为 null */
   big: BigTrend | null;
+  /** 最近一根已收盘的 15 分钟、1 小时 K 线的影线和量能（只描述，E40 没有优势） */
+  bars: { "15m": BarShape | null; "1h": BarShape | null };
   replay: boolean;
 }
 
@@ -622,6 +625,7 @@ export async function computeWatch(coin: string, ep: EngineParams = DEFAULT_ENGI
     research: research.view,
     researchNote: research.note,
     big,
+    bars: { "15m": barShape(c, n), "1h": barShape(h, h.length - 1) },
     replay: !live,
   };
 }
