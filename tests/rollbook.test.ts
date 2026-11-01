@@ -193,3 +193,35 @@ test("levelSource names a level's methods and timeframes", async () => {
   assert.equal(levelSource(info, 80000), null);
   assert.equal(levelSource(undefined, 1), null);
 });
+
+test("break-even: the price with fees, the first level past it, an alert at the close that stands beyond it", async () => {
+  const { breakevenOf, holdingView } = await import("../src/lib/rollbook.ts");
+  const be = breakevenOf(1, 2300, 0.0005, [2250, 2360, 2450], 2340, 2250);
+  assert.ok(Math.abs(be.price - 2302.3) < 1e-9);
+  assert.equal(be.level, 2360);
+  assert.equal(be.met, false);
+  assert.equal(be.done, false);
+  const stood = breakevenOf(1, 2300, 0.0005, [2250, 2360, 2450], 2370, 2250);
+  assert.equal(stood.level, 2360);
+  assert.equal(stood.met, true);
+  assert.equal(breakevenOf(1, 2300, 0.0005, [2360], 2370, 2303).done, true);
+  // shorts mirror
+  const s = breakevenOf(-1, 2300, 0.0005, [2200, 2350], 2190, 2350);
+  assert.ok(Math.abs(s.price - 2297.7) < 1e-9);
+  assert.equal(s.level, 2200);
+  assert.equal(s.met, true);
+  // off: no view, no alert
+  const off = book({ targets: [], style: "bold" });
+  assert.equal(holdingView(off.accounts[0].holdings[0], off.accounts[0], mk(2340).ETH).be, null);
+  const b = book({ targets: [], style: "bold", breakeven: true });
+  assert.equal(cleanBook(b, ["ETH"]).accounts[0].holdings[0].breakeven, true);
+  const bar = (t: number, c: number, prev: number, hi: number) => mk(c, { lastClose: { t, c, prev, hi, lo: c - 10 } });
+  const { mem } = pickRollAlerts(b, bar(1000, 2340, 2330, 2345), {});
+  const r = pickRollAlerts(b, bar(2000, 2370, 2340, 2372), mem);
+  const a = r.alerts.find((x) => x.title.includes("保本价"));
+  assert.ok(a, "break-even alert");
+  assert.match(a!.title, /2,360.*2,300/);
+  // once moved, nothing more
+  const moved = book({ targets: [], style: "bold", breakeven: true, stop: 2301 });
+  assert.equal(pickRollAlerts(moved, bar(2000, 2370, 2340, 2372), mem).alerts.filter((x) => x.title.includes("保本价")).length, 0);
+});

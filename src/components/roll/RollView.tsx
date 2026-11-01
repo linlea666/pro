@@ -359,7 +359,7 @@ function HoldingCard({ h, v, acc, onChange, onRemove }: { h: Holding; v: View; a
         )}
       </div>
 
-      <NextSteps h={h} v={v} />
+      <NextSteps h={h} v={v} onChange={onChange} />
 
       <Ladder h={h} v={v} />
 
@@ -411,7 +411,7 @@ function SafetyBar({ atr }: { atr: number }) {
 }
 
 /** The plan in order if the price goes the position's way: add, then cuts; and what the stop costs. */
-function NextSteps({ h, v }: { h: Holding; v: View }) {
+function NextSteps({ h, v, onChange }: { h: Holding; v: View; onChange: (p: Partial<Holding>) => void }) {
   const { pos, price, stop, liq } = v;
   if (!(pos.qty > 0) || price == null) return null;
   const losing = h.dir * (price - pos.avg) <= 0;
@@ -420,6 +420,7 @@ function NextSteps({ h, v }: { h: Holding; v: View }) {
   return (
     <div className="space-y-2">
       <h3 className="text-[15px] font-semibold">接下来怎么做（如果价格往你的方向{away}）</h3>
+      <BreakevenPlan h={h} v={v} onChange={onChange} />
       {!losing && <AddPlan h={h} v={v} />}
       {losing ? (
         <p className="text-sm text-ink-2">现在浮亏，按规则不加仓。先守住止损{stop != null ? ` ${fmtPrice(stop)}` : ""}，等回到均价 {fmtPrice(pos.avg)} 另一边再看。</p>
@@ -490,6 +491,35 @@ function unlockOptions(h: Holding, v: View, at: number) {
 }
 
 /** Where to add, how much margin, and the average after it; when the rules say no, what would have to change. */
+/** E31f: when to move the stop to break-even (the average plus a round trip of fees), when the holding asks for it. */
+function BreakevenPlan({ h, v, onChange }: { h: Holding; v: View; onChange: (p: Partial<Holding>) => void }) {
+  const be = v.be;
+  if (!be) return null;
+  const tf = `4 小时收盘${h.dir > 0 ? "站上" : "跌破"}`;
+  const fix = (
+    <button className="ml-2 rounded border border-line px-2 py-0.5 text-xs hover:bg-panel-2" onClick={() => onChange({ stop: +be.price.toPrecision(8) })}>
+      把止损改成 {fmtPrice(be.price)}
+    </button>
+  );
+  if (be.done)
+    return <div className="rounded-lg border border-line p-3 text-sm text-ink-2"><b className="text-up">已保本</b>：止损 {fmtPrice(v.stop)} 在保本价 {fmtPrice(be.price)}（均价加来回手续费）{h.dir > 0 ? "之上" : "之下"}，打到也不亏。之后照常跟着结构移止损。</div>;
+  if (be.met)
+    return (
+      <div className="rounded-lg border border-up/40 bg-up/5 p-3 text-sm">
+        <b>保本：{tf} {fmtPrice(be.level)}，可以把止损移到 {fmtPrice(be.price)}</b>
+        {fix}
+        <p className="mt-1 text-ink-2">保本价 = 均价 {fmtPrice(v.pos.avg)} 加上来回手续费，打到也不亏。先在交易所改止损单，再点按钮或在下面改“止损”。</p>
+      </div>
+    );
+  return (
+    <div className="rounded-lg border border-line p-3 text-sm text-ink-2">
+      <b className="text-ink">保本：</b>
+      {be.level != null ? <>等 {tf} {fmtPrice(be.level)}（第一个关键位）之后，再把止损移到保本价 {fmtPrice(be.price)}。</> : <>前方没有关键位：等出现新的关键位并站稳后，再把止损移到保本价 {fmtPrice(be.price)}。</>}
+      太早移容易被来回扫掉：回测里“下一根一赚钱就保本”每笔少 0.14R。
+    </div>
+  );
+}
+
 function AddPlan({ h, v }: { h: Holding; v: View }) {
   const { pos, price, stop } = v;
   if (price == null) return null;
@@ -587,6 +617,10 @@ function Ladder({ h, v }: { h: Holding; v: View }) {
   }
   // the cuts as planned: after the add when there is one, so the sizes match the table above
   v.steps.filter((s) => s.kind === "cut").forEach((c, i) => rungs.push({ price: c.price, label: v.cutMode === "close" ? `${i ? "第二个" : "前方第一个"}关键位：4 小时收盘没站稳就减 ${trimQty(c.qty)}（落袋约 ${money(c.realized)}），站稳就拿着` : `${i ? "第二个" : "前方第一个"}关键位：减 ${trimQty(c.qty)}，落袋 ${money(c.realized)}`, kind: "cut" }));
+  if (v.be && !v.be.done) {
+    rungs.push({ price: v.be.price, label: "保本价（均价加来回手续费）：站稳第一个关键位后把止损移到这里", kind: "stop" });
+    if (v.be.level != null && !v.be.met) rungs.push({ price: v.be.level, label: `4 小时收盘${h.dir > 0 ? "站上" : "跌破"} → 止损移到保本价 ${fmtPrice(v.be.price)}`, kind: "target" });
+  }
   for (const r of rungs) if (r.kind === "add" || r.kind === "cut") r.src = levelSource(v.levelInfo, r.price);
   rungs.sort((a, b) => b.price - a.price);
   return (
@@ -761,6 +795,12 @@ function Settings({ h, v, onChange }: { h: Holding; v: View; onChange: (p: Parti
         <p className="col-span-2 text-xs text-ink-3 sm:col-span-4">
           {CUT_NAME[(h.cutMode ?? "close") as keyof typeof CUT_NAME]}：{h.cutMode === "touch" ? "价格碰到前方关键位就减三分之一。最平稳（赚钱的笔数最多、回撤最小），但大行情的利润砍掉六成，回测平均比不减少 0.11R。" : h.cutMode === "none" ? "关键位不减，全部跟着移动止损。回测平均最高，但一半以上的笔是小亏，最大回撤也最大。" : "冲击前方关键位的那根 4 小时收盘回到位内（没站稳）才减三分之一，收盘站在位外（站稳）就拿着。回测介于两者之间，没冲到位（比如到 78,800 没碰 79,000）不算。"}
         </p>
+      <label className="col-span-2 flex items-start gap-2 sm:col-span-4">
+        <input id="h-be" type="checkbox" className="mt-0.5" checked={!!h.breakeven} onChange={(e) => onChange({ breakeven: e.target.checked || undefined })} />
+        <span>
+          站稳第一个关键位后保本（可选）：4 小时收盘越过开仓价之外的第一个关键位后，提醒你把止损移到保本价（均价加来回手续费，打到不亏）。回测里平均不更赚（每笔少 0.04–0.09R），最大回撤小约 27%，约三成的单最后在保本价出场；太早保本明显更差。
+        </span>
+      </label>
       <label className="col-span-2 flex items-start gap-2 sm:col-span-4">
         <input type="checkbox" className="mt-0.5" checked={!!h.giveback} onChange={(e) => onChange({ giveback: e.target.checked })} />
         <span>
@@ -974,7 +1014,7 @@ function Rules() {
         <li>每次加完，整笔打到止损最多亏“每笔风险”（或选“保本滚仓”：不亏）；每次不超过上一笔的 {ROLL_RULES.pyramid * 100}%，最多加 {ROLL_RULES.maxAdds} 次；止损要在强平前至少 {ROLL_RULES.liqGapAtr} 倍 ATR；实际杠杆不超过 {ROLL_RULES.maxLeverage} 倍。</li>
         <li>减仓：前方第一个、第二个关键位各减三分之一，剩下跟着移动认错位。离强平不到 {ROLL_RULES.nearLiqAtr} 倍 ATR 时先减仓或补保证金。</li>
         <li>
-          回测（E31，10 个币的 4 小时 K 线，2020 年起 2,027 笔，入场和计划页同一套）：按这套规则滚仓比不滚平均每笔只多 0.05R，没到 0.1R 的门槛，换预算、金字塔比例、加仓次数或改用日线也一样；在“收盘越过摆动点”时加，和持仓期间随便挑时间加差不多。加过仓的交易里约七成比不滚更差（平均少 0.29R），三成更好（平均多 1.09R），多出来的全靠少数大行情；连续亏损时的最大回撤大了约三成。风险预算是守住了的：打到止损亏超过 1.1 倍初始风险的只有 0.5%。所以滚仓不会让你更常赚，只是在大行情里拿得更重。加仓确认改用 1 小时或 15 分钟收盘（同一个摆动点）：结果和 4 小时差不多（每笔多 0.01–0.02R，不显著），加仓价离突破点近一些（中位从 0.11R 变成 0.07R / 0.05R），最大回撤略大；所以三种都可以选，默认 4 小时。“进取：保本滚”就是“止损移到开仓价、用利润滚”：加完整笔打到止损不亏，每次可以加到和上一笔一样多，最多 5 次。回测每笔平均 +0.24R（稳健 +0.22R、不滚 +0.16R），对不滚多 0.07R，没到 0.1R 的标准；亏超过本金 1.1 倍的只有 0.1%，最大回撤 78R（稳健 82R）。允许加完打到止损亏 1 倍、2 倍本金的更激进做法平均更高（+0.26R、+0.42R），但那只是仓位放大：按波动折算不比不滚划算，亏超过本金的笔数到 1.5%、10.6%。“激进：可亏一笔风险”就是其中亏 1 倍的那档：加完整笔打到止损最多亏“每笔风险”（账户设置里的那个百分比），每次可以加到和上一笔一样多，最多 5 次，平均 +0.26R，但最大回撤 102R，比不滚大六成，76% 的加仓笔比不滚差，靠少数大行情拉高；按波动折算并不比不滚划算。2 倍那档不提供。减仓方式（E31e，同一批交易、不加仓，比较在前方关键位怎么减）：不减 +0.16R / 笔，赚钱的笔数 36%，最大回撤 63R，最赚的那 32 笔大行情平均 +12.7R；碰到关键位就减三分之一 +0.05R，赚钱 48%，回撤 40R，大行情只剩 +5.0R，比不减少 0.11R、各段都更差，按波动折算也更差；4 小时收盘没站稳才减 +0.10R，赚钱 41%，回撤 48R，大行情 +8.3R，比碰到就减多 0.05R（没到 0.1R 的标准，最近 12 个月约 0）。碰到关键位的那根约 45% 收盘站在位外。把“冲到离位 0.25 倍 ATR 内没碰到”也算冲击反而略差；做空和做多一样对称，没有额外优势。所以默认“收盘没站稳才减”，三种都可以选。另外测了两条：① 浮盈到过 2 倍 ATR 后吐回一半就减三分之一，平均每笔少 0.03–0.08R，最大回撤小两到三成，所以只做成可选的提醒；② 价格离摆动点超过 1.5 倍 ATR 就不加，和不限制差不多（加仓数量本来就被“打到止损最多亏多少”压小了），没有加这条。
+          回测（E31，10 个币的 4 小时 K 线，2020 年起 2,027 笔，入场和计划页同一套）：按这套规则滚仓比不滚平均每笔只多 0.05R，没到 0.1R 的门槛，换预算、金字塔比例、加仓次数或改用日线也一样；在“收盘越过摆动点”时加，和持仓期间随便挑时间加差不多。加过仓的交易里约七成比不滚更差（平均少 0.29R），三成更好（平均多 1.09R），多出来的全靠少数大行情；连续亏损时的最大回撤大了约三成。风险预算是守住了的：打到止损亏超过 1.1 倍初始风险的只有 0.5%。所以滚仓不会让你更常赚，只是在大行情里拿得更重。加仓确认改用 1 小时或 15 分钟收盘（同一个摆动点）：结果和 4 小时差不多（每笔多 0.01–0.02R，不显著），加仓价离突破点近一些（中位从 0.11R 变成 0.07R / 0.05R），最大回撤略大；所以三种都可以选，默认 4 小时。“进取：保本滚”就是“止损移到开仓价、用利润滚”：加完整笔打到止损不亏，每次可以加到和上一笔一样多，最多 5 次。回测每笔平均 +0.24R（稳健 +0.22R、不滚 +0.16R），对不滚多 0.07R，没到 0.1R 的标准；亏超过本金 1.1 倍的只有 0.1%，最大回撤 78R（稳健 82R）。允许加完打到止损亏 1 倍、2 倍本金的更激进做法平均更高（+0.26R、+0.42R），但那只是仓位放大：按波动折算不比不滚划算，亏超过本金的笔数到 1.5%、10.6%。“激进：可亏一笔风险”就是其中亏 1 倍的那档：加完整笔打到止损最多亏“每笔风险”（账户设置里的那个百分比），每次可以加到和上一笔一样多，最多 5 次，平均 +0.26R，但最大回撤 102R，比不滚大六成，76% 的加仓笔比不滚差，靠少数大行情拉高；按波动折算并不比不滚划算。2 倍那档不提供。减仓方式（E31e，同一批交易、不加仓，比较在前方关键位怎么减）：不减 +0.16R / 笔，赚钱的笔数 36%，最大回撤 63R，最赚的那 32 笔大行情平均 +12.7R；碰到关键位就减三分之一 +0.05R，赚钱 48%，回撤 40R，大行情只剩 +5.0R，比不减少 0.11R、各段都更差，按波动折算也更差；4 小时收盘没站稳才减 +0.10R，赚钱 41%，回撤 48R，大行情 +8.3R，比碰到就减多 0.05R（没到 0.1R 的标准，最近 12 个月约 0）。碰到关键位的那根约 45% 收盘站在位外。把“冲到离位 0.25 倍 ATR 内没碰到”也算冲击反而略差；做空和做多一样对称，没有额外优势。所以默认“收盘没站稳才减”，三种都可以选。保本时机（E31f，同一批交易）：不移保本 +0.16R、最大回撤 63R；站稳第一个关键位后把止损移到开仓价 +0.11R、回撤 47R，约 32% 的单在开仓价出场（其中一成本来能赚 1R 以上），最赚的那批大行情从 12.7R 变成 8.2R；浮盈 1R 后保本几乎和不移一样（结构止损通常已经更高）；下一根一赚钱就保本 +0.02R，比不移少 0.14R、各段都更差。保本之后再用“激进”滚：+0.22R、回撤 74R（不保本的激进 +0.26R、102R）。所以保本是让结果更平稳的选项，默认不开。另外测了两条：① 浮盈到过 2 倍 ATR 后吐回一半就减三分之一，平均每笔少 0.03–0.08R，最大回撤小两到三成，所以只做成可选的提醒；② 价格离摆动点超过 1.5 倍 ATR 就不加，和不限制差不多（加仓数量本来就被“打到止损最多亏多少”压小了），没有加这条。
         </li>
       </ul>
     </details>
@@ -998,7 +1038,7 @@ function AlertCard({ server, accounts, onSave }: { server: Server; accounts: Acc
     <section className="card space-y-3 p-4 text-sm">
       <h2 className="text-[15px] font-semibold">邮件提醒</h2>
       <p className="text-xs leading-relaxed text-ink-3">
-        服务器每分钟看一次：收盘（每笔持仓自己选 4 小时 / 1 小时 / 15 分钟）越过关键位（多单站上、空单跌破）、按规则可以加仓时；冲击减仓位的那根 4 小时收盘没站稳（或站稳了）时（选“碰到就减”的是价格到减仓位时）；价格到你填的价位时；开了“浮盈回吐提醒”的持仓吐回一半浮盈时；快到止损、已经过了止损、离强平太近时；所有持仓一起打到止损超过账户 {ACCOUNT_RISK_PCT}% 时。同一件事只发一次，同一分钟的几件事合成一封。刚打开时第一轮只记录不发。
+        服务器每分钟看一次：收盘（每笔持仓自己选 4 小时 / 1 小时 / 15 分钟）越过关键位（多单站上、空单跌破）、按规则可以加仓时；冲击减仓位的那根 4 小时收盘没站稳（或站稳了）时（选“碰到就减”的是价格到减仓位时）；价格到你填的价位时；开了“浮盈回吐提醒”的持仓吐回一半浮盈时；开了“站稳后保本”的持仓 4 小时收盘站稳第一个关键位、该把止损移到保本价时；快到止损、已经过了止损、离强平太近时；所有持仓一起打到止损超过账户 {ACCOUNT_RISK_PCT}% 时。同一件事只发一次，同一分钟的几件事合成一封。刚打开时第一轮只记录不发。
       </p>
       {!server.mailReady && <p className="text-xs text-warn">后台的邮件还没配置好：先到“系统设置 → 邮件与告警”填 SMTP 并保存。</p>}
       <label className="flex items-center gap-2">

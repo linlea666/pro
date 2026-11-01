@@ -27,6 +27,8 @@ export interface Holding {
   style?: "bold" | "aggressive";
   /** isolated only: adds not capped by the account's real leverage (the stop-before-liquidation rule stays) */
   noLevCap?: boolean;
+  /** E31f: after a 4-hour close beyond the first key level past the break-even price, move the stop to break-even */
+  breakeven?: boolean;
   /** cuts at the levels ahead: absent = "close" (E31e) */
   cutMode?: "touch" | "none";
   example?: boolean;
@@ -46,6 +48,18 @@ export const rulesOf = (h: Pick<Holding, "style" | "noLevCap" | "mode">) => {
 export const CUT_MODES: CutMode[] = ["close", "touch", "none"];
 export const CUT_NAME: Record<CutMode, string> = { close: "4 小时收盘没站稳才减", touch: "碰到关键位就减", none: "不减，只跟移动止损" };
 export const cutModeOf = (h: Pick<Holding, "cutMode">): CutMode => (h.cutMode === "touch" || h.cutMode === "none" ? h.cutMode : "close");
+/**
+ * E31f: the break-even stop (the average plus a round trip of taker fees, so a hit loses nothing) and the
+ * first key level beyond it; `met` once the last closed 4-hour bar closed beyond that level, `done` once the
+ * stop is at or beyond break-even.
+ */
+export function breakevenOf(dir: Dir, avg: number, fee: number, levels: number[], lastClose: number | null, stop: number | null) {
+  const price = avg * (1 + dir * 2 * fee);
+  const level = levels.filter((x) => dir * (x - price) > 0).sort((a, b) => dir * (a - b))[0] ?? null;
+  // a level already behind the last close counts as stood: the nearest one between break-even and that close
+  const stood = lastClose != null ? levels.filter((x) => dir * (x - price) > 0 && dir * (lastClose - x) > 0).sort((a, b) => dir * (b - a))[0] ?? null : null;
+  return { price, level: stood ?? level, met: stood != null, done: stop != null && dir * (stop - price) >= 0 };
+}
 export const GIVEBACK = { atr: 2, keep: 0.5, cut: 1 / 3 };
 const confirmOf = (h: Holding): ConfirmTf => (h.confirmTf && CONFIRM_TFS.includes(h.confirmTf) ? h.confirmTf : "4h");
 
@@ -109,6 +123,7 @@ export function cleanBook(input: unknown, coins: string[]): RollBook {
         targets: (Array.isArray(h.targets) ? h.targets : []).filter((x) => typeof x === "number" && x > 0).slice(0, 10),
         realizedBase: num(h.realizedBase, -1e12, 1e12, 0),
         ...(h.giveback === true ? { giveback: true } : {}),
+        ...(h.breakeven === true ? { breakeven: true } : {}),
         ...(h.style === "bold" || h.style === "aggressive" ? { style: h.style } : {}),
         ...(h.noLevCap === true ? { noLevCap: true } : {}),
         ...(h.cutMode === "touch" || h.cutMode === "none" ? { cutMode: h.cutMode } : {}),
@@ -207,7 +222,8 @@ export function holdingView(h: Holding, acc: Account, m: Market) {
   const fundDay = m.funding != null && price != null ? fundingCost(h.dir, pos.qty * price, m.funding, 3) : null;
   const addAt = canAdd ? add(next!) : null;
   const steps = price != null ? planSteps({ pos, price, stop, add: addAt && next != null ? { price: next, qty: addAt.qty } : null, levels: m.levels, fee: acc.fee, cuts: cutMode !== "none" }) : [];
-  return { levelInfo: m.levelInfo ?? [], cutMode, pos, price, atr, st, stop, liq, levels: m.levels, cuts, addLevel, budget, rules: { pyramid: rules?.pyramid ?? ROLL_RULES.pyramid, maxAdds: rules?.maxAdds ?? ROLL_RULES.maxAdds, liqGapAtr: ROLL_RULES.liqGapAtr as number, maxLeverage: rules?.maxLeverage ?? (ROLL_RULES.maxLeverage as number) }, add, status, open, atStop, fundDay, funding: m.funding, steps };
+  const be = h.breakeven && pos.qty > 0 ? breakevenOf(h.dir, pos.avg, acc.fee, m.levels, m.lastClose?.c ?? null, stop) : null;
+  return { be, levelInfo: m.levelInfo ?? [], cutMode, pos, price, atr, st, stop, liq, levels: m.levels, cuts, addLevel, budget, rules: { pyramid: rules?.pyramid ?? ROLL_RULES.pyramid, maxAdds: rules?.maxAdds ?? ROLL_RULES.maxAdds, liqGapAtr: ROLL_RULES.liqGapAtr as number, maxLeverage: rules?.maxLeverage ?? (ROLL_RULES.maxLeverage as number) }, add, status, open, atStop, fundDay, funding: m.funding, steps };
 }
 export type HoldingView = ReturnType<typeof holdingView>;
 
@@ -270,6 +286,20 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
         for (const c of cutPlan(v.pos, was.price, v.addLevel != null ? m.levels.filter((x) => h.dir * (x - v.addLevel!) > 0) : m.levels, acc.fee))
           if (crossed(c.price))
             alerts.push({ key: `${h.id}:cut:${c.price}`, kind: "cut", title: `${head}：到减仓位 ${fp(c.price)}`, lines: [`按计划减 ${trimQty(c.qty)}，这部分落袋约 ${usd(c.realized)}，剩下 ${trimQty(c.left)}，均价不变。`, ...srcLine(c.price), base] });
+      // E31f: the first 4-hour close beyond a key level past break-even, while the stop is still short of it
+      const b4be = m.lastClose;
+      if (v.be && !v.be.done && b4be && was.bar4 != null && b4be.t > was.bar4 && v.be.met && v.be.level != null && h.dir * (b4be.prev - v.be.level) <= 0)
+        alerts.push({
+          key: `${h.id}:be:${b4be.t}`,
+          kind: "stop",
+          title: `${head}：4 小时收盘${h.dir > 0 ? "站上" : "跌破"} ${fp(v.be.level)}，可以把止损移到保本价 ${fp(v.be.price)}`,
+          lines: [
+            `保本价 = 均价 ${fp(v.pos.avg)} 加上来回手续费，打到也不亏。你的止损现在是 ${fp(v.stop)}，记得在交易所改单，改完在页面上把止损也改成 ${fp(v.be.price)}。`,
+            "回测（E31f）：站稳第一个关键位后再保本，平均不更赚（每笔少 0.04–0.09R，不显著），最大回撤小约 27%；太早保本明显更差。",
+            ...srcLine(v.be.level),
+            base,
+          ],
+        });
       // E31e: a 4-hour bar that reached a level beyond the average decides at its close: back inside → cut 1/3, held → keep
       const b4 = m.lastClose;
       if (v.cutMode === "close" && b4 && b4.hi != null && b4.lo != null && was.bar4 != null && b4.t > was.bar4) {
