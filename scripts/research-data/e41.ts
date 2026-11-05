@@ -336,15 +336,16 @@ for (const [rk, rname] of ROWS) {
   console.log("范围          段              笔数  胜率   平均R   随机R   差R     t    ≥3R  随机≥3R  先+6ATR 随机");
   const signs: number[] = [];
   let mAll = NaN, tAll = NaN;
-  for (const g of [...COINS.map((c) => [c]), COINS])
+  for (const g of (COINS.length > 1 ? [...COINS.map((c) => [c]), COINS] : [COINS]))
     for (const [sname, lo, hi] of segs) {
-      const name = g.length > 1 ? g.join("+") : g[0];
-      if (g.length === 1 && sname !== "全部 2020 起") continue;
+      const tot = g === COINS;
+      const name = g.join("+");
+      if (!tot && sname !== "全部 2020 起") continue;
       const ts = all.filter((t) => t.row === rk && g.includes(t.coin) && T.get(t)! >= lo && T.get(t)! < hi);
       if (!ts.length) continue;
       const rs = ts.map((t) => t.r), d = ts.map((t) => t.r - R.get(t)!.r);
       const tt = mean(d) / (sd(d) / Math.sqrt(d.length));
-      if (g.length > 1 && sname === "全部 2020 起") (mAll = mean(d)), (tAll = tt);
+      if (tot && sname === "全部 2020 起") (mAll = mean(d)), (tAll = tt);
       else signs.push(mean(d));
       const first = ts.filter((t) => t.first === 1).length / ts.length, rf = mean(ts.map((t) => R.get(t)!.first));
       console.log(

@@ -31,7 +31,7 @@ const H = 240, HOLD = 24;
 const M = Number(process.env.M ?? 2);
 const VQ = Number(process.env.VQ ?? 0.3);
 const ZT = Number(process.env.ZT ?? 1.5);
-const COINS = ["BTC", "ETH"];
+const COINS = (process.env.COINS ?? "BTC,ETH").split(",");
 const COST = 0.0015;
 const START = Date.UTC(2020, 0, 1) / 1000;
 const PSTART = Date.UTC(2023, 10, 15) / 1000;
@@ -319,15 +319,16 @@ for (const [rk, rname, st] of ROWS) {
   console.log("范围          段              笔数  胜率   平均R   随机R   差R     t    先+6ATR 随机");
   const signs: number[] = [];
   let mAll = NaN, tAll = NaN;
-  for (const g of [["BTC"], ["ETH"], COINS])
+  for (const g of (COINS.length > 1 ? [...COINS.map((c) => [c]), COINS] : [COINS]))
     for (const [sname, lo, hi] of segs) {
-      const name = g.length > 1 ? "BTC+ETH" : g[0];
-      if (g.length === 1 && sname !== "全部") continue;
+      const tot = g === COINS;
+      const name = g.join("+");
+      if (!tot && sname !== "全部") continue;
       const ts = all.filter((t) => t.row === rk && g.includes(t.coin) && TT.get(t)! >= lo && TT.get(t)! < hi);
       if (!ts.length) continue;
       const rs = ts.map((t) => t.r), d = ts.map((t) => t.r - RR.get(t)!.r);
       const tt = mean(d) / (sd(d) / Math.sqrt(d.length));
-      if (g.length > 1 && sname === "全部") (mAll = mean(d)), (tAll = tt);
+      if (tot && sname === "全部") (mAll = mean(d)), (tAll = tt);
       else signs.push(mean(d));
       console.log(
         `${name.padEnd(12)}  ${sname.padEnd(13)}  ${String(ts.length).padStart(5)}  ${pc(rs.filter((x) => x > 0).length / rs.length).padStart(4)}  ${f2(mean(rs)).padStart(6)}  ${f2(mean(ts.map((t) => RR.get(t)!.r))).padStart(6)}  ${f2(mean(d)).padStart(6)}  ${f2(tt).padStart(5)}   ${pc(ts.filter((t) => t.first === 1).length / ts.length).padStart(5)}  ${pc(mean(ts.map((t) => RR.get(t)!.first))).padStart(4)}`,
