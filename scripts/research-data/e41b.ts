@@ -24,9 +24,9 @@
 import { readFileSync } from "node:fs";
 
 const dir = process.argv[2];
-const TF = "1h";
+const TF: string = "1h";
 const N = 12, K = 5, ER_MIN = 0.4, VOLX = 1.5;
-const EXIT = "chand";
+const EXIT: string = "chand";
 const H = 240, HOLD = 24;
 const M = Number(process.env.M ?? 2);
 const VQ = Number(process.env.VQ ?? 0.3);
