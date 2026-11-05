@@ -41,6 +41,7 @@ import { atrSeries, bufferAtr } from "../../src/lib/ta/risk.ts";
 import { structureSeries, swings, type Swing } from "../../src/lib/ta/structure.ts";
 import { firstTurn, stopBeyond, turnAt } from "../../src/lib/ta/watch.ts";
 import type { Candle } from "../../src/lib/types.ts";
+import { BIGDAY_RULES, dayShape } from "../../src/lib/ta/bigday.ts";
 
 const ep = DEFAULT_ENGINE_PARAMS;
 const nowSec = Date.parse("2026-11-05T00:00:00Z") / 1000;
@@ -483,13 +484,13 @@ for (const coin of data.map((d) => d.coin)) {
   const rows: { big: number; inside: boolean; upH: boolean; dnL: boolean; dir: number; asiaH: boolean; asiaL: boolean; laterH: boolean; laterL: boolean }[] = [];
   for (let i = 21; i < d1.length; i++) {
     const p = d1[i - 1], x = d1[i];
-    const med = median(d1.slice(i - 21, i - 1).map((b) => b.h - b.l));
-    const R = p.h - p.l, pos = (p.c - p.l) / R;
+    const sh = dayShape(d1, i - 1); // the page's rule (ta/bigday.ts)
+    if (!sh) continue;
     const hs = hByDay.get(Math.floor(x.t / DAY)) ?? [];
     if (hs.length < 24) continue;
-    const asia = hs.slice(0, 8), later = hs.slice(8);
+    const asia = hs.slice(0, BIGDAY_RULES.asiaEndH), later = hs.slice(BIGDAY_RULES.asiaEndH);
     rows.push({
-      big: R / med, inside: x.h <= p.h && x.l >= p.l, upH: x.h > p.h, dnL: x.l < p.l, dir: pos >= 2 / 3 ? 1 : pos <= 1 / 3 ? -1 : 0,
+      big: sh.ratio, inside: x.h <= p.h && x.l >= p.l, upH: x.h > p.h, dnL: x.l < p.l, dir: sh.pos === "top" ? 1 : sh.pos === "bottom" ? -1 : 0,
       asiaH: asia.some((b) => b.h > p.h), asiaL: asia.some((b) => b.l < p.l), laterH: later.some((b) => b.h > p.h), laterL: later.some((b) => b.l < p.l),
     });
   }
@@ -506,6 +507,9 @@ for (const coin of data.map((d) => d.coin)) {
   };
   cont("所有日子 · 越过前高", rows, true);
   cont("前一天 ≥ 1.5 倍且收在上 1/3 · 越过前高", rows.filter((r) => r.big >= 1.5 && r.dir > 0), true);
+  show("前一天 ≥ 2 倍且收在中间", rows.filter((r) => r.big >= 2 && r.dir === 0));
+  cont("前一天 ≥ 2 倍且收在上 1/3 · 越过前高", rows.filter((r) => r.big >= 2 && r.dir > 0), true);
+  cont("前一天 ≥ 2 倍且收在下 1/3 · 跌破前低", rows.filter((r) => r.big >= 2 && r.dir < 0), false);
   cont("所有日子 · 跌破前低", rows, false);
   cont("前一天 ≥ 1.5 倍且收在下 1/3 · 跌破前低", rows.filter((r) => r.big >= 1.5 && r.dir < 0), false);
 

@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import type { TrendPlan } from "@/lib/trendplan";
 import { impulseBrief, type BriefNumber, type BriefTone } from "@/lib/ta/brief";
+import { bigDayFact, bigDayHeadline, bigDayToday } from "@/lib/ta/bigday";
 import { PriceChart, type Band, type PriceLineSpec } from "../PriceChart";
 import { fmtBjTime, fmtPrice } from "./format";
 
@@ -124,6 +125,12 @@ export function BriefCard({ p, onTab }: { p: TrendPlan; onTab: (t: string) => vo
             <button className="ml-1 text-accent underline-offset-2 hover:underline" onClick={() => onTab("watch")}>
               详情在实时盯盘
             </button>
+          </p>
+        )}
+        {b.bigDay && (
+          <p className="mt-2 rounded-lg bg-warn-soft px-3 py-1.5 text-[12px] text-ink">
+            <b>{bigDayHeadline(b.bigDay).replace(/：.*$/, "")}</b>：{bigDayHeadline(b.bigDay).replace(/^[^：]*：/, "")}。{bigDayFact(b.bigDay)}
+            {bigDayToday(b.bigDay) ? ` ${bigDayToday(b.bigDay)}` : ""} 只描述，不是信号。
           </p>
         )}
         <p className="mt-2 text-[11px] leading-relaxed text-ink-3">{b.foot}</p>

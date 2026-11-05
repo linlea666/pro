@@ -349,6 +349,10 @@ async function main() {
         console.log(`\n${v.impulse.active ? "放量冲击（进行中）" : "最近一次放量冲击"}：`);
         for (const l of impulseLines(v.impulse, (t) => bj(t).slice(5))) console.log(`  ${l}`);
       }
+      if (v.bigDay) {
+        const { bigDayLine } = await import("../src/lib/ta/bigday.ts");
+        console.log(`\n${bigDayLine(v.bigDay)}`);
+      }
       if (v.phases) {
         console.log(`\n行情阶段：${v.phases.headline}`);
         for (const r of v.phases.rows) {

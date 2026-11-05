@@ -19,6 +19,7 @@ import { BEYOND_ATR, FRESH_BARS, keyLevelName, levelSource, pickLevels, turnAt, 
 import { EARLY_FACT, EARLY_SWING_ATR, PHASE_NAMES, phaseAt, phaseFact, type Phase, type PhaseDir } from "./ta/phase.ts";
 import { barShape, type BarShape } from "./ta/barshape.ts";
 import { latestImpulse, quietRanks, type Impulse } from "./ta/impulse.ts";
+import { bigDayAt, type BigDay } from "./ta/bigday.ts";
 import { SIGN_SHORT, SIGNS, signsAt, type SignData, type SignKey } from "./ta/watchsigns.ts";
 import { latestReport, scoreRow, type ScoreRow } from "./trendplan.ts";
 import { TF_SECONDS, type Candle, type Timeframe } from "./types.ts";
@@ -174,6 +175,8 @@ export interface WatchView {
   bars: { "15m": BarShape | null; "1h": BarShape | null };
   /** 最近 240 根 1 小时里最新的一次放量冲击（E41，只描述）；页面只在 `active` 时显示 */
   impulse: Impulse | null;
+  /** 昨天是大波动日时的背景（E42 D1，只描述，只有 BTC / ETH）；不是时为 null */
+  bigDay: BigDay | null;
   replay: boolean;
 }
 
@@ -644,6 +647,7 @@ export async function computeWatch(coin: string, ep: EngineParams = DEFAULT_ENGI
     big,
     bars: { "15m": barShape(c, n), "1h": barShape(h, h.length - 1) },
     impulse: impulseOf(coin, h, hatr, end),
+    bigDay: bigDayAt(coin, d1, h, end),
     replay: !live,
   };
 }
