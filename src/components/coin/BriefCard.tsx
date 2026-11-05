@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import type { TrendPlan } from "@/lib/trendplan";
-import type { BriefNumber, BriefTone } from "@/lib/ta/brief";
+import { impulseBrief, type BriefNumber, type BriefTone } from "@/lib/ta/brief";
 import { PriceChart, type Band, type PriceLineSpec } from "../PriceChart";
 import { fmtBjTime, fmtPrice } from "./format";
 
@@ -118,6 +118,14 @@ export function BriefCard({ p, onTab }: { p: TrendPlan; onTab: (t: string) => vo
           ))}
         </ul>
         {b.against && <p className="mt-2 rounded-lg bg-warn-soft px-3 py-1.5 text-[12px] text-ink">{b.against}</p>}
+        {b.impulse && (
+          <p className="mt-2 rounded-lg bg-warn-soft px-3 py-1.5 text-[12px] text-ink">
+            <b>{b.impulse.dir > 0 ? "放量冲击向上 ↑" : "放量冲击向下 ↓"}</b>（{fmtBjTime(b.impulse.t + 3600)} 收盘）：{impulseBrief(b.impulse).replace(/^放量冲击(向上|向下)：/, "")}
+            <button className="ml-1 text-accent underline-offset-2 hover:underline" onClick={() => onTab("watch")}>
+              详情在实时盯盘
+            </button>
+          </p>
+        )}
         <p className="mt-2 text-[11px] leading-relaxed text-ink-3">{b.foot}</p>
         <div className="mt-2 flex flex-wrap gap-2">
           <button className="rounded-lg border border-line px-3 py-1.5 text-[13px] text-accent hover:bg-panel-2" onClick={() => onTab("watch")}>

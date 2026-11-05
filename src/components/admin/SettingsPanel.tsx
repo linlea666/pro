@@ -102,20 +102,20 @@ export function SettingsPanel() {
   );
 }
 
-type WatchAlertConfig = { enabled: boolean; coins: string[]; turned: boolean; falling: boolean; to: string[]; dailyCap: number; siteUrl: string };
+type WatchAlertConfig = { enabled: boolean; coins: string[]; turned: boolean; falling: boolean; impulse?: boolean; to: string[]; dailyCap: number; siteUrl: string };
 type WatchAlertBody = { config: WatchAlertConfig; coins: string[]; mailTo: string[] };
 
 /** Watch alerts by mail: which coins, which states, who gets them; uses the SMTP settings above. */
 function WatchAlertForm() {
   const [b, setB] = useState<WatchAlertBody | null>(null);
-  const [form, setForm] = useState({ enabled: false, coins: [] as string[], turned: true, falling: false, to: "", dailyCap: 20, siteUrl: "" });
+  const [form, setForm] = useState({ enabled: false, coins: [] as string[], turned: true, falling: false, impulse: false, to: "", dailyCap: 20, siteUrl: "" });
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = (x: WatchAlertBody) => {
     setB(x);
     const c = x.config;
-    setForm({ enabled: c.enabled, coins: c.coins, turned: c.turned, falling: c.falling, to: c.to.join("\n"), dailyCap: c.dailyCap, siteUrl: c.siteUrl || (typeof window !== "undefined" ? window.location.origin : "") });
+    setForm({ enabled: c.enabled, coins: c.coins, turned: c.turned, falling: c.falling, impulse: !!c.impulse, to: c.to.join("\n"), dailyCap: c.dailyCap, siteUrl: c.siteUrl || (typeof window !== "undefined" ? window.location.origin : "") });
   };
   useEffect(() => {
     fetch("/api/admin/watch-alert")
@@ -159,6 +159,13 @@ function WatchAlertForm() {
                 <span>
                   别接：碰到 / 跌破关键位后还在创新低（新高）
                   <span className="block text-xs text-ink-3">默认关：碰到之后往往还会继续走，邮件会多不少，也不是该动手的时候。</span>
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-2">
+                <input type="checkbox" className="mt-1" checked={form.impulse} onChange={(e) => set("impulse", e.target.checked)} />
+                <span>
+                  放量冲击（别逆着做）：1 小时收盘 12 小时内走了 5 倍 ATR 以上、成交量 1.5 倍以上
+                  <span className="block text-xs text-ink-3">默认关：只提醒别摸顶做空 / 别接飞刀做多（E41：反着做每笔比随机差 0.14R），不是入场信号；BTC 最近一年大约每月 5 次（2020 年起每月约 6–7 次）。</span>
                 </span>
               </label>
             </div>

@@ -19,6 +19,7 @@ import { FamilyTag, watchLevelFamily } from "./level-tags";
 import { BreachBadge } from "./TrendMap";
 import { PhaseCard } from "./PhaseCard";
 import { BigTrendCard } from "./BigTrendCard";
+import { ImpulseLine } from "./ImpulseLine";
 import { againstBig, BIG_TREND_FACTS } from "@/lib/ta/bigtrend";
 import { fmtAtr, ruleLine, sideName, StatePill, stateWord } from "./watch-ui";
 
@@ -43,6 +44,7 @@ export function WatchTab({ v, mode, onPick }: { v: WatchView; mode: Mode; onPick
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div className="min-w-0 space-y-4">
         <BigTrendCard big={v.big} />
+        <ImpulseLine x={v.impulse} mode={mode} />
         <PhaseCard v={v} mode={mode} />
         <HeadCard v={v} s={rel} />
         <WhyWait v={v} dir={rel.dir} mode={mode} />

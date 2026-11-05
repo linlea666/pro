@@ -22,6 +22,7 @@
  *   <dataDir>/e30、e31 同 E41；<dataDir>/prem 放 E26 格式的 cb / bn / usdt / eth-cb / eth-bn.json（[秒, 收盘]）。
  */
 import { readFileSync } from "node:fs";
+import { impulseHolds } from "../../src/lib/ta/impulse.ts";
 
 const dir = process.argv[2];
 const TF: string = "1h";
@@ -236,7 +237,8 @@ const TT = new Map<Trade, number>();
 for (const c of COINS) {
   const { b, fund } = load(c);
   const j30 = JSON.parse(readFileSync(`${dir}/e30/${c}.json`, "utf8"));
-  const { disp, er, vol } = features(b);
+  const { vol } = features(b);
+  const atrs = b.map((x) => x.atr);
   const { dayOpen, base, qv } = dayInfo(b, j30.d1);
   const pr = premium(c, b);
   const loI = b.findIndex((x) => x.t >= START);
@@ -253,7 +255,8 @@ for (const c of COINS) {
   const doneDay = new Set<string>();
   for (let k = 200; k < b.length - 1; k++) {
     for (const d of [1, -1] as const) {
-      const imp = (i: number) => d * disp[i] >= K && er[i] >= ER_MIN && vol[i] >= VOLX;
+      // 冲击判定用页面同一份规则（src/lib/ta/impulse.ts，参数同 N / K / ER_MIN / VOLX）
+      const imp = (i: number) => impulseHolds(b, atrs, i, d);
       if (imp(k) && !imp(k - 1)) {
         go("C", k, d);
         if (qv[k] < 1 / 3) go("Cq", k, d);

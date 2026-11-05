@@ -344,6 +344,11 @@ async function main() {
       console.log(`收盘价 ${fp(v.closedPrice)}${v.forming ? `，最新价 ${fp(v.price)}` : ""}，1 小时 ATR ${fp(v.atr1h)}，扫损缓冲 ${v.buf} 倍 ATR${v.calibrated ? "" : "（默认值）"}，数据源 ${v.source}`);
       console.log(`\n${v.headline}`);
       printBig(v.big);
+      if (v.impulse) {
+        const { impulseLines } = await import("../src/lib/ta/impulse.ts");
+        console.log(`\n${v.impulse.active ? "放量冲击（进行中）" : "最近一次放量冲击"}：`);
+        for (const l of impulseLines(v.impulse, (t) => bj(t).slice(5))) console.log(`  ${l}`);
+      }
       if (v.phases) {
         console.log(`\n行情阶段：${v.phases.headline}`);
         for (const r of v.phases.rows) {

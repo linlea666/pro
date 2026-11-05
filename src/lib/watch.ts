@@ -18,6 +18,7 @@ import { BREAK_ATR, PIERCE_ATR, structureSeries, type StructureState } from "./t
 import { BEYOND_ATR, FRESH_BARS, keyLevelName, levelSource, pickLevels, turnAt, watchState, type KeyLevelKind, type WatchInput, type WatchLevel, type WatchSide, type WatchStateName } from "./ta/watch.ts";
 import { EARLY_FACT, EARLY_SWING_ATR, PHASE_NAMES, phaseAt, phaseFact, type Phase, type PhaseDir } from "./ta/phase.ts";
 import { barShape, type BarShape } from "./ta/barshape.ts";
+import { latestImpulse, quietRanks, type Impulse } from "./ta/impulse.ts";
 import { SIGN_SHORT, SIGNS, signsAt, type SignData, type SignKey } from "./ta/watchsigns.ts";
 import { latestReport, scoreRow, type ScoreRow } from "./trendplan.ts";
 import { TF_SECONDS, type Candle, type Timeframe } from "./types.ts";
@@ -171,6 +172,8 @@ export interface WatchView {
   big: BigTrend | null;
   /** 最近一根已收盘的 15 分钟、1 小时 K 线的影线和量能（只描述，E40 没有优势） */
   bars: { "15m": BarShape | null; "1h": BarShape | null };
+  /** 最近 240 根 1 小时里最新的一次放量冲击（E41，只描述）；页面只在 `active` 时显示 */
+  impulse: Impulse | null;
   replay: boolean;
 }
 
@@ -318,6 +321,20 @@ function lowerBound(arr: number[], x: number): number {
     else hi = mid;
   }
   return lo;
+}
+
+const quietCache = new Map<string, Map<number, number>>();
+
+/** 每个 UTC 日“之前 7 天”的波动分位（读本地存的 1 小时历史，要一年多），每币每小时算一次 */
+function quietOf(coin: string, end: number): Map<number, number> {
+  const key = `${coin}:${Math.floor(end / 3600)}`;
+  const hit = quietCache.get(key);
+  if (hit) return hit;
+  const m = quietRanks(loadHistory(coin, "1h", end));
+  for (const k of quietCache.keys()) if (k.startsWith(`${coin}:`)) quietCache.delete(k);
+  if (quietCache.size > 50) quietCache.clear();
+  quietCache.set(key, m);
+  return m;
 }
 
 const baseCache = new Map<string, { abs: number[]; topDrops: { t: number; pct: number }[] }>();
@@ -626,8 +643,18 @@ export async function computeWatch(coin: string, ep: EngineParams = DEFAULT_ENGI
     researchNote: research.note,
     big,
     bars: { "15m": barShape(c, n), "1h": barShape(h, h.length - 1) },
+    impulse: impulseOf(coin, h, hatr, end),
     replay: !live,
   };
+}
+
+function impulseOf(coin: string, h: Candle[], hatr: number[], end: number): Impulse | null {
+  try {
+    return latestImpulse(h, hatr, quietOf(coin, end));
+  } catch (e) {
+    logger.warn("engine", `放量冲击计算失败 ${coin}`, { error: (e as Error).message });
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------- cached entry points

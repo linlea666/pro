@@ -1,6 +1,7 @@
 import { fmtPrice, getWatch, type WatchView } from "../watch.ts";
 import { againstBig, BIG_TREND_FACTS, bigTrendRows, type BigTrend } from "../ta/bigtrend.ts";
 import type { WatchSide } from "../ta/watch.ts";
+import { IMPULSE_FACTS, impulseLines, type Impulse } from "../ta/impulse.ts";
 import { getDb } from "./db.ts";
 import { coinIds } from "./coins.ts";
 import { logger } from "./log.ts";
@@ -13,6 +14,8 @@ import { getState, setState } from "./settings.ts";
  * switched on, a fresh "别接" (touched or through a key level). One mail per event and attempt,
  * every coin of one close in one mail, at most `dailyCap` mails a day (Beijing time). The very
  * first run only records what is already going on. Uses the SMTP settings of the system alerts.
+ * Optionally (`impulse`, off by default) a fresh 1-hour volume impulse (E41, `ta/impulse.ts`):
+ * described only, the mail says "don't fade it", not "chase it".
  */
 
 export interface WatchAlertConfig {
@@ -21,6 +24,8 @@ export interface WatchAlertConfig {
   coins: string[];
   turned: boolean;
   falling: boolean;
+  /** 放量冲击（E41，只描述“别逆着做”），默认关 */
+  impulse: boolean;
   /** recipients; empty: the system-alert recipients */
   to: string[];
   dailyCap: number;
@@ -28,7 +33,7 @@ export interface WatchAlertConfig {
   siteUrl: string;
 }
 
-export const DEFAULT_WATCH_ALERT: WatchAlertConfig = { enabled: false, coins: [], turned: true, falling: false, to: [], dailyCap: 20, siteUrl: "" };
+export const DEFAULT_WATCH_ALERT: WatchAlertConfig = { enabled: false, coins: [], turned: true, falling: false, impulse: false, to: [], dailyCap: 20, siteUrl: "" };
 const CONFIG_KEY = "watch.alertConfig";
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const BAR = 900;
@@ -52,6 +57,7 @@ export function mergeWatchAlertConfig(input: WatchAlertInput, cur: WatchAlertCon
   if (input.enabled !== undefined) next.enabled = Boolean(input.enabled);
   if (input.turned !== undefined) next.turned = Boolean(input.turned);
   if (input.falling !== undefined) next.falling = Boolean(input.falling);
+  if (input.impulse !== undefined) next.impulse = Boolean(input.impulse);
   if (input.coins !== undefined) next.coins = list(input.coins).map((x) => x.toUpperCase());
   if (input.to !== undefined) next.to = list(input.to);
   if (input.dailyCap !== undefined) next.dailyCap = Math.floor(Number(input.dailyCap));
@@ -62,7 +68,7 @@ export function mergeWatchAlertConfig(input: WatchAlertInput, cur: WatchAlertCon
   if (next.to.length > 10) throw new Error("收件邮箱最多 10 个");
   if (!Number.isInteger(next.dailyCap) || next.dailyCap < 1 || next.dailyCap > 200) throw new Error("每天最多封数需在 1–200 之间");
   if (next.siteUrl && !/^https?:\/\/[^\s/]+$/.test(next.siteUrl)) throw new Error("网站地址格式不正确，例如 http://1.2.3.4:3000");
-  if (next.enabled && !next.turned && !next.falling) throw new Error("至少选一种要提醒的情况");
+  if (next.enabled && !next.turned && !next.falling && !next.impulse) throw new Error("至少选一种要提醒的情况");
   if (next.enabled && !(mail.host && mail.user && mail.passEnc && (next.to.length || mail.to.length))) {
     throw new Error("开启盯盘提醒前，请先在上面的“邮件与告警”里填好 SMTP 服务器、发件邮箱、授权码，并填写收件邮箱");
   }
@@ -88,8 +94,11 @@ export const alertMail = (cfg: WatchAlertConfig, mail: MailConfig = getMailConfi
 export interface WatchAlert {
   key: string;
   coin: string;
-  kind: "turned" | "falling";
-  side: WatchSide;
+  kind: "turned" | "falling" | "impulse";
+  /** the watch side (turned / falling); null for an impulse */
+  side: WatchSide | null;
+  /** the impulse (kind "impulse") */
+  impulse?: Impulse | null;
   /** the research sentence of the page, when there is a report */
   research: string | null;
   /** 周线、日线的大趋势（只描述），没有时省略 */
@@ -99,10 +108,17 @@ export interface WatchAlert {
 /** One key per event, state and attempt: a turn undone by a new extreme and made again is a new one. */
 export const alertKey = (coin: string, s: WatchSide) => `${coin}:${s.dir}:${s.event!.startT}:${s.state}:${s.event!.attempt}`;
 
-/** The alerts in `views` not in `seen`; `nowSec` is the latest close (turns older than an hour are left out). */
-export function pickAlerts(views: WatchView[], cfg: Pick<WatchAlertConfig, "turned" | "falling">, seen: Record<string, number>, nowSec: number): WatchAlert[] {
+/** One key per impulse (coin, direction, trigger bar). */
+export const impulseKey = (coin: string, x: Impulse) => `${coin}:impulse:${x.dir}:${x.t}`;
+
+/** The alerts in `views` not in `seen`; `nowSec` is the latest close (turns and impulses older than an hour are left out). */
+export function pickAlerts(views: WatchView[], cfg: Pick<WatchAlertConfig, "turned" | "falling"> & { impulse?: boolean }, seen: Record<string, number>, nowSec: number): WatchAlert[] {
   const out: WatchAlert[] = [];
   for (const v of views) {
+    const x = v.impulse;
+    if (cfg.impulse && x?.active && nowSec - (x.t + 3600) <= STALE_SEC && !seen[impulseKey(v.coin, x)]) {
+      out.push({ key: impulseKey(v.coin, x), coin: v.coin, kind: "impulse", side: null, impulse: x, research: null, big: v.big ?? null });
+    }
     for (const s of [v.long, v.short]) {
       if (!s.event) continue;
       const kind = s.state === "turned" ? "turned" : s.state === "falling" ? "falling" : null;
@@ -121,7 +137,8 @@ export function pickAlerts(views: WatchView[], cfg: Pick<WatchAlertConfig, "turn
 const bj = (sec: number) => new Date(sec * 1000).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
 export function alertTitle(a: WatchAlert): string {
-  const long = a.side.dir > 0;
+  if (a.kind === "impulse") return `${a.coin} 放量冲击${a.impulse!.dir > 0 ? "向上" : "向下"}：别逆着做`;
+  const long = a.side!.dir > 0;
   if (a.kind === "turned") return `${a.coin} 已转${long ? "强" : "弱"}`;
   return `${a.coin} 别接：${long ? "碰到关键低点后还在创新低" : "碰到关键高点后还在创新高"}`;
 }
@@ -134,8 +151,16 @@ export function sizeLine(entry: number, stop: number): string {
   return `按止损算仓位：止损距离 ${(dist * 100).toFixed(2)}%，每承担本金 1% 的风险，仓位约为本金的 ${mult.toFixed(2)} 倍（本金 1 万 U，仓位约 ${fmtPrice(10000 * mult)} U；超过 1 倍就要用杠杆，注意强平价）。`;
 }
 
+function impulseBlock(a: WatchAlert, siteUrl: string): string[] {
+  const x = a.impulse!;
+  const lines = [`【${alertTitle(a)}】`, ...impulseLines(x, bj), IMPULSE_FACTS.what];
+  if (siteUrl) lines.push(`页面：${siteUrl}/coin/${a.coin}?tab=watch`);
+  return lines;
+}
+
 function block(a: WatchAlert, siteUrl: string): string[] {
-  const s = a.side, ev = s.event!;
+  if (a.kind === "impulse") return impulseBlock(a, siteUrl);
+  const s = a.side!, ev = s.event!;
   const long = s.dir > 0;
   const lines = [`【${alertTitle(a)}】${long ? "做多一侧" : "做空一侧"}`];
   if (s.level) lines.push(`关键位：${s.level.name} ${fmtPrice(s.level.price)}（${bj(ev.startT)} 碰到）`);
@@ -158,10 +183,13 @@ function block(a: WatchAlert, siteUrl: string): string[] {
 export function alertMailText(alerts: WatchAlert[], siteUrl = "", capNote = ""): { subject: string; text: string } {
   const subject = `盯盘提醒：${alerts.map(alertTitle).map((t) => t.split("：")[0]).join("、")}`;
   const research = alerts.find((a) => a.research)?.research;
+  const watchOnes = alerts.some((a) => a.kind !== "impulse");
   const lines = [
     ...alerts.flatMap((a) => [...block(a, siteUrl), ""]),
-    research ?? "转强不预测方向，只是让你少接飞刀：等它出现再进，止损放在最新的低点（高点）之外。",
-    "价格按 15 分钟已收盘的 K 线计算，从走出来到收到邮件最多约 15 分钟，再加上邮件投递的时间；下单前先打开页面看一眼现价。",
+    ...(watchOnes ? [research ?? "转强不预测方向，只是让你少接飞刀：等它出现再进，止损放在最新的低点（高点）之外。"] : []),
+    watchOnes
+      ? "价格按 15 分钟已收盘的 K 线计算，从走出来到收到邮件最多约 15 分钟，再加上邮件投递的时间；下单前先打开页面看一眼现价。"
+      : "放量冲击按 1 小时已收盘的 K 线计算，收盘后约 15 分钟内发出；下单前先打开页面看一眼现价。",
     ...(capNote ? ["", capNote] : []),
     "",
     "不想再收：后台“系统设置 → 盯盘邮件提醒”里关掉。",
@@ -243,10 +271,13 @@ export async function sendTestAlert(input: WatchAlertInput): Promise<string[]> {
   const cfg = mergeWatchAlertConfig({ ...input, enabled: false });
   const mail = alertMail(cfg);
   if (!mailReady(mail)) throw new Error("邮件还没有配置完整：请先在上面的“邮件与告警”里填好并保存，再填收件邮箱");
-  const lines: string[] = ["这是一封测试提醒。正式提醒只在出现“已转强 / 已转弱”" + (cfg.falling ? "或“别接”" : "") + "时发，内容和下面的格式一样。", "", "现在的盯盘状态："];
+  const kinds = [cfg.turned ? "“已转强 / 已转弱”" : "", cfg.falling ? "“别接”" : "", cfg.impulse ? "“放量冲击”" : ""].filter(Boolean);
+  const lines: string[] = [`这是一封测试提醒。正式提醒只在出现${kinds.join("或") || "“已转强 / 已转弱”"}时发。`, "", "现在的盯盘状态："];
   for (const coin of watchedCoins(cfg)) {
     try {
-      lines.push(`· ${(await getWatch(coin)).headline}`);
+      const v = await getWatch(coin);
+      lines.push(`· ${v.headline}`);
+      if (cfg.impulse && v.impulse?.active) lines.push(`  ${impulseLines(v.impulse, bj)[0]}`);
     } catch (e) {
       lines.push(`· ${coin}：计算失败（${(e as Error).message}）`);
     }
