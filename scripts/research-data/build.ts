@@ -12,6 +12,8 @@
  * Monthly files up to the month before --end, daily files for --end's month. Hourly open interest comes from
  * `signallight history --sync` / archive.ts instead.
  *
+ * COINS=BTC,ETH limits the perp coins (default: RESEARCH_COINS).
+ *
  * Never start the web server on this database: its daily cleanup prunes candles to KEEP_DAYS. Run research on it
  * with the CLI or a script, and copy it first if a server must run on it.
  */
@@ -30,7 +32,8 @@ const END = endArg > 0 ? process.argv[endArg + 1] : new Date(Date.now() - 86400_
 const { unzipSingle } = await import("../../src/lib/data/archive.ts");
 const { store } = await import("../../src/lib/data/klines.ts");
 const { getDb } = await import("../../src/lib/server/db.ts");
-const { RESEARCH_COINS } = await import("../../src/lib/symbols.ts");
+const { RESEARCH_COINS: ALL_COINS } = await import("../../src/lib/symbols.ts");
+const RESEARCH_COINS = process.env.COINS ? process.env.COINS.split(",") : ALL_COINS;
 type Timeframe = import("../../src/lib/types.ts").Timeframe;
 type Candle = import("../../src/lib/types.ts").Candle;
 
