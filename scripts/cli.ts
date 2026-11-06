@@ -353,6 +353,11 @@ async function main() {
         const { bigDayLine } = await import("../src/lib/ta/bigday.ts");
         console.log(`\n${bigDayLine(v.bigDay)}`);
       }
+      if (v.flush) {
+        const { flushLines } = await import("../src/lib/ta/flush.ts");
+        console.log("\n扫低后的费率和持仓（只描述）：");
+        for (const l of flushLines(v.flush)) console.log(`  ${l}`);
+      }
       if (v.phases) {
         console.log(`\n行情阶段：${v.phases.headline}`);
         for (const r of v.phases.rows) {

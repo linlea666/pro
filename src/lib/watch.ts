@@ -20,6 +20,7 @@ import { EARLY_FACT, EARLY_SWING_ATR, PHASE_NAMES, phaseAt, phaseFact, type Phas
 import { barShape, type BarShape } from "./ta/barshape.ts";
 import { latestImpulse, quietRanks, type Impulse } from "./ta/impulse.ts";
 import { bigDayAt, type BigDay } from "./ta/bigday.ts";
+import { FLUSH_FACTS, FLUSH_RULES, flushAt, sweptLow, type Flush } from "./ta/flush.ts";
 import { SIGN_SHORT, SIGNS, signsAt, type SignData, type SignKey } from "./ta/watchsigns.ts";
 import { latestReport, scoreRow, type ScoreRow } from "./trendplan.ts";
 import { TF_SECONDS, type Candle, type Timeframe } from "./types.ts";
@@ -177,6 +178,8 @@ export interface WatchView {
   impulse: Impulse | null;
   /** 昨天是大波动日时的背景（E42 D1，只描述，只有 BTC / ETH）；不是时为 null */
   bigDay: BigDay | null;
+  /** 扫过 7 天低点之后 24 小时内：那根收盘时的资金费率和持仓量状态（E43，只描述，只有 BTC / ETH）；不是时为 null */
+  flush: Flush | null;
   replay: boolean;
 }
 
@@ -648,6 +651,7 @@ export async function computeWatch(coin: string, ep: EngineParams = DEFAULT_ENGI
     bars: { "15m": barShape(c, n), "1h": barShape(h, h.length - 1) },
     impulse: impulseOf(coin, h, hatr, end),
     bigDay: bigDayAt(coin, d1, h, end),
+    flush: flushOf(coin, h),
     replay: !live,
   };
 }
@@ -659,6 +663,31 @@ function impulseOf(coin: string, h: Candle[], hatr: number[], end: number): Impu
     logger.warn("engine", `放量冲击计算失败 ${coin}`, { error: (e as Error).message });
     return null;
   }
+}
+
+const flushCache = new Map<string, Flush | null>();
+
+/** 扫低后的合约状态：最近 24 根已收盘 1 小时里有扫过 7 天低点才读费率和一年的持仓量；每币每根 1 小时算一次 */
+function flushOf(coin: string, h: Candle[]): Flush | null {
+  if (!FLUSH_FACTS[coin] || !h.length) return null;
+  const last = h.length - 1;
+  let swept = false;
+  for (let i = last; i > last - FLUSH_RULES.showHours && i >= 0 && !swept; i--) swept = sweptLow(h, i) != null;
+  if (!swept) return null;
+  const end = h[last].t + 3600;
+  const key = `${coin}:${end}`;
+  if (flushCache.has(key)) return flushCache.get(key)!;
+  let x: Flush | null = null;
+  try {
+    const oi = openInterestSeries(coin, end, end - (FLUSH_RULES.rankDays + 2) * 86400);
+    x = flushAt(coin, h, fundingRows(coin, end), oi);
+  } catch (e) {
+    logger.warn("engine", `扫低后的合约状态计算失败 ${coin}`, { error: (e as Error).message });
+  }
+  if (flushCache.size > 100) flushCache.clear();
+  // 持仓量每小时才同步一次：缺数据的结果不缓存，下一轮再试
+  if (x) flushCache.set(key, x);
+  return x;
 }
 
 // ---------------------------------------------------------------- cached entry points
