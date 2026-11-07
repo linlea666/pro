@@ -15,6 +15,8 @@ import { ReplayContext, useReplay } from "./replay";
 import { Section } from "./shared";
 import { BreachBadge, TrendMap } from "./TrendMap";
 import { BigTrendCard } from "./BigTrendCard";
+import { FundingLine } from "./FundingLine";
+import { fundingCost } from "@/lib/ta/funding";
 
 const ALIGN: Record<SidePlan["alignment"], { text: string; color: string }> = {
   with: { text: "顺大周期", color: "var(--up)" },
@@ -88,6 +90,7 @@ export function TrendPlanTab({ p, mode, fw, onFw, onPick }: { p: TrendPlan; mode
           </div>
         )}
         <BigTrendCard big={p.big} />
+        <FundingLine f={p.funding} mode={mode} />
         <TrendMap p={p} mode={mode} />
         <PlanChart p={p} ch={ch} onPick={onPick} />
         <div className="grid gap-4 md:grid-cols-2">
@@ -202,6 +205,7 @@ function PlanCard({
           <Row k="仓位">
             {s.size === "half" ? "半仓（按风险算出的仓位再减半）" : "按风险算出的正常仓位"}
             {s.costR != null && <span className="text-ink-3">；成本（手续费、滑点和持仓期资金费）约 {s.costR.toFixed(2)}R</span>}
+            {p.funding && <div className="text-[12px] text-ink-3">现在的费率下，{fundingCost(p.funding, s.side === "long" ? 1 : -1)}</div>}
           </Row>
         </dl>
       )}

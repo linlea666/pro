@@ -1,5 +1,5 @@
 import { closedThrough, type KlineResult } from "./data/klines.ts";
-import { getPerpSnapshot, openInterestSeries } from "./data/perp.ts";
+import { fundingHistory, getPerpSnapshot, openInterestSeries, type PerpSnapshot } from "./data/perp.ts";
 import { cutoff, horizonText, keyLevels, relevel, ReplayError, seriesAt } from "./analysis.ts";
 import { logger } from "./server/log.ts";
 import { currentParams } from "./server/params-store.ts";
@@ -14,6 +14,7 @@ import { defenseTiers, type DefenseLine } from "./ta/tiers.ts";
 import { weekLine, type WeekLine } from "./ta/weekline.ts";
 import { bigTrendOf, type BigTrend } from "./ta/bigtrend.ts";
 import { marketBrief, type MarketBrief } from "./ta/brief.ts";
+import { FUNDING_RULES, fundingView, type FundingView } from "./ta/funding.ts";
 import type { Level } from "./ta/levels.ts";
 import { describeStructure, structureDirection, structureSeries, swings, type StructureState, type StructureView, type Swing } from "./ta/structure.ts";
 import { TF_LABEL, TF_SECONDS, type Candle, type Timeframe } from "./types.ts";
@@ -167,6 +168,8 @@ export interface TrendPlan {
   week50: WeekLine | null;
   /** 周线、日线的大趋势（只描述）；数据不够时为 null */
   big: BigTrend | null;
+  /** 资金费率：谁付谁、付得多不多（只描述）；没有数据时为 null */
+  funding: FundingView | null;
   /** 行情导视（总览顶部，只组装上面这些结果；只有 4 小时节奏，数据不够时为 null） */
   brief: MarketBrief | null;
   /** research on defended levels and near stops: rows the lessons quote, and a line per stall sign */
@@ -511,6 +514,7 @@ export async function computeTrendPlan(coin: string, fw: Framework, ep: EnginePa
     lessons: LESSON_KEYS.map((k) => rows.get(k)).filter((x): x is ResearchRow => !!x).map(scoreRow),
     week50: weekLine((frames.get("1w")?.c ?? []).map((x) => x.c)),
     big,
+    funding: fundingOf(coin, perp, end, replayEnd != null),
     brief: F.tf === "4h" ? marketBrief({ price: live, h4: E, h1: frames.get("1h") ?? null, big, supports: all.supports.map(levelOut), resistances: all.resistances.map(levelOut), mult, bigDay: bigDayOf(coin, frames.get("1d")?.c, frames.get("1h")?.c) }) : null,
     defenses: (() => {
       const tierIn = { tf: F.tf, c: E.c, atr: E.atr, sw: E.sw, higherTf: F.filter, higher: H.ss[H.ss.length - 1] ?? null, daily: frames.get("1d")?.c ?? [], endSec: E.c[L].t + TF_SECONDS[F.tf], live };
@@ -614,6 +618,17 @@ export async function getTrendPlan(coin: string, fw: Framework): Promise<TrendPl
     else cache.delete(key);
     throw e;
   }
+}
+
+/** 实时用交易所本期费率，回放用当时最近一次已结算的；分位、近 7 天平均、连续几期都只用已结算的历史。 */
+function fundingOf(coin: string, perp: PerpSnapshot | null, end: number, replay: boolean): FundingView | null {
+  const history = fundingHistory(coin, end, FUNDING_RULES.days);
+  const gap = history.length >= 2 ? Math.round((history[history.length - 1].t - history[history.length - 2].t) / 3600) : null;
+  if (!replay && perp) return fundingView({ rate: perp.fundingRate, intervalH: perp.intervalHours ?? gap, live: true, nextAt: perp.nextFundingTime || null, history, at: end });
+  const last = history[history.length - 1];
+  // 回放：最近一次结算要在 12 小时内，不然当时没有数据
+  if (!last || end - last.t > 12 * 3600) return null;
+  return fundingView({ rate: last.rate, intervalH: gap, live: false, nextAt: null, history, at: end });
 }
 
 const replayCache = new Map<string, Promise<TrendPlan>>();

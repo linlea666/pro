@@ -100,6 +100,17 @@ export function openInterestSeries(coin: string, toSec: number, fromSec = 0): Oi
   return rows.length ? { t: rows.map((r) => r.t), oi: rows.map((r) => r.oi) } : null;
 }
 
+/** Settled funding rates of the primary source from `toSec − days` to `toSec`, oldest first; empty without a database. */
+export function fundingHistory(coin: string, toSec: number, days = 90): { t: number; rate: number }[] {
+  try {
+    return getDb()
+      .prepare("SELECT t, rate FROM funding_rates WHERE coin = ? AND source = ? AND t <= ? AND t > ? ORDER BY t")
+      .all(coin, PRIMARY_SOURCE, toSec, toSec - days * 86400) as { t: number; rate: number }[];
+  } catch {
+    return [];
+  }
+}
+
 const cache = new Map<string, { at: number; value: PerpSnapshot }>();
 const TTL_MS = 60_000;
 

@@ -38,6 +38,7 @@ import { backupNow } from "../src/lib/server/jobs.ts";
 import type { ResearchReport } from "../src/lib/research/run.ts";
 import { weekLineText } from "../src/lib/ta/weekline.ts";
 import { briefText } from "../src/lib/ta/brief.ts";
+import { fundingLines } from "../src/lib/ta/funding.ts";
 import { againstBig, bigTrendLine, bigTrendRows, type BigTrend } from "../src/lib/ta/bigtrend.ts";
 
 const printBig = (b: BigTrend | null) => {
@@ -289,6 +290,7 @@ async function main() {
       console.log(`收盘价 ${fp(p.closedPrice)}，ATR ${fp(p.atr)}，数据源 ${p.source}${p.calibrated ? "" : "，缓冲用默认值"}`);
       printBig(p.big);
       if (p.brief) console.log(`\n${briefText(p.brief).join("\n")}`);
+      if (p.funding) console.log(`\n${fundingLines(p.funding, (t) => bj(t).slice(11)).join("\n")}`);
       console.log(`\n${p.headline}\n${p.bias}`);
       for (const m of p.map) console.log(`  ${m.tf.padEnd(3)} ${m.view.label}：${m.view.position}`);
       if (p.week50) console.log(`  周线${weekLineText(p.week50)}，均线 ${fp(p.week50.sma)}（只描述长期趋势，不预测涨跌）`);
