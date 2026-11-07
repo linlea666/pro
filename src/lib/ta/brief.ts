@@ -4,6 +4,7 @@ import { PHASE_FACTS, PHASE_NAMES, phaseAt, type Phase, type PhaseDir } from "./
 import { DEFAULT_SWING_ATR, type StructureState } from "./structure.ts";
 import { IMPULSE_FACTS, impulseHeadline, latestImpulse, type Impulse } from "./impulse.ts";
 import { bigDayLine, type BigDay } from "./bigday.ts";
+import { squeezeBrief, type Squeeze } from "./squeeze.ts";
 
 /**
  * 行情导视（2026-10-31，借鉴竞品“行情导视”长图的版式）：币页总览顶部的一张卡，把已有模块的结果拼成一页——
@@ -65,6 +66,8 @@ export interface MarketBrief {
   impulse: Impulse | null;
   /** 昨天是大波动日时（E42 D1，同实时盯盘的那一行）；只描述 */
   bigDay: BigDay | null;
+  /** 之前 7 天的波动压到一年最低 10% 以内时（E46，同实时盯盘的那一行）；只描述，不是变盘信号 */
+  squeeze: Squeeze | null;
   foot: string;
 }
 
@@ -80,6 +83,8 @@ export interface BriefInput {
   mult?: number;
   /** `bigDayAt` 的结果（调用方算好，可省略） */
   bigDay?: BigDay | null;
+  /** `squeezeAt` 的结果（调用方算好，可省略） */
+  squeeze?: Squeeze | null;
 }
 
 export const BRIEF_FOOT =
@@ -239,7 +244,7 @@ export function marketBrief(x: BriefInput): MarketBrief | null {
 
   const imp = x.h1 && x.h1.c.length > 150 ? latestImpulse(x.h1.c, x.h1.atr) : null;
 
-  return { t: x.h4.c[n4].t, title, line, numbers: kept, band, cells, next: nextRows, against, impulse: imp?.active ? imp : null, bigDay: x.bigDay ?? null, foot: BRIEF_FOOT };
+  return { t: x.h4.c[n4].t, title, line, numbers: kept, band, cells, next: nextRows, against, impulse: imp?.active ? imp : null, bigDay: x.bigDay ?? null, squeeze: x.squeeze ?? null, foot: BRIEF_FOOT };
 }
 
 /** 命令行和测试用的纯文字版 */
@@ -253,6 +258,7 @@ export function briefText(b: MarketBrief): string[] {
   if (b.against) out.push(`  ${b.against}`);
   if (b.impulse) out.push(`  ${impulseBrief(b.impulse)}`);
   if (b.bigDay) out.push(`  ${bigDayLine(b.bigDay)}`);
+  if (b.squeeze) out.push(`  ${squeezeBrief(b.squeeze)}`);
   return out;
 }
 

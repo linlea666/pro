@@ -108,10 +108,10 @@ export function trailFrom(c: Candle[], atr: number[], k: number, d: 1 | -1, last
 }
 
 /**
- * 每个 UTC 日开始时，之前 168 根 1 小时收益的标准差在之前 365 天里的分位。`h` 是 1 小时 K 线（要有一年多）。
- * 返回 Map：UTC 日 0 点（秒）→ 分位 0–1。
+ * 每个 UTC 日开始时，之前 168 根 1 小时收益的标准差（`sd`），以及它在之前 365 天里的分位（`rank`，0–1）。
+ * `h` 是 1 小时 K 线（要有一年多）。键都是 UTC 日 0 点（秒）。波动压缩（squeeze.ts）也用这一份。
  */
-export function quietRanks(h: Candle[]): Map<number, number> {
+export function quietStats(h: Candle[]): { sd: Map<number, number>; rank: Map<number, number> } {
   const R = IMPULSE_RULES;
   const sd = new Map<number, number>();
   let cur = -1;
@@ -129,15 +129,20 @@ export function quietRanks(h: Candle[]): Map<number, number> {
     sd.set(day, Math.sqrt(Math.max(0, (s2 - (s * s) / m) / (m - 1))));
   }
   const days = [...sd.keys()].sort((a, b) => a - b);
-  const out = new Map<number, number>();
+  const rank = new Map<number, number>();
   days.forEach((d, k) => {
     if (k < R.quietDays) return;
     const v = sd.get(d)!;
     let lo = 0;
     for (let j = k - R.quietDays; j < k; j++) if (sd.get(days[j])! < v) lo++;
-    out.set(d, lo / R.quietDays);
+    rank.set(d, lo / R.quietDays);
   });
-  return out;
+  return { sd, rank };
+}
+
+/** 每个 UTC 日开始时，之前 168 根 1 小时收益的标准差在之前 365 天里的分位（0–1） */
+export function quietRanks(h: Candle[]): Map<number, number> {
+  return quietStats(h).rank;
 }
 
 export const quietLabelOf = (q: number | null): QuietLabel | null => (q == null ? null : q < 1 / 3 ? "安静" : q >= 2 / 3 ? "动荡" : "正常");

@@ -19,6 +19,7 @@ import type { Level } from "./ta/levels.ts";
 import { describeStructure, structureDirection, structureSeries, swings, type StructureState, type StructureView, type Swing } from "./ta/structure.ts";
 import { TF_LABEL, TF_SECONDS, type Candle, type Timeframe } from "./types.ts";
 import { bigDayAt, type BigDay } from "./ta/bigday.ts";
+import { squeezeOf } from "./quiet.ts";
 
 /**
  * The trend map and the trading plans for one coin: the structure on every
@@ -335,6 +336,7 @@ function bigDayOf(coin: string, daily: Candle[] | undefined, hourly: Candle[] | 
   return daily && hourly && last ? bigDayAt(coin, daily, hourly, last.t + 3600) : null;
 }
 
+
 function frame(tf: Timeframe, c: Candle[], mult: number): Frame {
   const atr = atrSeries(c);
   return { tf, c, atr, ss: structureSeries(c, atr, mult), sw: swings(c, atr, mult) };
@@ -515,7 +517,7 @@ export async function computeTrendPlan(coin: string, fw: Framework, ep: EnginePa
     week50: weekLine((frames.get("1w")?.c ?? []).map((x) => x.c)),
     big,
     funding: fundingOf(coin, perp, end, replayEnd != null),
-    brief: F.tf === "4h" ? marketBrief({ price: live, h4: E, h1: frames.get("1h") ?? null, big, supports: all.supports.map(levelOut), resistances: all.resistances.map(levelOut), mult, bigDay: bigDayOf(coin, frames.get("1d")?.c, frames.get("1h")?.c) }) : null,
+    brief: F.tf === "4h" ? marketBrief({ price: live, h4: E, h1: frames.get("1h") ?? null, big, supports: all.supports.map(levelOut), resistances: all.resistances.map(levelOut), mult, bigDay: bigDayOf(coin, frames.get("1d")?.c, frames.get("1h")?.c), squeeze: squeezeOf(coin, frames.get("1h")?.c, end) }) : null,
     defenses: (() => {
       const tierIn = { tf: F.tf, c: E.c, atr: E.atr, sw: E.sw, higherTf: F.filter, higher: H.ss[H.ss.length - 1] ?? null, daily: frames.get("1d")?.c ?? [], endSec: E.c[L].t + TF_SECONDS[F.tf], live };
       return { long: defenseTiers(tierIn, 1), short: defenseTiers(tierIn, -1) };

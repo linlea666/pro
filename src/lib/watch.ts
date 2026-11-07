@@ -18,7 +18,9 @@ import { BREAK_ATR, PIERCE_ATR, structureSeries, type StructureState } from "./t
 import { BEYOND_ATR, FRESH_BARS, keyLevelName, levelSource, pickLevels, turnAt, watchState, type KeyLevelKind, type WatchInput, type WatchLevel, type WatchSide, type WatchStateName } from "./ta/watch.ts";
 import { EARLY_FACT, EARLY_SWING_ATR, PHASE_NAMES, phaseAt, phaseFact, type Phase, type PhaseDir } from "./ta/phase.ts";
 import { barShape, type BarShape } from "./ta/barshape.ts";
-import { latestImpulse, quietRanks, type Impulse } from "./ta/impulse.ts";
+import { latestImpulse, type Impulse } from "./ta/impulse.ts";
+import type { Squeeze } from "./ta/squeeze.ts";
+import { quietOf, squeezeOf } from "./quiet.ts";
 import { bigDayAt, type BigDay } from "./ta/bigday.ts";
 import { FLUSH_FACTS, FLUSH_RULES, flushAt, sweptLow, type Flush } from "./ta/flush.ts";
 import { SIGN_SHORT, SIGNS, signsAt, type SignData, type SignKey } from "./ta/watchsigns.ts";
@@ -180,6 +182,8 @@ export interface WatchView {
   bigDay: BigDay | null;
   /** 扫过 7 天低点之后 24 小时内：那根收盘时的资金费率和持仓量状态（E43，只描述，只有 BTC / ETH）；不是时为 null */
   flush: Flush | null;
+  /** 之前 7 天的波动压到一年最低 10% 以内时（E46，只描述，只有 BTC / ETH，不是变盘信号）；不是时为 null */
+  squeeze: Squeeze | null;
   replay: boolean;
 }
 
@@ -327,20 +331,6 @@ function lowerBound(arr: number[], x: number): number {
     else hi = mid;
   }
   return lo;
-}
-
-const quietCache = new Map<string, Map<number, number>>();
-
-/** 每个 UTC 日“之前 7 天”的波动分位（读本地存的 1 小时历史，要一年多），每币每小时算一次 */
-function quietOf(coin: string, end: number): Map<number, number> {
-  const key = `${coin}:${Math.floor(end / 3600)}`;
-  const hit = quietCache.get(key);
-  if (hit) return hit;
-  const m = quietRanks(loadHistory(coin, "1h", end));
-  for (const k of quietCache.keys()) if (k.startsWith(`${coin}:`)) quietCache.delete(k);
-  if (quietCache.size > 50) quietCache.clear();
-  quietCache.set(key, m);
-  return m;
 }
 
 const baseCache = new Map<string, { abs: number[]; topDrops: { t: number; pct: number }[] }>();
@@ -652,18 +642,20 @@ export async function computeWatch(coin: string, ep: EngineParams = DEFAULT_ENGI
     impulse: impulseOf(coin, h, hatr, end),
     bigDay: bigDayAt(coin, d1, h, end),
     flush: flushOf(coin, h),
+    squeeze: squeezeOf(coin, h, end),
     replay: !live,
   };
 }
 
 function impulseOf(coin: string, h: Candle[], hatr: number[], end: number): Impulse | null {
   try {
-    return latestImpulse(h, hatr, quietOf(coin, end));
+    return latestImpulse(h, hatr, quietOf(coin, end).rank);
   } catch (e) {
     logger.warn("engine", `放量冲击计算失败 ${coin}`, { error: (e as Error).message });
     return null;
   }
 }
+
 
 const flushCache = new Map<string, Flush | null>();
 

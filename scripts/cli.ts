@@ -360,6 +360,10 @@ async function main() {
         console.log("\n扫低后的费率和持仓（只描述）：");
         for (const l of flushLines(v.flush)) console.log(`  ${l}`);
       }
+      if (v.squeeze) {
+        const { squeezeLines } = await import("../src/lib/ta/squeeze.ts");
+        console.log(`\n${squeezeLines(v.squeeze).join("\n")}`);
+      }
       if (v.phases) {
         console.log(`\n行情阶段：${v.phases.headline}`);
         for (const r of v.phases.rows) {

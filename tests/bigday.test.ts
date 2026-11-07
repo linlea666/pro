@@ -77,6 +77,6 @@ test("facts: every position has its sentence, the numbers on it, and nothing pre
 
 test("briefText prints the line when the brief carries one", () => {
   const x = bigDayAt("BTC", days(6, 0.9), hours([[100, 102]]), today + 3600)!;
-  const b = { title: "t", line: "l", numbers: [], band: null, cells: [], next: [], against: null, impulse: null, bigDay: x, foot: "", t: 0 } as MarketBrief;
+  const b = { title: "t", line: "l", numbers: [], band: null, cells: [], next: [], against: null, impulse: null, bigDay: x, squeeze: null, foot: "", t: 0 } as MarketBrief;
   assert.ok(briefText(b).some((l) => l.includes("昨天是大波动日")));
 });

@@ -22,6 +22,7 @@ import { BigTrendCard } from "./BigTrendCard";
 import { ImpulseLine } from "./ImpulseLine";
 import { BigDayLine } from "./BigDayLine";
 import { FlushLine } from "./FlushLine";
+import { SqueezeLine } from "./SqueezeLine";
 import { againstBig, BIG_TREND_FACTS } from "@/lib/ta/bigtrend";
 import { fmtAtr, ruleLine, sideName, StatePill, stateWord } from "./watch-ui";
 
@@ -49,6 +50,7 @@ export function WatchTab({ v, mode, onPick }: { v: WatchView; mode: Mode; onPick
         <ImpulseLine x={v.impulse} mode={mode} />
         <BigDayLine x={v.bigDay} mode={mode} />
         <FlushLine x={v.flush} mode={mode} />
+        <SqueezeLine x={v.squeeze} mode={mode} />
         <PhaseCard v={v} mode={mode} />
         <HeadCard v={v} s={rel} />
         <WhyWait v={v} dir={rel.dir} mode={mode} />
