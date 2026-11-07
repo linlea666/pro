@@ -52,7 +52,7 @@ export function FibTab({ a, mtf, mode, onTf }: TabProps) {
   const zone = fib ? Math.max(0, fib.currentRatio) : 0;
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div className="min-w-0 space-y-4">
         <section className="card p-3">
           <div className="mb-2 flex flex-wrap items-center gap-2 px-1 text-xs">

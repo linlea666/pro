@@ -74,7 +74,7 @@ export function IndicatorsTab({ a, mtf, mode, onTf }: TabProps) {
   const readings = a.indicators.readings.filter((r) => cat === "all" || r.category === cat);
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_400px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_400px]">
       <div className="min-w-0 space-y-4">
         <section className="card p-4">
           <div className="flex flex-wrap items-end gap-4">

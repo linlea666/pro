@@ -51,7 +51,7 @@ export function LevelsTab({ a, mtf, mode, onTf }: TabProps) {
   const tfs = mode === "pro" ? TIMEFRAMES : BEGINNER_TIMEFRAMES;
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
       <div className="min-w-0 space-y-4">
         <section className="card p-3">
           <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-2 px-1 text-xs">

@@ -77,7 +77,7 @@ export function TrendPlanTab({ p, mode, fw, onFw, onPick }: { p: TrendPlan; mode
   const ch = chosenOf(p, pick.plan === "defend" && !p[side].defend ? { ...pick, plan: "main" } : pick);
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div className="min-w-0 space-y-4">
         {mode === "pro" && (
           <div className="flex flex-wrap items-center gap-2 text-xs text-ink-3">
@@ -112,7 +112,7 @@ export function TrendPlanTab({ p, mode, fw, onFw, onPick }: { p: TrendPlan; mode
         </p>
       </div>
 
-      <div className="space-y-4">
+      <div className="min-w-0 space-y-4">
         <PriceLadder p={p} ch={ch} />
         <PlanCalc p={p} ch={ch} onStop={(stop) => setPick({ ...pick, plan: ch.plan, stop })} />
         {!p.replay && <PositionCheck current={p} />}

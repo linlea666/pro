@@ -44,7 +44,7 @@ export function Overview({ a, mtf, mode, plan, onTf, onTab }: { a: Analysis; mtf
   }, [a, v.stopRef, hoverLevel]);
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div className="min-w-0 space-y-4">
         {/* 行情导视：一页看完在哪、盯哪几个收盘价；新手模式有它就不再重复趋势地图（计划页里有完整的） */}
         {plan?.brief && <BriefCard p={plan} onTab={onTab} />}

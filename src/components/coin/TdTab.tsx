@@ -53,7 +53,7 @@ export function TdTab({ a, mtf, mode, onTf }: TabProps) {
     : "当前没有在计数。";
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div className="min-w-0 space-y-4">
         <TdBriefCard a={a} mtf={mtf} mode={mode} />
         <section className="card p-3">

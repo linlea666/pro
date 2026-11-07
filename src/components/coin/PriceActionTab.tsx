@@ -69,7 +69,7 @@ export function PriceActionTab({ v, mode, pf, onPf, onPick }: { v: PaView; mode:
       <ChecklistCard v={v} />
       <p className="rounded-lg bg-panel-2 px-3 py-2 text-[13px] leading-relaxed text-ink">形态不是信号：它的价值是买点和认错位都清楚、仓位好算，不是预测涨跌。</p>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
         <div className="min-w-0 space-y-4">
           {main && <SizeCard v={v} x={main} />}
           <PaChart v={v} mode={mode} main={main} onPick={onPick} />

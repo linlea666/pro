@@ -46,7 +46,7 @@ export function ChanTab({ a, mtf, mode, onTf }: TabProps) {
   const recent = [...ch.points].reverse().slice(0, 6);
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div className="min-w-0 space-y-4">
         <section className="card p-3">
           <div className="mb-1 flex items-center gap-3 px-1 text-xs text-ink-3">

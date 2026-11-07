@@ -43,7 +43,7 @@ export function WatchTab({ v, mode, onPick }: { v: WatchView; mode: Mode; onPick
   const rel = relevantSide(v);
   const notify = useWatchNotify(v, rel);
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div className="min-w-0 space-y-4">
         <BigTrendCard big={v.big} />
         <ImpulseLine x={v.impulse} mode={mode} />

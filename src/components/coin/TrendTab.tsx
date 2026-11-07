@@ -44,7 +44,7 @@ export function TrendTab({ a, mtf, mode, onTf }: TabProps) {
   const voters = a.indicators.readings.filter((r) => TREND_IDS.includes(r.id));
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div className="min-w-0 space-y-4">
         <section className="card p-3">
           <PriceChart candles={a.candles} lines={lines} panes={panes} height={380} initialBars={220} />
