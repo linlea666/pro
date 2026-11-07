@@ -14,7 +14,11 @@ export const FUNDING_RULES = {
   normal8h: 0.00015,
   /** 绝对值超过它算“很高” */
   high8h: 0.0003,
-  /** 拥挤：在之前 days 天已结算的费率里排在最高 / 最低 crowdPct%（同研究 fundingFuel 的口径） */
+  /**
+   * 拥挤：在之前 days 天已结算的费率里排在最高 / 最低 crowdPct%（同研究 fundingFuel 的口径），
+   * 并且多头要高于“正常”（> normal8h）、空头要真的为负（< −flat8h）。只看排位时，BTC 2026-05 到 10 月
+   * 没有一期超过默认的 0.01%，默认值本身就排在前 20%，会把“正常”写成“拥挤”（2026-11-07 回看 8/19 那段发现）。
+   */
   days: 90,
   crowdPct: 20,
   /** 已结算的少于这么多期不算分位 */
@@ -77,7 +81,11 @@ export function fundingView(o: { rate: number; intervalH: number | null; live: b
   const past = o.history.filter((h) => h.t <= o.at);
   const win = past.filter((h) => h.t > o.at - R.days * 86400).map((h) => (h.rate * 8) / intervalH);
   const pct = win.length >= R.minSamples ? rank([...win].sort((x, y) => x - y), rate8h) : null;
-  const crowd = pct == null ? null : pct >= 100 - R.crowdPct ? "longs" : pct <= R.crowdPct ? "shorts" : null;
+  const crowd =
+    pct == null ? null
+    : pct >= 100 - R.crowdPct && rate8h > R.normal8h ? "longs"
+    : pct <= R.crowdPct && rate8h < -R.flat8h ? "shorts"
+    : null;
   const wk = past.filter((h) => h.t > o.at - 7 * 86400);
   const avg7d = wk.length ? wk.reduce((s, h) => s + h.rate, 0) / wk.length : null;
   let streak: FundingView["streak"] = null;

@@ -35,6 +35,12 @@ test("crowding by 90-day rank, streak and 7-day mean use settled history only", 
   assert.equal(lo.crowd, "shorts");
   const mid = fundingView({ rate: 0.0001, intervalH: 8, live: true, nextAt: null, history: hist(rates), at });
   assert.equal(mid.crowd, null);
+  // the exchange default is not crowding even when most settlements sit below it
+  const def = fundingView({ rate: 0.0001, intervalH: 8, live: true, nextAt: null, history: hist(Array(200).fill(0.00004)), at });
+  assert.equal(def.pct! > 80 && def.crowd === null, true);
+  // nor is a rate that is barely negative
+  const tiny = fundingView({ rate: -0.00001, intervalH: 8, live: true, nextAt: null, history: hist(Array(200).fill(0.00004)), at });
+  assert.equal(tiny.crowd, null);
   // 90 days of 8-hour settlements = 270; only those inside the window count
   assert.equal(Math.round(hi.avg7d! * 1e6), 75);
   const neg = fundingView({ rate: -0.0001, intervalH: 8, live: true, nextAt: null, history: hist([0.0001, -0.00001, -0.00002, -0.00003]), at });
