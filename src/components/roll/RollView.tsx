@@ -223,7 +223,7 @@ export function RollView({ coins }: { coins: CoinMeta[] }) {
       <div className="flex flex-wrap items-center gap-2">
         {views.map(([h, v]) => (
           <button key={h.id} className="chip num" data-active={cur?.[0].id === h.id} onClick={() => setHoldId(h.id)}>
-            {h.coin} {h.dir > 0 ? "多" : "空"} {v.open != null && <span className={cur?.[0].id === h.id ? "" : toneColor(v.open + v.pos.realized)}>{money(v.open + v.pos.realized)}</span>}
+            {h.coin} {h.dir > 0 ? "多" : "空"}{views.filter(([x]) => x.coin === h.coin && x.dir === h.dir).length > 1 ? ` ${h.mode === "isolated" ? "逐仓" : "全仓"}` : ""} {v.open != null && <span className={cur?.[0].id === h.id ? "" : toneColor(v.open + v.pos.realized)}>{money(v.open + v.pos.realized)}</span>}
             {h.example && " · 示例"}
           </button>
         ))}
@@ -319,7 +319,9 @@ function AccountRisk({ acc, views }: { acc: Account; views: (readonly [Holding, 
   const known = views.filter(([, v]) => lossAt(v) != null);
   const total = known.reduce((s, [, v]) => s + lossAt(v)!, 0);
   const pct = (total / acc.total) * 100;
-  const sides = [1, -1].map((d) => views.filter(([h]) => h.dir === d).map(([h]) => h.coin)).filter((x) => x.length > 1);
+  // different coins on one side move together; the same coin twice on one side (isolated and cross) is one bigger trade
+  const sides = [1, -1].map((d) => [...new Set(views.filter(([h]) => h.dir === d).map(([h]) => h.coin))]).filter((x) => x.length > 1);
+  const twice = [1, -1].flatMap((d) => [...new Set(views.filter(([h]) => h.dir === d).map(([h]) => h.coin))].filter((c) => views.filter(([h]) => h.dir === d && h.coin === c).length > 1).map((c) => `${c} ${d > 0 ? "多" : "空"}`));
   const notional = views.reduce((s, [, v]) => s + (v.price != null ? v.pos.qty * v.price : 0), 0);
   const lev = notional / acc.total;
   return (
@@ -332,6 +334,9 @@ function AccountRisk({ acc, views }: { acc: Account; views: (readonly [Holding, 
       {pct > ACCOUNT_RISK_PCT && <span className="text-warn">⚠ 超过账户的 {ACCOUNT_RISK_PCT}%：一起打到止损时伤得很重。</span>}
       {sides.map((s) => (
         <span key={s.join()} className="text-warn">⚠ {s.join("、")} 同方向：常常一起涨跌，等于一笔更大的单。</span>
+      ))}
+      {twice.map((s) => (
+        <span key={s} className="text-warn">⚠ {s}有不止一笔（逐仓和全仓分开）：打到止损时一起亏，风险要合起来看。</span>
       ))}
     </section>
   );

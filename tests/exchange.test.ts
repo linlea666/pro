@@ -186,7 +186,7 @@ test("reconcileBook mirrors positions, keeps page settings, follows quantity cha
   const c = cleanBook(b3, COINS);
   assert.equal(c.accounts[1].exchange, "o1");
   assert.equal(c.accounts[1].holdings[0].source, "exchange");
-  assert.equal(c.accounts[1].holdings[0].ex?.key, "ZEC-USDT-SWAP|1");
+  assert.equal(c.accounts[1].holdings[0].ex?.key, "ZEC-USDT-SWAP|isolated|1");
 });
 
 test("exGuard and the guard alert: no stop order, a stop beyond liquidation, partial cover", () => {
@@ -213,3 +213,43 @@ test("exGuard and the guard alert: no stop order, a stop beyond liquidation, par
   // nothing changed: no repeat
   assert.equal(pickRollAlerts(reconcileBook(book2, [s]), m, r2.mem).alerts.length, 0);
 });
+
+test("an isolated and a cross position on the same contract stay apart, each with its own stop orders", () => {
+  // the user's account on 2026-11-09: hedge mode, BTC long isolated 20x, BTC long cross 10x, BTC short cross
+  const s = parseOkx({
+    id: "o1",
+    name: "okx",
+    t: 1,
+    config: { perm: "read_only", posMode: "long_short_mode", acctLv: "2" },
+    balance: { details: [{ ccy: "USDT", eq: "4090.88", availEq: "1000", mmr: "80" }] },
+    positions: [
+      { instType: "SWAP", instId: "BTC-USDT-SWAP", posSide: "long", pos: "1860", avgPx: "75891.03", markPx: "75893", liqPx: "72422.5", lever: "20", mgnMode: "isolated", margin: "705.79" },
+      { instType: "SWAP", instId: "BTC-USDT-SWAP", posSide: "long", pos: "1634", avgPx: "76725.43", markPx: "75893", liqPx: "", lever: "10", mgnMode: "cross", imr: "1240.3" },
+      { instType: "SWAP", instId: "BTC-USDT-SWAP", posSide: "short", pos: "1411", avgPx: "77369.6", markPx: "75893", liqPx: "", lever: "10", mgnMode: "cross", imr: "1071" },
+    ],
+    algos: [
+      { instId: "BTC-USDT-SWAP", ordType: "conditional", tdMode: "isolated", side: "sell", posSide: "long", sz: "930", slTriggerPx: "75450" },
+      { instId: "BTC-USDT-SWAP", ordType: "conditional", tdMode: "cross", side: "buy", posSide: "short", sz: "1411", closeFraction: "1", slTriggerPx: "77500" },
+    ],
+    ctVal: { "BTC-USDT-SWAP": 0.0001 },
+    coins: COINS,
+  });
+  assert.equal(s.posMode, "hedge");
+  assert.deepEqual(s.positions.map((p) => p.key), ["BTC-USDT-SWAP|isolated|1", "BTC-USDT-SWAP|cross|1", "BTC-USDT-SWAP|cross|-1"]);
+  const [iso, cross, short] = s.positions;
+  // the 75,450 stop belongs to the isolated long only, and covers half of it
+  assert.equal(stopOf(s, iso).sl, 75450);
+  assert.ok(Math.abs(stopOf(s, iso).covered! - 0.093) < 1e-12);
+  assert.equal(stopOf(s, cross).sl, null, "the cross long has no stop order");
+  assert.equal(stopOf(s, short).sl, 77500);
+  const b = reconcileBook({ accounts: [], alert: { enabled: false, to: [], dailyCap: 30 } }, [s]);
+  const hs = b.accounts[0].holdings;
+  assert.equal(hs.length, 3);
+  assert.equal(new Set(hs.map((h) => h.id)).size, 3, "three holdings, three ids");
+  assert.deepEqual(hs.map((h) => [h.mode, h.dir, h.leverage, exGuard(h, positionQty(h))?.state]), [["isolated", 1, 20, "partial"], ["cross", 1, 10, "none"], ["cross", -1, 10, "ok"]]);
+  // and the next sync finds each one again
+  const again = reconcileBook(b, [s]).accounts[0].holdings;
+  assert.deepEqual(again.map((h) => h.id), hs.map((h) => h.id));
+});
+
+const positionQty = (h: RollBook["accounts"][number]["holdings"][number]) => h.fills.reduce((q, f) => q + (f.kind === "reduce" ? -f.qty : f.qty), 0);

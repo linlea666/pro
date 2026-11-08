@@ -10,7 +10,10 @@ export type ExchangeId = "okx" | "binance";
 export const EXCHANGE_NAME: Record<ExchangeId, string> = { okx: "欧易 OKX", binance: "币安 Binance" };
 
 export interface ExPosition {
-  /** `<instId>|<dir>`: the same position across syncs (a net position that flips side is a new one) */
+  /**
+   * `<instId>|<mode>|<dir>`: the same position across syncs. OKX keeps an isolated and a cross position on the
+   * same contract apart (and long / short apart in hedge mode); a net position that flips side is a new one.
+   */
   key: string;
   instId: string;
   /** the site's coin id, null when the coin is not on the site */
@@ -41,6 +44,8 @@ export interface ExStop {
   instId: string;
   /** the position it closes */
   dir: Dir;
+  /** the margin mode of the position it closes (OKX `tdMode`); null: not stated (Binance has one mode per symbol) */
+  mode: MarginMode | null;
   /** stop-loss trigger */
   sl: number | null;
   /** take-profit trigger */
@@ -156,7 +161,7 @@ export function parseOkx(input: {
     const base = instId.split("-")[0];
     const mode: MarginMode = p.mgnMode === "isolated" ? "isolated" : "cross";
     positions.push({
-      key: `${instId}|${dir}`,
+      key: `${instId}|${mode}|${dir}`,
       instId,
       coin: coinFor(base, input.coins),
       base,
@@ -187,7 +192,8 @@ export function parseOkx(input: {
     const trail = a.ordType === "move_order_stop";
     // a trailing stop has no fixed trigger until it activates: show its activation price if any
     const sl = trail ? nOrNull(a.activePx) ?? nOrNull(a.triggerPx) : nOrNull(a.slTriggerPx);
-    stops.push({ instId, dir, sl, tp: trail ? null : nOrNull(a.tpTriggerPx), qty: whole ? null : n(a.sz) * ct, trail });
+    const mode = a.tdMode === "isolated" ? "isolated" : a.tdMode === "cross" ? "cross" : null;
+    stops.push({ instId, dir, mode, sl, tp: trail ? null : nOrNull(a.tpTriggerPx), qty: whole ? null : n(a.sz) * ct, trail });
   }
   const mmr = multi ? nOrNull(input.balance.mmr) : nOrNull(usdt.mmr);
   return {
@@ -235,7 +241,7 @@ export function parseBinance(input: { id: string; name: string; t: number; accou
     const mark = n(r.markPrice) || Math.abs(n(p.notional)) / qty;
     const isolated = p.isolated === true || r.marginType === "isolated";
     positions.push({
-      key: `${symbol}|${dir}`,
+      key: `${symbol}|${isolated ? "isolated" : "cross"}|${dir}`,
       instId: symbol,
       coin: coinFor(base, input.coins),
       base,
@@ -268,7 +274,7 @@ export function parseBinance(input: { id: string; name: string; t: number; accou
     const trigger = nOrNull(o.stopPrice) ?? nOrNull(o.triggerPrice) ?? nOrNull(o.activatePrice);
     const whole = o.closePosition === true || o.closePosition === "true";
     const qty = n(o.origQty) || n(o.quantity);
-    stops.push({ instId: symbol, dir, sl: isStop ? trigger : null, tp: isTp ? trigger : null, qty: whole || !qty ? null : qty, trail: type === "TRAILING_STOP_MARKET" });
+    stops.push({ instId: symbol, dir, mode: null, sl: isStop ? trigger : null, tp: isTp ? trigger : null, qty: whole || !qty ? null : qty, trail: type === "TRAILING_STOP_MARKET" });
   }
   const margin = n(input.account.totalMarginBalance);
   const maint = nOrNull(input.account.totalMaintMargin);
@@ -295,7 +301,7 @@ export function parseBinance(input: { id: string; name: string; t: number; accou
  * stop orders cover (null qty = the whole position).
  */
 export function stopOf(s: ExSnapshot, p: ExPosition): { sl: number | null; covered: number | null; tp: number | null; trail: boolean } {
-  const mine = s.stops.filter((x) => x.instId === p.instId && x.dir === p.dir);
+  const mine = s.stops.filter((x) => x.instId === p.instId && x.dir === p.dir && (x.mode == null || x.mode === p.mode));
   const sls = mine.filter((x) => x.sl != null);
   if (!sls.length) return { sl: null, covered: null, tp: mine.find((x) => x.tp != null)?.tp ?? null, trail: false };
   // tightest = closest to the price on the losing side
