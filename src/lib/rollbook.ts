@@ -3,6 +3,7 @@
  * 和提醒的判断（纯函数，服务器每分钟跑一次）。规则见 ta/roll.ts。
  */
 
+import { stopOf, type ExSnapshot } from "./exchange.ts";
 import type { TrendPlan } from "./trendplan.ts";
 import { cutPlan, DEFAULT_FEE, ROLL_RULES, planSteps, fundingCost, liquidationPrice, maxAdd, nextAddLevel, pnlAt, positionOf, rollStatus, trimQty, type CutMode, type Dir, type Fill, type MarginMode } from "./ta/roll.ts";
 
@@ -36,6 +37,29 @@ export interface Holding {
   /** E31g (Tony): each add carries its own stop beyond the level it broke; a hit closes only that add */
   addStops?: boolean;
   example?: boolean;
+  /** synced from a read-only exchange account: quantity, average, mode and leverage follow the exchange */
+  source?: "exchange";
+  ex?: HoldingEx;
+}
+
+/** What the exchange says about a synced holding, refreshed every sync. */
+export interface HoldingEx {
+  /** ExPosition.key */
+  key: string;
+  instId: string;
+  /** the exchange's liquidation price */
+  liq: number | null;
+  mark: number;
+  upl: number;
+  margin: number | null;
+  mmr: number | null;
+  /** the tightest stop-loss order on the exchange, and how much of the position stop orders cover */
+  sl: number | null;
+  covered: number | null;
+  tp: number | null;
+  trail: boolean;
+  /** ms */
+  t: number;
 }
 
 export type ConfirmTf = "4h" | "1h" | "15m";
@@ -97,6 +121,8 @@ export interface Account {
   budget: "keep" | "even";
   fee: number;
   holdings: Holding[];
+  /** the exchange account it mirrors: the total follows the exchange equity, synced holdings follow its positions */
+  exchange?: string;
 }
 
 export interface RollAlertConfig {
@@ -118,6 +144,66 @@ export const ACCOUNT_RISK_PCT = 6;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const num = (x: unknown, lo: number, hi: number, d: number) => (typeof x === "number" && Number.isFinite(x) && x >= lo && x <= hi ? x : d);
 const str = (x: unknown, max: number, d = "") => (typeof x === "string" ? x.slice(0, max) : d);
+const posNum = (x: unknown): number | null => (typeof x === "number" && Number.isFinite(x) && x > 0 ? x : null);
+const cleanEx = (e: HoldingEx): HoldingEx => ({
+  key: str(e.key, 60),
+  instId: str(e.instId, 40),
+  liq: posNum(e.liq),
+  mark: num(e.mark, 0, 1e12, 0),
+  upl: num(e.upl, -1e12, 1e12, 0),
+  margin: posNum(e.margin),
+  mmr: posNum(e.mmr),
+  sl: posNum(e.sl),
+  covered: posNum(e.covered),
+  tp: posNum(e.tp),
+  trail: e.trail === true,
+  t: num(e.t, 0, 1e15, 0),
+});
+
+/**
+ * Mirror exchange snapshots into the book. Each snapshot gets one account (created the first time,
+ * `exchange` = the snapshot id) whose total is the exchange equity. Its synced holdings follow the
+ * open positions on the site's coins: new ones are added with one opening fill at the exchange average,
+ * closed ones are dropped, and a changed quantity or average replaces the fills. Everything set on the
+ * page (stop, targets, style, cut mode …) is kept. Hand-entered holdings are left alone. Accounts whose
+ * snapshot failed this round are not touched.
+ */
+export function reconcileBook(book: RollBook, snaps: ExSnapshot[]): RollBook {
+  const accounts = book.accounts.map((a) => ({ ...a }));
+  for (const s of snaps) {
+    let acc = accounts.find((a) => a.exchange === s.id);
+    if (!acc) {
+      acc = { id: `ex-${s.id}`.slice(0, 20), name: s.name, total: 0, riskPct: 2, budget: "keep", fee: DEFAULT_FEE.taker, holdings: [], exchange: s.id };
+      accounts.push(acc);
+    }
+    acc.total = Math.round(s.equity * 100) / 100;
+    const old = new Map(acc.holdings.filter((h) => h.source === "exchange" && h.ex).map((h) => [h.ex!.key, h]));
+    const synced: Holding[] = [];
+    for (const p of s.positions) {
+      if (!p.coin || !(p.qty > 0) || !(p.avg > 0)) continue;
+      const was = old.get(p.key);
+      const cur = was ? positionOf(was.dir, was.fills, acc.fee) : null;
+      const same = cur != null && Math.abs(cur.qty - p.qty) <= p.qty * 1e-9 && Math.abs(cur.avg - p.avg) <= p.avg * 1e-9;
+      const st = stopOf(s, p);
+      const ex: HoldingEx = { key: p.key, instId: p.instId, liq: p.liq, mark: p.mark, upl: p.upl, margin: p.margin, mmr: p.mmr, sl: st.sl, covered: st.covered, tp: st.tp, trail: st.trail, t: s.t };
+      // the exchange's realized profit already includes the opening fee that one opening fill books again
+      const realizedBase = same ? was!.realizedBase : (p.realized ?? 0) + p.qty * p.avg * acc.fee;
+      synced.push({
+        ...(was ?? { id: `x${Math.random().toString(36).slice(2, 10)}`, stop: null, targets: [] }),
+        coin: p.coin,
+        dir: p.dir,
+        mode: p.mode,
+        leverage: p.lever,
+        fills: same ? was!.fills : [{ kind: "open", price: p.avg, qty: p.qty, ...(p.t ? { t: p.t } : {}) }],
+        realizedBase,
+        source: "exchange",
+        ex,
+      });
+    }
+    acc.holdings = [...acc.holdings.filter((h) => h.source !== "exchange"), ...synced];
+  }
+  return { ...book, accounts };
+}
 
 /** Clean a book sent by the browser: drops what is malformed, caps sizes. Throws on bad recipients. */
 export function cleanBook(input: unknown, coins: string[]): RollBook {
@@ -153,8 +239,10 @@ export function cleanBook(input: unknown, coins: string[]): RollBook {
         ...(h.noLevCap === true ? { noLevCap: true } : {}),
         ...(h.cutMode === "touch" || h.cutMode === "none" ? { cutMode: h.cutMode } : {}),
         ...(h.confirmTf && CONFIRM_TFS.includes(h.confirmTf) && h.confirmTf !== "4h" ? { confirmTf: h.confirmTf } : {}),
+        ...(h.source === "exchange" && h.ex && typeof h.ex.key === "string" ? { source: "exchange" as const, ex: cleanEx(h.ex) } : {}),
       }))
       .filter((h) => h.fills.length),
+    ...(typeof a?.exchange === "string" && a.exchange ? { exchange: a.exchange.slice(0, 20) } : {}),
   }));
   const al = (b.alert ?? {}) as Partial<RollAlertConfig>;
   const to = (Array.isArray(al.to) ? al.to : []).map((x) => String(x).trim()).filter(Boolean).slice(0, 10);
@@ -227,14 +315,34 @@ export function marketOf(p: TrendPlan | null, price: number | null, funding: num
   };
 }
 
+/**
+ * The stop orders on the exchange for a synced holding: none at all, one that sits beyond the
+ * liquidation price (liquidated first, the stop never fills), or orders covering only part of it.
+ */
+export function exGuard(h: Pick<Holding, "dir" | "ex">, qty: number): { state: "ok" | "none" | "beyondLiq" | "partial"; title: string; detail: string } | null {
+  const e = h.ex;
+  if (!e || !(qty > 0)) return null;
+  if (e.sl == null)
+    return { state: "none", title: "交易所没有止损单", detail: "这笔仓位在交易所上没有挂止损（裸奔）。行情急跌时没有任何保护，请先在交易所挂好止损单，提醒不能代替止损单。" };
+  if (e.liq != null && h.dir * (e.sl - e.liq) <= 0)
+    return { state: "beyondLiq", title: "止损单在强平价后面", detail: `止损单 ${fp(e.sl)} 比强平价 ${fp(e.liq)} 还远，价格先到强平，止损单永远不会成交。把止损挪到强平价之前，或者减仓 / 补保证金让强平价远离。` };
+  if (e.covered != null && e.covered < qty * 0.99)
+    return { state: "partial", title: "止损单只覆盖一部分仓位", detail: `止损单合计 ${trimQty(e.covered)}，持仓 ${trimQty(qty)}，打到止损后还剩 ${trimQty(qty - e.covered)} 没有保护。` };
+  return { state: "ok", title: "交易所止损单已挂好", detail: `止损 ${fp(e.sl)}${e.trail ? "（移动止损）" : ""}，覆盖全部仓位。` };
+}
+
 /** Everything about one holding at the current market. */
 export function holdingView(h: Holding, acc: Account, m: Market) {
   const pos = positionOf(h.dir, h.fills, acc.fee);
   pos.realized += h.realizedBase;
   const { price, atr } = m;
   const st = m.swingStop[String(h.dir) as "1" | "-1"];
-  const stop = h.stop ?? st?.stop ?? null;
-  const liq = liquidationPrice({ dir: h.dir, qty: pos.qty, avg: pos.avg, mode: h.mode, leverage: h.leverage, account: acc.total });
+  // a stop order on the exchange is what will actually fill; then the stop set here; then the structure stop
+  const stop = h.ex?.sl ?? h.stop ?? st?.stop ?? null;
+  const stopFrom: "exchange" | "page" | "structure" | null = h.ex?.sl != null ? "exchange" : h.stop != null ? "page" : st ? "structure" : null;
+  // the exchange's own liquidation price when synced (it knows the tiers and the whole account)
+  const liq = h.ex ? h.ex.liq : liquidationPrice({ dir: h.dir, qty: pos.qty, avg: pos.avg, mode: h.mode, leverage: h.leverage, account: acc.total });
+  const guard = exGuard(h, pos.qty);
   const rules = rulesOf(h);
   // E31g: an add closed at its own stop frees its slot (up to 5 adds in all)
   const closedAdds = h.addStops ? h.fills.filter((f) => f.kind === "add" && f.closed).length : 0;
@@ -260,7 +368,7 @@ export function holdingView(h: Holding, acc: Account, m: Market) {
     ? h.fills.flatMap((f, i) => (f.kind === "add" && !f.closed ? [{ i, price: f.price, qty: f.qty, from: h.fills.slice(0, i).filter((x) => x.kind !== "reduce").at(-1)?.price ?? f.price, stop: f.stop ?? null, atStop: f.stop != null ? h.dir * (f.stop - f.price) * f.qty - acc.fee * (f.price + f.stop) * f.qty : null }] : []))
     : [];
   const ownStop = (at: number) => (h.addStops ? addStopOf(h.dir, crossedLevel(h.dir, m.levels, lastOpen, at), atr, m.buf, stop, at) : null);
-  return { be, lots, ownStop, lastOpen, buf: m.buf ?? null, levelInfo: m.levelInfo ?? [], cutMode, pos, price, atr, st, stop, liq, levels: m.levels, cuts, addLevel, budget, rules: { pyramid: rulesUsed?.pyramid ?? ROLL_RULES.pyramid, maxAdds: rulesUsed?.maxAdds ?? ROLL_RULES.maxAdds, liqGapAtr: ROLL_RULES.liqGapAtr as number, maxLeverage: rules?.maxLeverage ?? (ROLL_RULES.maxLeverage as number) }, add, status, open, atStop, fundDay, funding: m.funding, steps };
+  return { be, lots, ownStop, lastOpen, buf: m.buf ?? null, levelInfo: m.levelInfo ?? [], cutMode, pos, price, atr, st, stop, stopFrom, guard, liq, levels: m.levels, cuts, addLevel, budget, rules: { pyramid: rulesUsed?.pyramid ?? ROLL_RULES.pyramid, maxAdds: rulesUsed?.maxAdds ?? ROLL_RULES.maxAdds, liqGapAtr: ROLL_RULES.liqGapAtr as number, maxLeverage: rules?.maxLeverage ?? (ROLL_RULES.maxLeverage as number) }, add, status, open, atStop, fundDay, funding: m.funding, steps };
 }
 export type HoldingView = ReturnType<typeof holdingView>;
 
@@ -268,13 +376,13 @@ export type HoldingView = ReturnType<typeof holdingView>;
 
 export interface RollAlert {
   key: string;
-  kind: "add" | "cut" | "giveback" | "target" | "stop" | "liq" | "risk";
+  kind: "add" | "cut" | "giveback" | "target" | "stop" | "liq" | "risk" | "guard";
   title: string;
   lines: string[];
 }
 
 /** what the previous round saw, per holding id (and per account for the account risk) */
-export type RollMemory = Record<string, { price?: number; status?: string; barT?: number; bar4?: number; best?: number; fills?: number; gave?: number }>;
+export type RollMemory = Record<string, { price?: number; status?: string; barT?: number; bar4?: number; best?: number; fills?: number; gave?: number; guard?: string }>;
 
 const fp = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? "—" : v >= 1000 ? v.toLocaleString("en-US", { maximumFractionDigits: 1 }) : v >= 1 ? v.toFixed(v >= 100 ? 2 : 3) : v.toPrecision(4));
 const usd = (v: number) => `${v >= 0 ? "+" : "−"}${Math.abs(Math.round(v)).toLocaleString("en-US")} USDT`;
@@ -291,6 +399,9 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
   const next: RollMemory = {};
   for (const acc of book.accounts) {
     let loss = 0, known = 0;
+    // a synced position that appears after the account was first seen is a new trade: check its stop order at once
+    const seen = !!mem[`seen:${acc.id}`];
+    next[`seen:${acc.id}`] = {};
     for (const h of acc.holdings) {
       const m = markets[h.coin];
       if (!m || m.price == null) {
@@ -306,11 +417,13 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
       // the best price since the fills last changed, for the giveback alert
       const nf = h.fills.length;
       const best = was?.fills === nf && was.best != null ? (h.dir > 0 ? Math.max(was.best, price) : Math.min(was.best, price)) : price;
-      next[h.id] = { price, status: v.status?.title, barT: lc?.t ?? was?.barT, bar4: m.lastClose?.t ?? was?.bar4, best, fills: nf, ...(was?.fills === nf && was.gave != null ? { gave: was.gave } : {}) };
+      next[h.id] = { price, status: v.status?.title, barT: lc?.t ?? was?.barT, bar4: m.lastClose?.t ?? was?.bar4, best, fills: nf, ...(was?.fills === nf && was.gave != null ? { gave: was.gave } : {}), ...(v.guard ? { guard: v.guard.state } : {}) };
       if (v.atStop != null) (loss += Math.max(0, -v.atStop)), known++;
-      if (!was) continue;
       const head = `${acc.name} · ${h.coin} ${h.dir > 0 ? "多单" : "空单"}`;
       const base = `现价 ${fp(price)}，均价 ${fp(v.pos.avg)}，数量 ${trimQty(v.pos.qty)}，浮动盈亏 ${usd(v.open ?? 0)}`;
+      if (v.guard && v.guard.state !== "ok" && (was ? was.guard !== v.guard.state : seen && h.source === "exchange"))
+        alerts.push({ key: `${h.id}:guard:${v.guard.state}:${Math.round(v.pos.qty * 1e6)}`, kind: "guard", title: `${head}：${v.guard.title}`, lines: [v.guard.detail, `交易所强平价 ${fp(v.liq)}。`, base] });
+      if (!was) continue;
       const srcLine = (x: number) => { const t = levelSource(m.levelInfo, x); return t ? [`这个位来自：${t}。`] : []; };
       const crossed = (x: number) => was.price != null && was.price !== x && (was.price - x) * (price - x) <= 0;
 

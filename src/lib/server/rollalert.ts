@@ -1,6 +1,7 @@
 import { getKlines } from "../data/klines.ts";
 import { getPerpSnapshot } from "../data/perp.ts";
-import { cleanBook, DEFAULT_ROLL_ALERT, holdingView, marketOf, pickRollAlerts, rollMailText, type Market, type RollAlert, type RollBook, type RollMemory } from "../rollbook.ts";
+import type { ExSnapshot } from "../exchange.ts";
+import { cleanBook, DEFAULT_ROLL_ALERT, holdingView, marketOf, pickRollAlerts, reconcileBook, rollMailText, type Market, type RollAlert, type RollBook, type RollMemory } from "../rollbook.ts";
 import { getTrendPlan } from "../trendplan.ts";
 import { TF_SECONDS } from "../types.ts";
 import { coinIds } from "./coins.ts";
@@ -30,18 +31,50 @@ export function getRollBook(): RollBook {
 
 const alertMail = (b: RollBook, mail: MailConfig = getMailConfig()): MailConfig => (b.alert.to.length ? { ...mail, to: b.alert.to } : mail);
 
+function writeBook(b: RollBook) {
+  getDb()
+    .prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+    .run(KEY, JSON.stringify(b), Date.now());
+}
+
+/** Mirror fresh exchange snapshots into the stored book (see `reconcileBook`). */
+export function mirrorSnapshots(fresh: ExSnapshot[]) {
+  if (fresh.length) writeBook(reconcileBook(getRollBook(), fresh));
+}
+
+/** An exchange account was removed: drop the account that mirrored it. */
+export function dropMirror(exId: string) {
+  const b = getRollBook();
+  writeBook({ ...b, accounts: b.accounts.filter((a) => a.exchange !== exId) });
+}
+
 export function saveRollBook(input: unknown): RollBook {
   const cur = getRollBook();
-  const next = cleanBook(input, coinIds());
+  const sent = cleanBook(input, coinIds());
+  // a mirrored account's positions come from the exchange, not from the page: the page may have loaded
+  // them a sync ago. Keep the server's synced holdings (with the page's settings on them) and the total.
+  const next: RollBook = {
+    ...sent,
+    accounts: sent.accounts.map((a) => {
+      const mine = a.exchange ? cur.accounts.find((x) => x.exchange === a.exchange) : undefined;
+      if (!mine) return a.exchange ? { ...a, exchange: undefined, holdings: a.holdings.filter((h) => h.source !== "exchange") } : a;
+      const page = new Map(a.holdings.filter((h) => h.source === "exchange").map((h) => [h.id, h]));
+      const synced = mine.holdings.filter((h) => h.source === "exchange").map((h) => {
+        const p = page.get(h.id);
+        return p ? { ...p, coin: h.coin, dir: h.dir, mode: h.mode, leverage: h.leverage, fills: h.fills, realizedBase: h.realizedBase, source: h.source, ex: h.ex } : h;
+      });
+      return { ...a, id: mine.id, total: mine.total, holdings: [...a.holdings.filter((h) => h.source !== "exchange"), ...synced] };
+    }),
+  };
+  // the mirror of an exchange account always exists while the key is stored
+  for (const m of cur.accounts) if (m.exchange && !next.accounts.some((a) => a.exchange === m.exchange)) next.accounts.push(m);
   const mail = getMailConfig();
   if (next.alert.enabled && !(mail.host && mail.user && mail.passEnc && (next.alert.to.length || mail.to.length))) {
     throw new Error("开启滚仓提醒前，请先在后台“系统设置 → 邮件与告警”里填好 SMTP 服务器、发件邮箱、授权码和收件邮箱");
   }
   // switched (back) on: the first round learns the current state again
   if (next.alert.enabled && !cur.alert.enabled) getDb().prepare("DELETE FROM settings WHERE key = 'state.rollAlert.mem'").run();
-  getDb()
-    .prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
-    .run(KEY, JSON.stringify(next), Date.now());
+  writeBook(next);
   return next;
 }
 
@@ -104,7 +137,7 @@ export async function sendTestRollAlert(input: unknown): Promise<string[]> {
   const mail = alertMail(b);
   if (!mailReady(mail)) throw new Error("邮件还没有配置完整：请先在后台“系统设置 → 邮件与告警”里填好并保存");
   const ms = await markets(b);
-  const lines = ["这是一封测试提醒。正式提醒在可以加仓、到减仓位、到你填的价位、浮盈吐回一半（开了的话）、快到止损、离强平太近、账户总风险超过 6% 时发。", "", "现在的持仓："];
+  const lines = ["这是一封测试提醒。正式提醒在可以加仓、到减仓位、到你填的价位、浮盈吐回一半（开了的话）、快到止损、离强平太近、账户总风险超过 6%、交易所持仓没有止损单（或止损单在强平后面、只覆盖一部分）时发。", "", "现在的持仓："];
   for (const a of b.accounts)
     for (const h of a.holdings) {
       const m = ms[h.coin];
@@ -124,6 +157,9 @@ export function startRollAlerts() {
     if (g.__slRollBusy) return;
     g.__slRollBusy = true;
     try {
+      // exchange accounts first, so the alerts see the positions as they are now
+      const { syncExchanges } = await import("./exchange.ts");
+      await syncExchanges().catch((e) => logger.error("datasource", "交易所账户同步失败", { error: e }));
       await runRollAlerts();
     } catch (e) {
       logger.error("system", "滚仓提醒执行失败", { error: e });
