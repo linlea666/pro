@@ -127,6 +127,10 @@ service_restart() {
   fi
 }
 
+service_active() {
+  if [ "$SL_NO_SYSTEMD" = "1" ]; then pgrep -u "$SL_USER" -f "server.mjs" >/dev/null 2>&1; else systemctl is-active --quiet "$SL_SERVICE"; fi
+}
+
 service_stop() {
   if [ "$SL_NO_SYSTEMD" = "1" ]; then pkill -u "$SL_USER" -f "server.mjs" 2>/dev/null || true; else systemctl stop "$SL_SERVICE"; fi
 }

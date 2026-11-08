@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { dbPath, getDb } from "./db.ts";
@@ -185,13 +186,18 @@ async function tick() {
       if (r.added) logger.info("engine", "信号灯成绩单更新", r);
       done("scorecard");
     }
-    // research reports: weekly, once the long history is in place
-    if (getState("job.historyComplete") === "1" && due("research", 7 * DAY)) {
-      const { runResearch } = await import("../research/jobs.ts");
+    // research reports: weekly, once the long history is in place. A failed run is not retried every tick;
+    // it alerts, and `signallight research` reruns it by hand.
+    if (!g.__slResearch && getState("job.historyComplete") === "1" && due("research", 7 * DAY)) {
+      g.__slResearch = true;
       busy.__slJobBusy = true;
-      const r = await runResearch().finally(() => (busy.__slJobBusy = false));
-      logger.info("engine", "研究报告已生成", r);
-      done("research");
+      try {
+        await runResearchChild();
+      } finally {
+        busy.__slJobBusy = false;
+        g.__slResearch = false;
+        done("research");
+      }
     }
     if (due("digest", DAY)) {
       const s = sourceSummary(24);
@@ -214,7 +220,40 @@ async function tick() {
   }
 }
 
-const g = globalThis as unknown as { __slJobs?: NodeJS.Timeout };
+const g = globalThis as unknown as { __slJobs?: NodeJS.Timeout; __slResearch?: boolean };
+
+const RESEARCH_HEAP_MB = 768;
+const RESEARCH_TIMEOUT_MS = 60 * 60_000;
+
+/**
+ * The weekly research reads years of candles per series; in the site process that competed with
+ * precompute for the heap and the event loop (10-21 precompute stalled for hours while it ran).
+ * A child process with its own heap limit saves the reports and logs the summary itself.
+ */
+function runResearchChild(): Promise<void> {
+  const cli = path.join(/*turbopackIgnore: true*/ process.cwd(), "scripts", "cli.ts");
+  const args = [`--max-old-space-size=${RESEARCH_HEAP_MB}`, "--no-warnings", "--experimental-strip-types", cli, "research-job"];
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    const child = spawn(process.execPath, args, { stdio: ["ignore", "inherit", "inherit"], env: process.env });
+    const timer = setTimeout(() => child.kill("SIGKILL"), RESEARCH_TIMEOUT_MS);
+    const fail = (ctx: Record<string, unknown>) => {
+      ctx = { ...ctx, 用时秒: Math.round((Date.now() - t0) / 1000) };
+      logger.error("engine", "研究子进程失败", ctx);
+      raiseAlert("job", "每周研究没有完成", ctx);
+    };
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      fail({ 错误: e.message });
+      resolve();
+    });
+    child.on("exit", (code, signal) => {
+      clearTimeout(timer);
+      if (code !== 0) fail({ 退出码: code, 信号: signal });
+      resolve();
+    });
+  });
+}
 
 export function startJobs() {
   if (g.__slJobs) return;

@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/linlea666/pro/main/scripts/install.
 
 | 命令 | 作用 |
 |---|---|
-| `sudo signallight update` | 更新到最新的正式版本（最新的 `v*` 标签；`--branch main` 改为跟踪分支）：先备份数据库，在新目录构建（旧版本照常运行），切换后健康检查不通过会**自动回滚** |
+| `sudo signallight update` | 更新到最新的正式版本（最新的 `v*` 标签；`--branch main` 改为跟踪分支）：先备份数据库，在新目录构建（旧版本照常运行），切换后健康检查不通过会**自动回滚**。**不需要先停止服务** |
 | `sudo signallight rollback` | 回到上一个版本（`--list` 查看全部，`--restore-db` 同时恢复数据库） |
 | `sudo signallight status` | 版本、健康检查、数据源连通性、磁盘、最近错误 |
 | `sudo signallight logs` | 实时日志 |

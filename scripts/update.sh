@@ -19,6 +19,17 @@ done
 exec 9>/var/lock/signallight-update.lock
 flock -n 9 || die "另一个更新正在进行中"
 
+# Whatever goes wrong below, don't leave the site stopped: 11-07 `systemctl stop && signallight update`
+# on an up-to-date server exited early and the site stayed down for a day.
+ensure_running() {
+  local rc=$?
+  if [ "$rc" -ne 0 ] && ! service_active; then
+    warn "服务没有在运行，正在启动当前版本"
+    service_restart || true
+  fi
+}
+trap ensure_running EXIT
+
 PREV=$(current_release)
 [ -n "$PREV" ] && [ -d "$PREV" ] || die "没有找到当前版本，请先运行 install.sh"
 PREV_VER=$(release_version "$PREV")
@@ -27,6 +38,12 @@ read -r REF LATEST <<<"$(resolve_ref)" || true
 [ -n "${LATEST:-}" ] || die "无法访问仓库 $SL_REPO${SL_BRANCH:+（分支 $SL_BRANCH）}"
 if [ "$LATEST" = "$PREV_VER" ] && [ "$FORCE" = "0" ]; then
   info "已经是最新版本 $PREV_VER（$REF）（如需强制重新部署：sudo signallight update --force）"
+  if ! service_active; then
+    info "服务原本没有在运行，正在启动"
+    service_restart
+    wait_healthy "$PREV_VER" 90 || die "服务启动后没有通过健康检查，请执行 sudo signallight status 并查看日志"
+    info "已启动"
+  fi
   exit 0
 fi
 info "当前版本 $PREV_VER → $REF（$LATEST）"

@@ -11,6 +11,8 @@
  *                                 taker volume, mark prices and the open-interest archive)
  *   research [--kind signals|light|levels|plans|defend|watch|patterns] [--all]
  *                                 generate the research reports, save them and print the findings (--all: every row)
+ *   research-job                  the weekly run (all reports, prune, log the summary); the scheduler starts it
+ *                                 as a child process
  *   reports [--all]               print the newest saved report of each kind (read-only; diagnose uses it)
  *   compare --set KEY=VALUE [--set ...] [--tf 1h] [--coin BTC] [--step 2]
  *                                 replay the traffic light with the current and the changed parameters on the
@@ -211,6 +213,14 @@ async function main() {
       if (!kind || kind === "patterns") reports.push(await patternsReport(engine, { paramsVersion: version }));
       for (const r of reports) printReport(r, saveReport(r), rest.includes("--all"));
       console.log("\n优势单位 R（1R = 入场时 1 倍 ATR），已扣成本，对比同期随机对照。");
+      break;
+    }
+    case "research-job": {
+      // internal: the weekly scheduler runs this in a child process so the site keeps serving
+      const { runResearch } = await import("../src/lib/research/jobs.ts");
+      const { logger } = await import("../src/lib/server/log.ts");
+      const r = await runResearch();
+      logger.info("engine", "研究报告已生成", r);
       break;
     }
     case "reports": {
