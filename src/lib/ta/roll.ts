@@ -121,7 +121,7 @@ export interface AddLimit {
   /** the most that may be added at `price` (0: do not add) */
   qty: number;
   /** which rule set the limit */
-  binding: "budget" | "pyramid" | "liquidation" | "margin" | "count" | "losing" | "stop";
+  binding: "budget" | "pyramid" | "liquidation" | "margin" | "house" | "count" | "losing" | "stop";
   /** after adding `qty` */
   avg: number;
   liq: number | null;
@@ -155,6 +155,8 @@ export function maxAdd(o: {
   /** USDT free to open with; null / absent: not checked (hand-entered accounts) */
   available?: number | null;
   liqOf?: LiqOf;
+  /** isolated "house money": the add's margin may not exceed the floating profit at `price` */
+  house?: boolean;
 }): AddLimit {
   const r: Record<"pyramid" | "maxAdds" | "liqGapAtr", number> = { ...ROLL_RULES, ...o.rules };
   const fee = o.fee ?? DEFAULT_FEE.taker;
@@ -180,6 +182,7 @@ export function maxAdd(o: {
     ["budget", (o.budget + a) / lossPerUnit],
     ["pyramid", r.pyramid * pos.lastAdd],
     ["margin", o.available != null ? (Math.max(0, o.available) * Math.max(1, o.leverage)) / price : Infinity],
+    ["house", o.house ? (Math.max(0, d * (price - pos.avg) * pos.qty - fee * price * pos.qty) * Math.max(1, o.leverage)) / price : Infinity],
   ];
   // liquidation moves toward the price as size grows: bisect for the largest size that keeps the gap
   const gap = (o.atr ?? 0) * r.liqGapAtr;

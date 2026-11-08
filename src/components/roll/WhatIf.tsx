@@ -62,7 +62,7 @@ export function WhatIf({ h, v, acc, onRecord }: { h: Holding; v: HoldingView; ac
 
       {losing ? (
         <p className="rounded-lg bg-warn-soft px-3 py-2 text-xs leading-relaxed text-ink-2">
-          现在浮亏：按规则不加仓，下面只是把“拉低均价”算清楚。回测（E19）：在关键位直接接平均亏 0.3–0.45R；等 15 分钟转强再进好 0.44R，但本身仍不赚钱。亏损补仓（E47）还在回测，结果出来前这里不推荐补仓位置。补仓前先确定：止损不往外挪、补完打到止损仍在每笔风险以内、强平仍在止损之外。
+          现在浮亏：按规则不加仓，下面只是把“拉低均价”算清楚。回测（E19）：在关键位直接接平均亏 0.3–0.45R；等 15 分钟转强再进好 0.44R，但本身仍不赚钱。亏损补仓（E47，2,039 笔）：计划内分批补仓对一次满仓 −0.01 到 −0.03R、四种都不达标；价格回到止损保护的摆动点后 94% 的单最后仍亏；摊平（挪止损）−0.06R、10% 的单亏超 1.5R。所以这里不推荐补仓位置；真要补，止损不往外挪、补完打到止损仍在每笔风险以内、强平仍在止损之外。
         </p>
       ) : limit ? (
         <p className="text-sm">{limit.qty > 0 ? <>按规则最多加 <b className="num">{trimQty(limit.qty)}</b>（受“{bindingText(limit.binding, v.rules)}”限制）{!typed && by !== "target" ? "，下面按这个上限算。" : "。"}</> : <span className="text-warn">按规则这次不加：{bindingText(limit.binding, v.rules)}。</span>}</p>

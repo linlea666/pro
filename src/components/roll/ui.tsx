@@ -41,6 +41,7 @@ export const bindingText = (b: AddLimit["binding"], r: { pyramid: number; maxAdd
     pyramid: `金字塔（不超过上一笔的 ${r.pyramid * 100}%）`,
     liquidation: `强平距离（止损要在强平前 ${r.liqGapAtr} 倍 ATR）`,
     margin: "可用保证金不够",
+    house: "浮盈不够（逐仓激进只用浮盈加）",
     count: `最多加 ${r.maxAdds} 次`,
     losing: "浮亏中不加仓",
     stop: "止损在现价另一边",

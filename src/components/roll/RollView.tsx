@@ -11,6 +11,7 @@ import type { CoinMeta } from "@/lib/symbols";
 import { fmtPrice } from "../coin/format";
 import { track } from "../track";
 import { AccountHealth } from "./AccountHealth";
+import { DecisionPanel, TrendExit } from "./DecisionPanel";
 import { ExchangePanel, type ExData } from "./ExchangePanel";
 import { PositionTable } from "./PositionTable";
 import { Term } from "./Term";
@@ -318,7 +319,6 @@ function PositionDetail({ h, v, acc, onChange, onRemove }: { h: Holding; v: View
   const exPos = h.ex && acc.snap ? acc.snap.positions.find((p) => p.key === h.ex!.key) : undefined;
   const check = exPos && acc.snap ? liqCheck(acc.snap, exPos) : null;
   const sanity = listed ? stopVsStructure(h.dir, stop, v.st?.stop ?? null, atr, pos.qty) : null;
-  const losing = price != null && h.dir * (price - pos.avg) <= 0;
   const upl = h.ex ? h.ex.upl : (v.open ?? 0);
   const stopFrom = v.stopFrom === "exchange" ? "交易所止损单" : v.stopFrom === "page" ? "你设的计划止损" : v.stopFrom === "structure" ? "结构认错位（交易所没挂）" : "";
   return (
@@ -379,15 +379,8 @@ function PositionDetail({ h, v, acc, onChange, onRemove }: { h: Holding; v: View
             )}
           </div>
 
-          {losing && listed && (
-            <div className="space-y-1 rounded-lg border border-warn/40 bg-warn-soft p-3 text-sm">
-              <p className="font-semibold">如果继续往反方向走</p>
-              <p className="text-ink-2">
-                认错的位置：<b className="num">{fmtPrice(stop)}</b>（{stopFrom || "还没有止损"}），打到{v.atStop != null ? `${money(v.atStop)} USDT` : "—"}；强平 <b className="num">{fmtPrice(liq)}</b>。
-                按规则亏损的单不加仓摊平；想看补仓会怎样，到“加减仓试算”里算（研究 E47 结果出来前不推荐补仓位置）。日线反向时的必须止损价和锁仓计算在下一期加上。
-              </p>
-            </div>
-          )}
+          {listed && <TrendExit h={h} v={v} acc={acc} />}
+          {listed && <DecisionPanel h={h} v={v} acc={acc} />}
 
           {listed && <NextSteps h={h} v={v} onChange={onChange} />}
           {listed && <Ladder h={h} v={v} />}
@@ -784,7 +777,7 @@ function Settings({ h, v, onChange }: { h: Holding; v: View; onChange: (p: Parti
         <select id="h-style" className={field} value={h.style ?? "steady"} onChange={(e) => onChange({ style: e.target.value === "steady" ? undefined : (e.target.value as "bold" | "aggressive") })}>
           <option value="steady">稳健（默认）</option>
           <option value="bold">进取：保本滚</option>
-          <option value="aggressive">激进：可亏一笔风险</option>
+          <option value="aggressive">{h.mode === "isolated" ? "激进：逐仓浮盈滚" : "激进：可亏一笔风险"}</option>
         </select>
       </label>
       <label className="space-y-1">
@@ -1030,7 +1023,7 @@ function Rules() {
     <details className="card p-4 text-sm leading-relaxed">
       <summary className="cursor-pointer font-semibold">这页按什么规则算</summary>
       <ul className="mt-2 list-disc space-y-1 pl-5 text-ink-2">
-        <li>只在赚钱的一边加仓，亏损的单不加仓摊平（马丁格尔会把一笔错单放大）。“加减仓试算”可以算补仓拉低均价的结果，但在 E47 回测结果出来前不推荐补仓位置。</li>
+        <li>只在赚钱的一边加仓，亏损的单不加仓摊平（马丁格尔会把一笔错单放大）。“加减仓试算”可以算补仓拉低均价的结果，但不推荐补仓位置：E47 里计划内分批补仓对一次满仓 −0.01 到 −0.03R（都不达标），价格回到止损保护的摆动点后 94% 的单最后仍亏，摊平（挪止损）−0.06R 且 10% 的单亏超 1.5R。日线方向和持仓相反时，页面给出必须守住的止损、反弹离场位和锁仓计算（锁仓不建议，只作临时用）。</li>
         <li>加仓等价格<b>收盘</b>越过前方关键位（来自币页的“关键价位”：15 分钟到周线多种方法合并，离得近的已合在一起），先把止损移到新的保护位，再算能加多少。</li>
         <li>每次加完，整笔打到止损最多亏“每笔风险”（或选“保本滚仓”：不亏）；每次不超过上一笔的 {ROLL_RULES.pyramid * 100}%，最多加 {ROLL_RULES.maxAdds} 次；止损要在强平前至少 {ROLL_RULES.liqGapAtr} 倍 ATR；加仓要的保证金（数量 × 价格 ÷ 开仓杠杆）不超过交易所账户的可用保证金。不再限制“实际杠杆”：打到止损亏多少和强平在不在止损外面，才是真正的约束。</li>
         <li>交易所账户：权益、可用、杠杆、强平价、止损单都用交易所的数字。加仓后的强平价按交易所给的维持保证金反推：逐仓用这笔自己的保证金，全仓把账户里所有全仓仓位一起算（其他合约价格不动）；和交易所现在的强平价差超过 1% 时标“估算”。</li>
@@ -1063,7 +1056,7 @@ function AlertCard({ server, accounts, onSave }: { server: Server; accounts: Acc
     <section className="card space-y-3 p-4 text-sm">
       <h2 className="text-[15px] font-semibold">邮件提醒</h2>
       <p className="text-xs leading-relaxed text-ink-3">
-        服务器每分钟看一次：收盘（每笔持仓自己选 4 小时 / 1 小时 / 15 分钟）越过关键位（多单站上、空单跌破）、按规则可以加仓时；冲击减仓位的那根 4 小时收盘没站稳（或站稳了）时（选“碰到就减”的是价格到减仓位时）；价格到你填的价位时；开了“浮盈回吐提醒”的持仓吐回一半浮盈时；开了“站稳后保本”的持仓 4 小时收盘站稳第一个关键位、该把止损移到保本价时；快到止损、已经过了止损、离强平太近时；所有持仓一起打到止损超过账户 {ACCOUNT_RISK_PCT}% 时；交易所持仓没有止损单、止损单在强平后面或只覆盖一部分时（新开的仓位一出现就检查）。同一件事只发一次，同一分钟的几件事合成一封。刚打开时第一轮只记录不发。
+        服务器每分钟看一次：收盘（每笔持仓自己选 4 小时 / 1 小时 / 15 分钟）越过关键位（多单站上、空单跌破）、按规则可以加仓时；冲击减仓位的那根 4 小时收盘没站稳（或站稳了）时（选“碰到就减”的是价格到减仓位时）；价格到你填的价位时；开了“浮盈回吐提醒”的持仓吐回一半浮盈时；开了“站稳后保本”的持仓 4 小时收盘站稳第一个关键位、该把止损移到保本价时；快到止损、已经过了止损、离强平太近时；所有持仓一起打到止损超过账户 {ACCOUNT_RISK_PCT}% 时；交易所持仓没有止损单、止损单在强平后面或只覆盖一部分时（新开的仓位一出现就检查）；日线方向转成和持仓相反时（写出必须守住的止损和反弹离场位）。同一件事只发一次，同一分钟的几件事合成一封。刚打开时第一轮只记录不发。
       </p>
       {!server.mailReady && <p className="text-xs text-warn">后台的邮件还没配置好：先到“系统设置 → 邮件与告警”填 SMTP 并保存。</p>}
       <label className="flex items-center gap-2">

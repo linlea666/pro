@@ -5,6 +5,8 @@
 
 import { stopOf, type ExSnapshot } from "./exchange.ts";
 import { exLiqOf } from "./ta/margin.ts";
+import { BIG_TREND_FACTS, type BigTrend } from "./ta/bigtrend.ts";
+import { mustExit } from "./ta/decide.ts";
 import type { TrendPlan } from "./trendplan.ts";
 import { cutPlan, DEFAULT_FEE, ROLL_RULES, planSteps, fundingCost, liquidationPrice, maxAdd, nextAddLevel, pnlAt, positionOf, rollStatus, trimQty, type CutMode, type Dir, type Fill, type MarginMode } from "./ta/roll.ts";
 
@@ -305,6 +307,8 @@ export interface Market {
   lastClose: { t: number; c: number; prev: number; hi?: number; lo?: number } | null;
   /** the last two closed 1-hour / 15-minute closes, when a holding confirms adds on them */
   closes?: Partial<Record<"1h" | "15m", { t: number; c: number; prev: number }>>;
+  /** the weekly / daily trend (P4: the daily trend against the position) */
+  big?: BigTrend | null;
 }
 
 /**
@@ -332,6 +336,7 @@ export function marketOf(p: TrendPlan | null, price: number | null, funding: num
     swingStop: { "1": stopOf(1), "-1": stopOf(-1) },
     funding,
     lastClose: n >= 2 ? { t: closed[n - 1].t, c: closed[n - 1].c, prev: closed[n - 2].c, hi: closed[n - 1].h, lo: closed[n - 1].l } : null,
+    big: p.big,
   };
 }
 
@@ -372,7 +377,9 @@ export function holdingView(h: Holding, acc: Account, m: Market) {
   const exPos = h.ex && acc.snap ? acc.snap.positions.find((p) => p.key === h.ex!.key) : undefined;
   const liqOf = exPos && acc.snap ? exLiqOf(acc.snap, exPos, acc.fee) : undefined;
   const available = acc.snap ? acc.snap.available : null;
-  const add = (at: number, atStop = stop) => (atStop != null ? maxAdd({ pos, price: at, stop: atStop, budget, mode: h.mode, leverage: h.leverage, account: acc.total, atr, fee: acc.fee, rules: rulesUsed, available, liqOf }) : null);
+  // isolated aggressive: each add's margin comes out of the floating profit (P2.5 "逐仓浮盈滚")
+  const house = h.style === "aggressive" && h.mode === "isolated";
+  const add = (at: number, atStop = stop) => (atStop != null ? maxAdd({ pos, price: at, stop: atStop, budget, mode: h.mode, leverage: h.leverage, account: acc.total, atr, fee: acc.fee, rules: rulesUsed, available, liqOf, house }) : null);
   // the next level is where to add after a close beyond it while adding is still allowed; otherwise it is the first cut
   const next = price != null ? nextAddLevel(h.dir, price, m.levels) : null;
   const canAdd = next != null && (add(next)?.qty ?? 0) > 0;
@@ -394,7 +401,7 @@ export function holdingView(h: Holding, acc: Account, m: Market) {
     ? h.fills.flatMap((f, i) => (f.kind === "add" && !f.closed ? [{ i, price: f.price, qty: f.qty, from: h.fills.slice(0, i).filter((x) => x.kind !== "reduce").at(-1)?.price ?? f.price, stop: f.stop ?? null, atStop: f.stop != null ? h.dir * (f.stop - f.price) * f.qty - acc.fee * (f.price + f.stop) * f.qty : null }] : []))
     : [];
   const ownStop = (at: number) => (h.addStops ? addStopOf(h.dir, crossedLevel(h.dir, m.levels, lastOpen, at), atr, m.buf, stop, at) : null);
-  return { liqOf, available, be, lots, ownStop, lastOpen, buf: m.buf ?? null, levelInfo: m.levelInfo ?? [], cutMode, pos, price, atr, st, stop, stopFrom, guard, liq, levels: m.levels, cuts, addLevel, budget, rules: { pyramid: rulesUsed?.pyramid ?? ROLL_RULES.pyramid, maxAdds: rulesUsed?.maxAdds ?? ROLL_RULES.maxAdds, liqGapAtr: ROLL_RULES.liqGapAtr as number }, add, status, open, atStop, fundDay, funding: m.funding, steps };
+  return { big: m.big ?? null, liqOf, available, be, lots, ownStop, lastOpen, buf: m.buf ?? null, levelInfo: m.levelInfo ?? [], cutMode, pos, price, atr, st, stop, stopFrom, guard, liq, levels: m.levels, cuts, addLevel, budget, rules: { pyramid: rulesUsed?.pyramid ?? ROLL_RULES.pyramid, maxAdds: rulesUsed?.maxAdds ?? ROLL_RULES.maxAdds, liqGapAtr: ROLL_RULES.liqGapAtr as number }, add, status, open, atStop, fundDay, funding: m.funding, steps };
 }
 export type HoldingView = ReturnType<typeof holdingView>;
 
@@ -402,13 +409,13 @@ export type HoldingView = ReturnType<typeof holdingView>;
 
 export interface RollAlert {
   key: string;
-  kind: "add" | "cut" | "giveback" | "target" | "stop" | "liq" | "risk" | "guard";
+  kind: "add" | "cut" | "giveback" | "target" | "stop" | "liq" | "risk" | "guard" | "trend";
   title: string;
   lines: string[];
 }
 
 /** what the previous round saw, per holding id (and per account for the account risk) */
-export type RollMemory = Record<string, { price?: number; status?: string; barT?: number; bar4?: number; best?: number; fills?: number; gave?: number; guard?: string }>;
+export type RollMemory = Record<string, { price?: number; status?: string; barT?: number; bar4?: number; best?: number; fills?: number; gave?: number; guard?: string; against?: boolean }>;
 
 const fp = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? "—" : v >= 1000 ? v.toLocaleString("en-US", { maximumFractionDigits: 1 }) : v >= 1 ? v.toFixed(v >= 100 ? 2 : 3) : v.toPrecision(4));
 const usd = (v: number) => `${v >= 0 ? "+" : "−"}${Math.abs(Math.round(v)).toLocaleString("en-US")} USDT`;
@@ -444,12 +451,28 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
       const nf = h.fills.length;
       const best = was?.fills === nf && was.best != null ? (h.dir > 0 ? Math.max(was.best, price) : Math.min(was.best, price)) : price;
       next[h.id] = { price, status: v.status?.title, barT: lc?.t ?? was?.barT, bar4: m.lastClose?.t ?? was?.bar4, best, fills: nf, ...(was?.fills === nf && was.gave != null ? { gave: was.gave } : {}), ...(v.guard ? { guard: v.guard.state } : {}) };
+      // P4: the daily trend against the position (known only with the plan's daily data)
+      const exit = m.big !== undefined ? mustExit({ dir: h.dir, price, avg: v.pos.avg, stop: v.stop, structureStop: v.st?.stop ?? null, levels: m.levels, big: m.big, liq: v.liq }) : null;
+      if (m.big !== undefined) next[h.id].against = !!exit;
       if (v.atStop != null) (loss += Math.max(0, -v.atStop)), known++;
       const head = `${acc.name} · ${h.coin} ${h.dir > 0 ? "多单" : "空单"}`;
       const base = `现价 ${fp(price)}，均价 ${fp(v.pos.avg)}，数量 ${trimQty(v.pos.qty)}，浮动盈亏 ${usd(v.open ?? 0)}`;
       if (v.guard && v.guard.state !== "ok" && (was ? was.guard !== v.guard.state : seen && !!h.ex))
         alerts.push({ key: `${h.id}:guard:${v.guard.state}:${Math.round(v.pos.qty * 1e6)}`, kind: "guard", title: `${head}：${v.guard.title}`, lines: [v.guard.detail, `交易所强平价 ${fp(v.liq)}。`, base] });
       if (!was) continue;
+      if (exit && was.against === false)
+        alerts.push({
+          key: `${h.id}:trend:${m.big?.day.sinceT ?? 0}`,
+          kind: "trend",
+          title: `${head}：${exit.trend}，和你的方向相反`,
+          lines: [
+            `必须守住的止损：${fp(exit.stop)}${exit.stopBeforeLiq === false ? `（在强平价 ${fp(v.liq)} 后面，等于没有止损：先减仓或挪止损）` : ""}；交易所止损单：${h.ex ? (h.ex.sl != null ? `有（${fp(h.ex.sl)}）` : "没有，先挂上") : "请确认已挂好"}。`,
+            exit.exit != null ? `反弹到 ${fp(exit.exit)} 一带，4 小时收盘${h.dir > 0 ? "站不上" : "跌不破"}就离场，不必等到止损。` : "均价和现价之间没有关键位：按止损走。",
+            exit.flip != null ? `日线收盘${h.dir > 0 ? "站回" : "跌回"} ${fp(exit.flip)} 才算日线方向转回你这边。` : "",
+            BIG_TREND_FACTS.e37,
+            base,
+          ].filter(Boolean),
+        });
       const srcLine = (x: number) => { const t = levelSource(m.levelInfo, x); return t ? [`这个位来自：${t}。`] : []; };
       const crossed = (x: number) => was.price != null && was.price !== x && (was.price - x) * (price - x) <= 0;
 

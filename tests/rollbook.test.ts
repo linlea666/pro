@@ -132,8 +132,13 @@ test("aggressive style: the per-trade risk as the budget even when the account r
   const v = holdingView(b.accounts[0].holdings[0], b.accounts[0], mk(2360).ETH);
   assert.equal(v.budget, 200);
   assert.equal(v.rules.maxAdds, 5);
-  // (200 + 4 × 20) / 40 = 7 > the pyramid's 4
-  assert.equal(v.add(2360)!.binding, "pyramid");
+  // cross: (200 + 4 × 20) / 40 = 7 > the pyramid's 4
+  const cross = { ...b.accounts[0].holdings[0], mode: "cross" as const };
+  assert.equal(holdingView(cross, b.accounts[0], mk(2360).ETH).add(2360)!.binding, "pyramid");
+  // isolated aggressive rolls with house money: the 240 USDT floating profit pays for 240 × 10 / 2360 ≈ 1.02
+  const iso = v.add(2360)!;
+  assert.equal(iso.binding, "house");
+  assert.ok(Math.abs(iso.qty - 2400 / 2360) < 1e-9);
 });
 
 test("the account's real leverage no longer caps adds; an old noLevCap flag still loads and is ignored", async () => {
