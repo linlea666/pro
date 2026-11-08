@@ -1,7 +1,7 @@
 import { getKlines } from "../data/klines.ts";
 import { getPerpSnapshot } from "../data/perp.ts";
 import type { ExSnapshot } from "../exchange.ts";
-import { cleanBook, DEFAULT_ROLL_ALERT, holdingView, marketOf, pickRollAlerts, reconcileBook, rollMailText, type Market, type RollAlert, type RollBook, type RollMemory } from "../rollbook.ts";
+import { cleanBook, DEFAULT_ROLL_ALERT, holdingView, marketOf, pickExAlerts, pickRollAlerts, reconcileBook, rollMailText, type Market, type RollAlert, type RollBook, type RollMemory } from "../rollbook.ts";
 import { getTrendPlan } from "../trendplan.ts";
 import { TF_SECONDS } from "../types.ts";
 import { coinIds } from "./coins.ts";
@@ -108,10 +108,16 @@ const siteUrl = () => getWatchAlertConfig().siteUrl;
 export async function runRollAlerts(nowMs = Date.now()): Promise<RollAlert[]> {
   const b = getRollBook();
   const mail = alertMail(b);
-  if (!b.alert.enabled || !mailReady(mail) || !b.accounts.some((a) => a.holdings.length)) return [];
+  if (!b.alert.enabled || !mailReady(mail) || !b.accounts.some((a) => a.holdings.length || a.exchange)) return [];
   const raw = getState("rollAlert.mem");
   const prev = raw ? (JSON.parse(raw) as RollMemory) : null;
-  const { alerts, mem } = pickRollAlerts(b, await markets(b), prev ?? {});
+  const held = pickRollAlerts(b, await markets(b), prev ?? {});
+  // positions on coins the site does not list: only their stop orders can be checked
+  const { exSnapshots } = await import("./exchange.ts");
+  const snaps = Object.values(exSnapshots()).flatMap((x) => (x.snap && !x.error ? [x.snap] : []));
+  const other = pickExAlerts(snaps, prev ?? {});
+  const alerts = [...held.alerts, ...other.alerts];
+  const mem = { ...held.mem, ...other.mem };
   setState("rollAlert.mem", JSON.stringify(mem));
   if (prev == null || !alerts.length) return [];
 

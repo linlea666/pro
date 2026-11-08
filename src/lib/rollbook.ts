@@ -177,6 +177,7 @@ export function reconcileBook(book: RollBook, snaps: ExSnapshot[]): RollBook {
       accounts.push(acc);
     }
     acc.total = Math.round(s.equity * 100) / 100;
+    acc.name = s.name;
     const old = new Map(acc.holdings.filter((h) => h.source === "exchange" && h.ex).map((h) => [h.ex!.key, h]));
     const synced: Holding[] = [];
     for (const p of s.positions) {
@@ -355,7 +356,9 @@ export function holdingView(h: Holding, acc: Account, m: Market) {
   const cutMode = cutModeOf(h);
   const cuts = price != null && cutMode !== "none" ? cutPlan(pos, price, canAdd ? m.levels.filter((x) => h.dir * (x - next!) > 0) : m.levels, acc.fee) : [];
   const addLevel = canAdd || (next != null && !cuts.some((c) => c.price === next)) ? next : null;
-  const status = price != null ? rollStatus({ pos, price, stop, liq, atr, cuts, addLevel, fee: acc.fee, confirm: CONFIRM_NAME[confirmOf(h)], cutMode }) : null;
+  const plain = price != null ? rollStatus({ pos, price, stop, liq, atr, cuts, addLevel, fee: acc.fee, confirm: CONFIRM_NAME[confirmOf(h)], cutMode }) : null;
+  // a synced holding whose stop orders do not protect it: that comes first, unless liquidation is already near
+  const status = plain && guard && guard.state !== "ok" && plain.tone !== "bad" ? { tone: guard.state === "partial" ? ("warn" as const) : ("bad" as const), title: guard.title, detail: `${guard.detail} 其余：${plain.title}，${plain.detail}` } : plain;
   const open = price != null ? pnlAt(pos, price, acc.fee) : null;
   const atStop = stop != null && pos.qty > 0 ? pnlAt(pos, stop, acc.fee) : null;
   const fundDay = m.funding != null && price != null ? fundingCost(h.dir, pos.qty * price, m.funding, 3) : null;
@@ -523,6 +526,37 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
       next[k] = { status: st };
       if (mem[k] && mem[k].status !== "over" && st === "over")
         alerts.push({ key: `${k}:over:${Math.round(pct)}`, kind: "risk", title: `${acc.name}：账户总风险超过 ${ACCOUNT_RISK_PCT}%`, lines: [`所有持仓一起打到止损要亏 ${Math.round(loss).toLocaleString("en-US")} USDT，是账户的 ${pct.toFixed(1)}%。考虑减仓。`] });
+    }
+  }
+  return { alerts, mem: next };
+}
+
+/**
+ * Stop-order alerts for exchange positions on coins the site does not list (they are not mirrored as
+ * holdings, so `pickRollAlerts` never sees them). Same rule as the holdings: when the state turns bad,
+ * or at once for a position that appears after its account was first seen.
+ */
+export function pickExAlerts(snaps: ExSnapshot[], mem: RollMemory): { alerts: RollAlert[]; mem: RollMemory } {
+  const alerts: RollAlert[] = [];
+  const next: RollMemory = {};
+  for (const s of snaps) {
+    const seen = !!mem[`exseen:${s.id}`];
+    next[`exseen:${s.id}`] = {};
+    for (const p of s.positions) {
+      if (p.coin) continue;
+      const st = stopOf(s, p);
+      const g = exGuard({ dir: p.dir, ex: { key: p.key, instId: p.instId, liq: p.liq, mark: p.mark, upl: p.upl, margin: p.margin, mmr: p.mmr, sl: st.sl, covered: st.covered, tp: st.tp, trail: st.trail, t: s.t } }, p.qty);
+      if (!g) continue;
+      const k = `ex:${s.id}:${p.key}`;
+      next[k] = { guard: g.state };
+      const was = mem[k];
+      if (g.state !== "ok" && (was ? was.guard !== g.state : seen))
+        alerts.push({
+          key: `${k}:${g.state}:${Math.round(p.qty * 1e6)}`,
+          kind: "guard",
+          title: `${s.name} · ${p.instId} ${p.dir > 0 ? "多单" : "空单"}：${g.title}`,
+          lines: [g.detail, `均价 ${fp(p.avg)}，标记价 ${fp(p.mark)}，数量 ${trimQty(p.qty)}，浮动盈亏 ${usd(p.upl)}，交易所强平价 ${fp(p.liq)}。`, `${p.base} 不在本站币种里，只能检查止损单；加入币种后才有关键位和滚仓计算。`],
+        });
     }
   }
   return { alerts, mem: next };

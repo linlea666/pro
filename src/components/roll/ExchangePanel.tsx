@@ -118,7 +118,7 @@ export function ExchangePanel({ onSynced }: { onSynced: () => void }) {
       {form && <KeyForm mode={form} acc={acc} busy={busy} http={http} data={data} onCancel={() => setForm(null)} onSubmit={(b) => post({ action: "save", ...b })} />}
 
       {acc && entry?.error && <p className="rounded-lg bg-down-soft px-3 py-2 text-sm">读取失败：{entry.error}</p>}
-      {acc && snap && <Snapshot snap={snap} stale={now - snap.t > STALE_MS} onRefresh={() => load(true)} keyHint={acc.keyHint} ipRestrict={acc.ipRestrict} />}
+      {acc && snap && <Snapshot key={acc.id} snap={snap} stale={now - snap.t > STALE_MS} onRefresh={() => load(true)} keyHint={acc.keyHint} ipRestrict={acc.ipRestrict} />}
 
       {!data.accounts.length && !form && (
         <p className="text-sm text-ink-3">添加一个交易所的只读 API Key 后，这里直接读取余额、持仓、强平价和止损挂单，持仓会自动出现在下面的滚仓账户里，不用再手填。</p>
@@ -211,7 +211,7 @@ function Snapshot({ snap, stale, onRefresh, keyHint, ipRestrict }: { snap: ExSna
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-ink-3">
         <span>
-          {EXCHANGE_NAME[snap.ex]} · 账户快照 {time}
+          {EXCHANGE_NAME[snap.ex]} · {snap.posMode === "hedge" ? "双向持仓" : "单向持仓"} · 账户快照 {time}
           {stale ? <span className="text-warn"> · 快照已超过 30 秒，请刷新后再参考</span> : ""} · Key {keyHint}
           {ipRestrict === false && <span className="text-warn"> · 这个 Key 没有绑定 IP</span>}
         </span>
@@ -222,9 +222,9 @@ function Snapshot({ snap, stale, onRefresh, keyHint, ipRestrict }: { snap: ExSna
         <Stat k="当前可用于开仓" v={usdt(snap.available)} />
         <Stat k="挂单占用" v={usdt(snap.frozen)} />
         <Stat
-          k="维持保证金倍数"
+          k="爆仓安全倍数"
           v={<span className={ratioTone}>{snap.mgnRatio != null ? `${snap.mgnRatio.toFixed(1)} 倍` : "—"}</span>}
-          sub={snap.mmr != null ? `维持保证金 ${usdt(snap.mmr)}；1 倍即强平` : "没有全仓占用"}
+          sub={snap.mmr != null ? `权益 ÷ 维持保证金 ${usdt(snap.mmr)}，降到 1 倍就强平；3 倍以下要小心` : "没有占用维持保证金"}
         />
       </div>
       {snap.warnings.map((w) => <p key={w} className="text-xs text-warn">⚠ {w}</p>)}
@@ -235,6 +235,7 @@ function Snapshot({ snap, stale, onRefresh, keyHint, ipRestrict }: { snap: ExSna
             const liqPct = p.liq != null && p.mark > 0 ? Math.abs(p.mark - p.liq) / p.mark * 100 : null;
             const naked = st.sl == null;
             const beyond = st.sl != null && p.liq != null && p.dir * (st.sl - p.liq) <= 0;
+            const partial = st.covered != null && st.covered < p.qty * 0.99;
             return (
               <div key={p.key} className="space-y-1 rounded-lg border border-line px-3 py-2 text-sm">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -245,7 +246,7 @@ function Snapshot({ snap, stale, onRefresh, keyHint, ipRestrict }: { snap: ExSna
                 <div className="num text-xs text-ink-3">数量 {trimQty(p.qty)} {p.base} · 均价 {fmtPrice(p.avg)} · 标记价 {fmtPrice(p.mark)}</div>
                 <div className="num text-xs">
                   强平 {p.liq != null ? `${fmtPrice(p.liq)}（${liqPct!.toFixed(1)}%）` : "—"} ·{" "}
-                  {naked ? <b className="text-down">没有止损单</b> : beyond ? <b className="text-down">止损 {fmtPrice(st.sl)} 在强平后面</b> : <span className="text-up">止损 {fmtPrice(st.sl)}{st.covered != null && st.covered < p.qty * 0.99 ? `（只覆盖 ${trimQty(st.covered)}）` : ""}</span>}
+                  {naked ? <b className="text-down">没有止损单</b> : beyond ? <b className="text-down">止损 {fmtPrice(st.sl)} 在强平后面</b> : partial ? <b className="text-warn">止损 {fmtPrice(st.sl)} 只覆盖 {trimQty(st.covered!)}，还有 {trimQty(p.qty - st.covered!)} 没保护</b> : <span className="text-up">止损 {fmtPrice(st.sl)}</span>}
                 </div>
                 {!p.coin && <div className="text-xs text-ink-3">{p.base} 不在本站币种里：只显示交易所数字，加入币种后才有关键位和滚仓计算。</div>}
               </div>

@@ -184,7 +184,7 @@ export function RollView({ coins }: { coins: CoinMeta[] }) {
       <header className="space-y-1.5">
         <h1 className="text-2xl font-semibold">滚仓助手</h1>
         <p className="max-w-3xl text-sm leading-relaxed text-ink-2">
-          填上你已经开的合约仓位，这里告诉你：现在赚多少、离止损和强平多远、下一次能在哪里加多少、加完均价和打到止损的结果、到哪里该减。页面不下单，也不预测涨跌：滚仓只是让你在大行情里拿得更重，小行情里可能把小赚变成小亏。
+          接上交易所只读账户（站长登录后）或手动填上已经开的合约仓位，这里告诉你：止损单挂好没有、现在赚多少、离止损和强平多远、下一次能在哪里加多少、加完均价和打到止损的结果、到哪里该减。页面不下单，也不预测涨跌：滚仓只是让你在大行情里拿得更重，小行情里可能把小赚变成小亏。
         </p>
       </header>
 
@@ -200,7 +200,7 @@ export function RollView({ coins }: { coins: CoinMeta[] }) {
         </div>
       ) : (
         <p className="text-xs text-ink-3">
-          账户和持仓只存在这个浏览器里。站长<Link href="/admin" className="text-accent">登录后台</Link>后，这一页会改存到服务器，并能在到加仓位、减仓位、快到止损时发邮件。
+          账户和持仓只存在这个浏览器里。站长<Link href="/admin" className="text-accent">登录后台</Link>后，可以接入 OKX / 币安的只读账户自动同步持仓，这一页改存到服务器，并能在没挂止损单、到加仓位、减仓位、快到止损时发邮件。
         </p>
       )}
 
@@ -269,7 +269,7 @@ function AccountBar({ accounts, acc, onPick, onChange, onAdd, onRemove }: { acco
       <div className="grid grid-cols-2 gap-3 text-xs text-ink-3 sm:grid-cols-5">
         <label className="space-y-1">
           <span>账户名</span>
-          <input id="acc-name" className={field} value={acc.name} onChange={(e) => onChange({ name: e.target.value })} />
+          <input id="acc-name" className={field} disabled={!!acc.exchange} value={acc.name} onChange={(e) => onChange({ name: e.target.value })} />
         </label>
         <label className="space-y-1">
           <span>{acc.exchange ? "账户权益（跟随交易所）" : "账户总金额 (USDT)"}</span>
@@ -324,13 +324,20 @@ function AccountRisk({ acc, views }: { acc: Account; views: (readonly [Holding, 
   const twice = [1, -1].flatMap((d) => [...new Set(views.filter(([h]) => h.dir === d).map(([h]) => h.coin))].filter((c) => views.filter(([h]) => h.dir === d && h.coin === c).length > 1).map((c) => `${c} ${d > 0 ? "多" : "空"}`));
   const notional = views.reduce((s, [, v]) => s + (v.price != null ? v.pos.qty * v.price : 0), 0);
   const lev = notional / acc.total;
+  // longs and shorts on the same coin offset each other (hedge mode): the exposure that moves with the price
+  const net = Object.values(views.reduce<Record<string, number>>((m, [h, v]) => ((m[h.coin] = (m[h.coin] ?? 0) + (v.price != null ? h.dir * v.pos.qty * v.price : 0)), m), {})).reduce((s, x) => s + Math.abs(x), 0) / acc.total;
+  const unguarded = views.filter(([, v]) => v.guard && v.guard.state !== "ok").length;
   return (
     <section className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
       <span>
         所有持仓一起打到止损：<b className={`num ${total > 0 ? "text-down" : "text-up"}`}>{total > 0 ? `亏 ${Math.round(total).toLocaleString("en-US")} USDT（账户的 ${pct.toFixed(1)}%）` : "都不亏"}</b>
         {known.length < views.length && <span className="text-ink-3">（{views.length - known.length} 笔还没有止损）</span>}
+        {unguarded > 0 && <span className="text-down">（{unguarded} 笔交易所止损单不完整，实际可能亏得更多）</span>}
       </span>
-      <span>实际杠杆 <b className={`num ${lev > ROLL_RULES.maxLeverage ? "text-down" : ""}`}>{lev.toFixed(1)} 倍</b></span>
+      <span>
+        实际杠杆 <b className={`num ${lev > ROLL_RULES.maxLeverage ? "text-down" : ""}`}>{lev.toFixed(1)} 倍</b>
+        {Math.abs(net - lev) > 0.05 && <span className="text-ink-3">（同币多空相抵后 {net.toFixed(1)} 倍）</span>}
+      </span>
       {pct > ACCOUNT_RISK_PCT && <span className="text-warn">⚠ 超过账户的 {ACCOUNT_RISK_PCT}%：一起打到止损时伤得很重。</span>}
       {sides.map((s) => (
         <span key={s.join()} className="text-warn">⚠ {s.join("、")} 同方向：常常一起涨跌，等于一笔更大的单。</span>
@@ -365,7 +372,7 @@ function HoldingCard({ h, v, acc, onChange, onRemove }: { h: Holding; v: View; a
         </div>
       )}
 
-      {v.guard && (v.guard.state === "ok" ? (
+      {v.guard && v.status?.title !== v.guard.title && (v.guard.state === "ok" ? (
         <p className="text-xs text-ink-3">✓ {v.guard.detail}</p>
       ) : (
         <div className="rounded-lg bg-down-soft px-4 py-3">
@@ -376,7 +383,11 @@ function HoldingCard({ h, v, acc, onChange, onRemove }: { h: Holding; v: View; a
 
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
         <Kpi k="已实现盈亏" v={<span className={toneColor(pos.realized)}>{money(pos.realized)}</span>} sub={`已付手续费 ${pos.fees.toFixed(1)}`} />
-        <Kpi k="浮动盈亏" v={<span className={toneColor(v.open ?? 0)}>{v.open != null ? money(v.open) : "—"}</span>} sub={v.open != null && pos.qty > 0 ? `保证金收益 ${((v.open / ((pos.avg * pos.qty) / h.leverage)) * 100).toFixed(1)}%` : "已扣平仓手续费"} />
+        {synced && h.ex ? (
+          <Kpi k="浮动盈亏（交易所）" v={<span className={toneColor(h.ex.upl)}>{money(h.ex.upl)}</span>} sub={`保证金收益 ${((h.ex.upl / (h.ex.margin ?? (pos.avg * pos.qty) / h.leverage)) * 100).toFixed(1)}% · 平仓手续费约 ${(pos.qty * (price ?? pos.avg) * acc.fee).toFixed(1)}`} />
+        ) : (
+          <Kpi k="浮动盈亏" v={<span className={toneColor(v.open ?? 0)}>{v.open != null ? money(v.open) : "—"}</span>} sub={v.open != null && pos.qty > 0 ? `保证金收益 ${((v.open / ((pos.avg * pos.qty) / h.leverage)) * 100).toFixed(1)}%` : "已扣平仓手续费"} />
+        )}
         <Kpi k="均价 · 数量" v={`${fmtPrice(pos.avg)} · ${trimQty(pos.qty)}`} sub={price != null ? `仓位价值 ${Math.round(pos.qty * price).toLocaleString("en-US")}` : ""} />
         <Kpi k="打到止损" v={<span className={toneColor(v.atStop ?? 0)}>{v.atStop != null ? money(v.atStop) : "—"}</span>} sub={v.atStop != null && acc.total > 0 ? `账户的 ${((v.atStop / acc.total) * 100).toFixed(1)}%` : "还没有止损"} />
       </div>

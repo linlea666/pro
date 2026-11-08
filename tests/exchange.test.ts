@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { binanceReadOnly, coinFor, okxContractValues, okxReadOnly, parseBinance, parseOkx, stopOf, type ExSnapshot } from "../src/lib/exchange.ts";
-import { cleanBook, exGuard, holdingView, pickRollAlerts, reconcileBook, type Market, type RollBook } from "../src/lib/rollbook.ts";
+import { cleanBook, exGuard, holdingView, pickExAlerts, pickRollAlerts, reconcileBook, type Market, type RollBook } from "../src/lib/rollbook.ts";
 import { binanceSign, okxSign } from "../src/lib/server/exchange.ts";
 
 const COINS = ["BTC", "ETH", "ZEC", "1000PEPE"];
@@ -253,3 +253,24 @@ test("an isolated and a cross position on the same contract stay apart, each wit
 });
 
 const positionQty = (h: RollBook["accounts"][number]["holdings"][number]) => h.fills.reduce((q, f) => q + (f.kind === "reduce" ? -f.qty : f.qty), 0);
+
+test("positions on coins the site does not list still get the stop-order alert; a missing stop order leads the status", () => {
+  const s = okx();
+  // DOGE is not on the site: no holding, but its missing stop order is checked
+  const r1 = pickExAlerts([s], {});
+  assert.equal(r1.alerts.length, 0, "first round only learns");
+  assert.equal(pickExAlerts([s], r1.mem).alerts.length, 0, "unchanged: nothing new");
+  const opened: ExSnapshot = { ...s, positions: [...s.positions, { ...s.positions[3], key: "PEPE-USDT-SWAP|cross|1", instId: "PEPE-USDT-SWAP", base: "PEPE2", coin: null }] };
+  const r2 = pickExAlerts([opened], r1.mem);
+  assert.deepEqual(r2.alerts.map((a) => a.title), ["okx · PEPE-USDT-SWAP 多单：交易所没有止损单"]);
+  assert.ok(r2.alerts.every((a) => a.kind === "guard"));
+
+  // a synced holding without a stop order: the status says so first, whatever the plan says
+  const b = reconcileBook({ accounts: [], alert: { enabled: false, to: [], dailyCap: 30 } }, [s]);
+  const acc = b.accounts[0];
+  const eth = acc.holdings.find((h) => h.coin === "ETH")!;
+  const v = holdingView(eth, acc, { price: 2230, atr: 30, levels: [], swingStop: { "1": null, "-1": { stop: 2300, anchor: 2280 } }, funding: null, lastClose: null });
+  assert.equal(v.status?.title, "交易所没有止损单");
+  assert.equal(v.status?.tone, "bad");
+  assert.equal(acc.name, "okx", "the mirror is named after the exchange account");
+});
