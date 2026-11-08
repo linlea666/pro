@@ -4,6 +4,7 @@
  */
 
 import { stopOf, type ExSnapshot } from "./exchange.ts";
+import { exLiqOf } from "./ta/margin.ts";
 import type { TrendPlan } from "./trendplan.ts";
 import { cutPlan, DEFAULT_FEE, ROLL_RULES, planSteps, fundingCost, liquidationPrice, maxAdd, nextAddLevel, pnlAt, positionOf, rollStatus, trimQty, type CutMode, type Dir, type Fill, type MarginMode } from "./ta/roll.ts";
 
@@ -26,8 +27,6 @@ export interface Holding {
   /** "bold": break-even rolling, each add up to the previous fill, up to 5 adds; "aggressive": the same with
    *  the per-trade risk as the budget (E31d) */
   style?: "bold" | "aggressive";
-  /** isolated only: adds not capped by the account's real leverage (the stop-before-liquidation rule stays) */
-  noLevCap?: boolean;
   /** E31f: after a 4-hour close beyond the first key level past the break-even price, move the stop to break-even */
   breakeven?: boolean;
   /** cuts at the levels ahead: absent = "close" (E31e) */
@@ -37,8 +36,10 @@ export interface Holding {
   /** E31g (Tony): each add carries its own stop beyond the level it broke; a hit closes only that add */
   addStops?: boolean;
   example?: boolean;
-  /** synced from a read-only exchange account: quantity, average, mode and leverage follow the exchange */
-  source?: "exchange";
+  /**
+   * A live position of a read-only exchange account (built by `exAccountOf` on every read, never stored):
+   * quantity, average, mode and leverage are the exchange's.
+   */
   ex?: HoldingEx;
 }
 
@@ -60,6 +61,8 @@ export interface HoldingEx {
   trail: boolean;
   /** ms */
   t: number;
+  /** the coin is on the site (key levels, ATR, structure stop); otherwise only the stop orders are checked */
+  listed: boolean;
 }
 
 export type ConfirmTf = "4h" | "1h" | "15m";
@@ -70,13 +73,8 @@ export const CONFIRM_NAME: Record<ConfirmTf, string> = { "4h": "4 小时", "1h":
 export const BOLD_RULES = { pyramid: 1, maxAdds: 5 };
 /** E31g: probe a third, then two adds as big as the probe (the full size after both) */
 export const PROBE_RULES = { pyramid: 1, maxAdds: 2, share: 1 / 3 };
-export const rulesOf = (h: Pick<Holding, "style" | "noLevCap" | "mode" | "probe">) => {
-  const r: { pyramid?: number; maxAdds?: number; maxLeverage?: number } = h.probe
-    ? { pyramid: PROBE_RULES.pyramid, maxAdds: PROBE_RULES.maxAdds }
-    : h.style === "bold" || h.style === "aggressive" ? { ...BOLD_RULES } : {};
-  if (h.noLevCap && h.mode === "isolated") r.maxLeverage = Infinity;
-  return Object.keys(r).length ? r : undefined;
-};
+export const rulesOf = (h: Pick<Holding, "style" | "probe">) =>
+  h.probe ? { pyramid: PROBE_RULES.pyramid, maxAdds: PROBE_RULES.maxAdds } : h.style === "bold" || h.style === "aggressive" ? { ...BOLD_RULES } : undefined;
 export const CUT_MODES: CutMode[] = ["close", "touch", "none"];
 export const CUT_NAME: Record<CutMode, string> = { close: "4 小时收盘没站稳才减", touch: "碰到关键位就减", none: "不减，只跟移动止损" };
 export const cutModeOf = (h: Pick<Holding, "cutMode">): CutMode => (h.cutMode === "touch" || h.cutMode === "none" ? h.cutMode : "close");
@@ -121,8 +119,9 @@ export interface Account {
   budget: "keep" | "even";
   fee: number;
   holdings: Holding[];
-  /** the exchange account it mirrors: the total follows the exchange equity, synced holdings follow its positions */
+  /** a read-only exchange account (built by `exAccountOf`, never stored): its id, and the snapshot behind it */
   exchange?: string;
+  snap?: ExSnapshot;
 }
 
 export interface RollAlertConfig {
@@ -145,71 +144,94 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const num = (x: unknown, lo: number, hi: number, d: number) => (typeof x === "number" && Number.isFinite(x) && x >= lo && x <= hi ? x : d);
 const str = (x: unknown, max: number, d = "") => (typeof x === "string" ? x.slice(0, max) : d);
 const posNum = (x: unknown): number | null => (typeof x === "number" && Number.isFinite(x) && x > 0 ? x : null);
-const cleanEx = (e: HoldingEx): HoldingEx => ({
-  key: str(e.key, 60),
-  instId: str(e.instId, 40),
-  liq: posNum(e.liq),
-  mark: num(e.mark, 0, 1e12, 0),
-  upl: num(e.upl, -1e12, 1e12, 0),
-  margin: posNum(e.margin),
-  mmr: posNum(e.mmr),
-  sl: posNum(e.sl),
-  covered: posNum(e.covered),
-  tp: posNum(e.tp),
-  trail: e.trail === true,
-  t: num(e.t, 0, 1e15, 0),
-});
+
+/** What the page sets on a live exchange position (the rest comes from the exchange), stored by position. */
+export type HoldingPrefs = Partial<Pick<Holding, "stop" | "targets" | "style" | "cutMode" | "confirmTf" | "giveback" | "breakeven" | "probe" | "addStops">> & {
+  /** last seen open, ms: prefs of a position closed for a week are dropped */
+  seen?: number;
+};
+/** An exchange account's own settings (the page's account bar for it). */
+export type ExAccountPrefs = Pick<Account, "riskPct" | "budget" | "fee">;
+export const DEFAULT_EX_PREFS: ExAccountPrefs = { riskPct: 2, budget: "keep", fee: DEFAULT_FEE.taker };
+
+/** The stored prefs of a position: `<exchange account id>:<ExPosition.key>`. */
+export const prefKey = (exId: string, posKey: string) => `${exId}:${posKey}`;
+
+export function cleanPrefs(x: unknown): HoldingPrefs {
+  const h = (x ?? {}) as HoldingPrefs;
+  return {
+    ...(posNum(h.stop) != null ? { stop: h.stop } : {}),
+    ...(Array.isArray(h.targets) ? { targets: h.targets.filter((t) => posNum(t) != null).slice(0, 10) } : {}),
+    ...(h.style === "bold" || h.style === "aggressive" ? { style: h.style } : {}),
+    ...(h.cutMode === "touch" || h.cutMode === "none" ? { cutMode: h.cutMode } : {}),
+    ...(h.confirmTf && CONFIRM_TFS.includes(h.confirmTf) && h.confirmTf !== "4h" ? { confirmTf: h.confirmTf } : {}),
+    ...(h.giveback === true ? { giveback: true } : {}),
+    ...(h.breakeven === true ? { breakeven: true } : {}),
+    ...(h.probe === true ? { probe: true } : {}),
+    ...(h.addStops === true ? { addStops: true } : {}),
+    ...(posNum(h.seen) != null ? { seen: h.seen } : {}),
+  };
+}
+/** The page's settings of a holding, to store for a live exchange position. */
+export const prefsOf = (h: Holding): HoldingPrefs => cleanPrefs({ ...h, stop: h.stop ?? undefined });
 
 /**
- * Mirror exchange snapshots into the book. Each snapshot gets one account (created the first time,
- * `exchange` = the snapshot id) whose total is the exchange equity. Its synced holdings follow the
- * open positions on the site's coins: new ones are added with one opening fill at the exchange average,
- * closed ones are dropped, and a changed quantity or average replaces the fills. Everything set on the
- * page (stop, targets, style, cut mode …) is kept. Hand-entered holdings are left alone. Accounts whose
- * snapshot failed this round are not touched.
+ * A read-only exchange account as an account of this page, built on every read from its snapshot: the total
+ * is the exchange equity, each open position (stable id `<account>:<key>`) has one opening fill at the
+ * exchange average, and what the page set on it. Positions on coins the site does not list are included
+ * (`ex.listed` false): only their stop orders and liquidation can be checked.
  */
-export function reconcileBook(book: RollBook, snaps: ExSnapshot[]): RollBook {
-  const accounts = book.accounts.map((a) => ({ ...a }));
-  for (const s of snaps) {
-    let acc = accounts.find((a) => a.exchange === s.id);
-    if (!acc) {
-      acc = { id: `ex-${s.id}`.slice(0, 20), name: s.name, total: 0, riskPct: 2, budget: "keep", fee: DEFAULT_FEE.taker, holdings: [], exchange: s.id };
-      accounts.push(acc);
-    }
-    acc.total = Math.round(s.equity * 100) / 100;
-    acc.name = s.name;
-    const old = new Map(acc.holdings.filter((h) => h.source === "exchange" && h.ex).map((h) => [h.ex!.key, h]));
-    const synced: Holding[] = [];
-    for (const p of s.positions) {
-      if (!p.coin || !(p.qty > 0) || !(p.avg > 0)) continue;
-      const was = old.get(p.key);
-      const cur = was ? positionOf(was.dir, was.fills, acc.fee) : null;
-      const same = cur != null && Math.abs(cur.qty - p.qty) <= p.qty * 1e-9 && Math.abs(cur.avg - p.avg) <= p.avg * 1e-9;
+export function exAccountOf(s: ExSnapshot, prefs: Record<string, HoldingPrefs>, acct: ExAccountPrefs = DEFAULT_EX_PREFS): Account {
+  const holdings: Holding[] = s.positions
+    .filter((p) => p.qty > 0 && p.avg > 0)
+    .map((p) => {
+      const pr = prefs[prefKey(s.id, p.key)] ?? {};
       const st = stopOf(s, p);
-      const ex: HoldingEx = { key: p.key, instId: p.instId, liq: p.liq, mark: p.mark, upl: p.upl, margin: p.margin, mmr: p.mmr, sl: st.sl, covered: st.covered, tp: st.tp, trail: st.trail, t: s.t };
-      // the exchange's realized profit already includes the opening fee that one opening fill books again
-      const realizedBase = same ? was!.realizedBase : (p.realized ?? 0) + p.qty * p.avg * acc.fee;
-      synced.push({
-        ...(was ?? { id: `x${Math.random().toString(36).slice(2, 10)}`, stop: null, targets: [] }),
-        coin: p.coin,
+      const { seen: _seen, stop, targets, ...flags } = pr;
+      return {
+        id: prefKey(s.id, p.key),
+        coin: p.coin ?? p.base,
         dir: p.dir,
         mode: p.mode,
         leverage: p.lever,
-        fills: same ? was!.fills : [{ kind: "open", price: p.avg, qty: p.qty, ...(p.t ? { t: p.t } : {}) }],
-        realizedBase,
-        source: "exchange",
-        ex,
-      });
-    }
-    acc.holdings = [...acc.holdings.filter((h) => h.source !== "exchange"), ...synced];
-  }
-  return { ...book, accounts };
+        fills: [{ kind: "open", price: p.avg, qty: p.qty, ...(p.t ? { t: p.t } : {}) }],
+        stop: stop ?? null,
+        targets: targets ?? [],
+        // the exchange's realized profit already includes the opening fee that the one opening fill books again
+        realizedBase: (p.realized ?? 0) + p.qty * p.avg * acct.fee,
+        ...flags,
+        ex: { key: p.key, instId: p.instId, liq: p.liq, mark: p.mark, upl: p.upl, margin: p.margin, mmr: p.mmr, sl: st.sl, covered: st.covered, tp: st.tp, trail: st.trail, t: s.t, listed: !!p.coin },
+      };
+    });
+  return { id: s.id, name: s.name, total: s.equity, ...acct, holdings, exchange: s.id, snap: s };
+}
+
+/**
+ * Books saved before 2026-11-09 mirrored exchange accounts into the book. Drop those accounts and keep what
+ * the page set on their holdings as prefs (old keys had no margin mode: `<instId>|<dir>`).
+ */
+export function migrateMirrors(raw: { accounts?: unknown[] }): { accounts: unknown[]; prefs: Record<string, HoldingPrefs> } | null {
+  type Old = { exchange?: string; holdings?: (Holding & { ex?: { key?: string } })[] };
+  const all = (raw.accounts ?? []) as Old[];
+  if (!all.some((a) => a?.exchange)) return null;
+  const prefs: Record<string, HoldingPrefs> = {};
+  for (const a of all)
+    if (a?.exchange)
+      for (const h of a.holdings ?? []) {
+        const k = h.ex?.key;
+        if (typeof k !== "string") continue;
+        const parts = k.split("|");
+        const key = parts.length === 2 ? `${parts[0]}|${h.mode}|${parts[1]}` : k;
+        const p = prefsOf(h);
+        if (Object.keys(p).length) prefs[prefKey(a.exchange, key)] = p;
+      }
+  return { accounts: all.filter((a) => !a?.exchange), prefs };
 }
 
 /** Clean a book sent by the browser: drops what is malformed, caps sizes. Throws on bad recipients. */
 export function cleanBook(input: unknown, coins: string[]): RollBook {
   const b = (input ?? {}) as Partial<RollBook>;
-  const accounts = (Array.isArray(b.accounts) ? b.accounts : []).slice(0, 20).map((a): Account => ({
+  const accounts = (Array.isArray(b.accounts) ? b.accounts : []).filter((a) => !a?.exchange).slice(0, 20).map((a): Account => ({
     id: str(a?.id, 20) || Math.random().toString(36).slice(2, 10),
     name: str(a?.name, 40, "账户"),
     total: num(a?.total, 0, 1e12, 0),
@@ -217,7 +239,7 @@ export function cleanBook(input: unknown, coins: string[]): RollBook {
     budget: a?.budget === "even" ? "even" : "keep",
     fee: num(a?.fee, 0, 0.01, DEFAULT_FEE.taker),
     holdings: (Array.isArray(a?.holdings) ? a.holdings : [])
-      .filter((h) => h && coins.includes(h.coin) && !h.example)
+      .filter((h) => h && coins.includes(h.coin) && !h.example && !h.ex)
       .slice(0, 30)
       .map((h): Holding => ({
         id: str(h.id, 20) || Math.random().toString(36).slice(2, 10),
@@ -237,13 +259,10 @@ export function cleanBook(input: unknown, coins: string[]): RollBook {
         ...(h.probe === true ? { probe: true } : {}),
         ...(h.addStops === true ? { addStops: true } : {}),
         ...(h.style === "bold" || h.style === "aggressive" ? { style: h.style } : {}),
-        ...(h.noLevCap === true ? { noLevCap: true } : {}),
         ...(h.cutMode === "touch" || h.cutMode === "none" ? { cutMode: h.cutMode } : {}),
         ...(h.confirmTf && CONFIRM_TFS.includes(h.confirmTf) && h.confirmTf !== "4h" ? { confirmTf: h.confirmTf } : {}),
-        ...(h.source === "exchange" && h.ex && typeof h.ex.key === "string" ? { source: "exchange" as const, ex: cleanEx(h.ex) } : {}),
       }))
       .filter((h) => h.fills.length),
-    ...(typeof a?.exchange === "string" && a.exchange ? { exchange: a.exchange.slice(0, 20) } : {}),
   }));
   const al = (b.alert ?? {}) as Partial<RollAlertConfig>;
   const to = (Array.isArray(al.to) ? al.to : []).map((x) => String(x).trim()).filter(Boolean).slice(0, 10);
@@ -349,7 +368,11 @@ export function holdingView(h: Holding, acc: Account, m: Market) {
   const closedAdds = h.addStops ? h.fills.filter((f) => f.kind === "add" && f.closed).length : 0;
   const rulesUsed = closedAdds ? { ...rules, maxAdds: Math.min(5, (rules?.maxAdds ?? ROLL_RULES.maxAdds) + closedAdds) } : rules;
   const budget = h.style === "bold" || (acc.budget === "even" && h.style !== "aggressive") ? 0 : (acc.total * acc.riskPct) / 100;
-  const add = (at: number, atStop = stop) => (atStop != null ? maxAdd({ pos, price: at, stop: atStop, budget, mode: h.mode, leverage: h.leverage, account: acc.total, atr, fee: acc.fee, rules: rulesUsed }) : null);
+  // a live exchange position: liquidation after an add from the account-level model, the free margin as a limit
+  const exPos = h.ex && acc.snap ? acc.snap.positions.find((p) => p.key === h.ex!.key) : undefined;
+  const liqOf = exPos && acc.snap ? exLiqOf(acc.snap, exPos, acc.fee) : undefined;
+  const available = acc.snap ? acc.snap.available : null;
+  const add = (at: number, atStop = stop) => (atStop != null ? maxAdd({ pos, price: at, stop: atStop, budget, mode: h.mode, leverage: h.leverage, account: acc.total, atr, fee: acc.fee, rules: rulesUsed, available, liqOf }) : null);
   // the next level is where to add after a close beyond it while adding is still allowed; otherwise it is the first cut
   const next = price != null ? nextAddLevel(h.dir, price, m.levels) : null;
   const canAdd = next != null && (add(next)?.qty ?? 0) > 0;
@@ -371,7 +394,7 @@ export function holdingView(h: Holding, acc: Account, m: Market) {
     ? h.fills.flatMap((f, i) => (f.kind === "add" && !f.closed ? [{ i, price: f.price, qty: f.qty, from: h.fills.slice(0, i).filter((x) => x.kind !== "reduce").at(-1)?.price ?? f.price, stop: f.stop ?? null, atStop: f.stop != null ? h.dir * (f.stop - f.price) * f.qty - acc.fee * (f.price + f.stop) * f.qty : null }] : []))
     : [];
   const ownStop = (at: number) => (h.addStops ? addStopOf(h.dir, crossedLevel(h.dir, m.levels, lastOpen, at), atr, m.buf, stop, at) : null);
-  return { be, lots, ownStop, lastOpen, buf: m.buf ?? null, levelInfo: m.levelInfo ?? [], cutMode, pos, price, atr, st, stop, stopFrom, guard, liq, levels: m.levels, cuts, addLevel, budget, rules: { pyramid: rulesUsed?.pyramid ?? ROLL_RULES.pyramid, maxAdds: rulesUsed?.maxAdds ?? ROLL_RULES.maxAdds, liqGapAtr: ROLL_RULES.liqGapAtr as number, maxLeverage: rules?.maxLeverage ?? (ROLL_RULES.maxLeverage as number) }, add, status, open, atStop, fundDay, funding: m.funding, steps };
+  return { liqOf, available, be, lots, ownStop, lastOpen, buf: m.buf ?? null, levelInfo: m.levelInfo ?? [], cutMode, pos, price, atr, st, stop, stopFrom, guard, liq, levels: m.levels, cuts, addLevel, budget, rules: { pyramid: rulesUsed?.pyramid ?? ROLL_RULES.pyramid, maxAdds: rulesUsed?.maxAdds ?? ROLL_RULES.maxAdds, liqGapAtr: ROLL_RULES.liqGapAtr as number }, add, status, open, atStop, fundDay, funding: m.funding, steps };
 }
 export type HoldingView = ReturnType<typeof holdingView>;
 
@@ -424,7 +447,7 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
       if (v.atStop != null) (loss += Math.max(0, -v.atStop)), known++;
       const head = `${acc.name} · ${h.coin} ${h.dir > 0 ? "多单" : "空单"}`;
       const base = `现价 ${fp(price)}，均价 ${fp(v.pos.avg)}，数量 ${trimQty(v.pos.qty)}，浮动盈亏 ${usd(v.open ?? 0)}`;
-      if (v.guard && v.guard.state !== "ok" && (was ? was.guard !== v.guard.state : seen && h.source === "exchange"))
+      if (v.guard && v.guard.state !== "ok" && (was ? was.guard !== v.guard.state : seen && !!h.ex))
         alerts.push({ key: `${h.id}:guard:${v.guard.state}:${Math.round(v.pos.qty * 1e6)}`, kind: "guard", title: `${head}：${v.guard.title}`, lines: [v.guard.detail, `交易所强平价 ${fp(v.liq)}。`, base] });
       if (!was) continue;
       const srcLine = (x: number) => { const t = levelSource(m.levelInfo, x); return t ? [`这个位来自：${t}。`] : []; };
@@ -526,37 +549,6 @@ export function pickRollAlerts(book: RollBook, markets: Record<string, Market>, 
       next[k] = { status: st };
       if (mem[k] && mem[k].status !== "over" && st === "over")
         alerts.push({ key: `${k}:over:${Math.round(pct)}`, kind: "risk", title: `${acc.name}：账户总风险超过 ${ACCOUNT_RISK_PCT}%`, lines: [`所有持仓一起打到止损要亏 ${Math.round(loss).toLocaleString("en-US")} USDT，是账户的 ${pct.toFixed(1)}%。考虑减仓。`] });
-    }
-  }
-  return { alerts, mem: next };
-}
-
-/**
- * Stop-order alerts for exchange positions on coins the site does not list (they are not mirrored as
- * holdings, so `pickRollAlerts` never sees them). Same rule as the holdings: when the state turns bad,
- * or at once for a position that appears after its account was first seen.
- */
-export function pickExAlerts(snaps: ExSnapshot[], mem: RollMemory): { alerts: RollAlert[]; mem: RollMemory } {
-  const alerts: RollAlert[] = [];
-  const next: RollMemory = {};
-  for (const s of snaps) {
-    const seen = !!mem[`exseen:${s.id}`];
-    next[`exseen:${s.id}`] = {};
-    for (const p of s.positions) {
-      if (p.coin) continue;
-      const st = stopOf(s, p);
-      const g = exGuard({ dir: p.dir, ex: { key: p.key, instId: p.instId, liq: p.liq, mark: p.mark, upl: p.upl, margin: p.margin, mmr: p.mmr, sl: st.sl, covered: st.covered, tp: st.tp, trail: st.trail, t: s.t } }, p.qty);
-      if (!g) continue;
-      const k = `ex:${s.id}:${p.key}`;
-      next[k] = { guard: g.state };
-      const was = mem[k];
-      if (g.state !== "ok" && (was ? was.guard !== g.state : seen))
-        alerts.push({
-          key: `${k}:${g.state}:${Math.round(p.qty * 1e6)}`,
-          kind: "guard",
-          title: `${s.name} · ${p.instId} ${p.dir > 0 ? "多单" : "空单"}：${g.title}`,
-          lines: [g.detail, `均价 ${fp(p.avg)}，标记价 ${fp(p.mark)}，数量 ${trimQty(p.qty)}，浮动盈亏 ${usd(p.upl)}，交易所强平价 ${fp(p.liq)}。`, `${p.base} 不在本站币种里，只能检查止损单；加入币种后才有关键位和滚仓计算。`],
-        });
     }
   }
   return { alerts, mem: next };

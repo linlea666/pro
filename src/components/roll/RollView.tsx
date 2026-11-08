@@ -3,18 +3,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { TrendPlan } from "@/lib/trendplan";
-import { DEFAULT_FEE, maxAdd, nextAddLevel, stopForAdd, pnlAt, positionOf, previewAdd, previewReduce, ROLL_RULES, trimQty, type AddLimit, type Dir, type Fill, type MarginMode, type Tone } from "@/lib/ta/roll";
-import { ACCOUNT_RISK_PCT, addStopOf, crossedLevel, PROBE_RULES, levelSource, CONFIRM_NAME, CONFIRM_TFS, CUT_MODES, CUT_NAME, DEFAULT_ROLL_ALERT, type ConfirmTf, holdingView, marketOf, type Account, type Holding, type HoldingView as View, type RollAlertConfig } from "@/lib/rollbook";
+import { EXCHANGE_NAME } from "@/lib/exchange";
+import { DEFAULT_FEE, nextAddLevel, stopForAdd, pnlAt, positionOf, previewReduce, ROLL_RULES, trimQty, type Dir, type Fill, type MarginMode } from "@/lib/ta/roll";
+import { liqCheck, stopVsStructure } from "@/lib/ta/margin";
+import { ACCOUNT_RISK_PCT, addStopOf, crossedLevel, exAccountOf, PROBE_RULES, prefsOf, levelSource, CONFIRM_NAME, CONFIRM_TFS, CUT_MODES, CUT_NAME, DEFAULT_ROLL_ALERT, type ConfirmTf, holdingView, marketOf, type Account, type Holding, type HoldingView as View, type RollAlertConfig } from "@/lib/rollbook";
 import type { CoinMeta } from "@/lib/symbols";
 import { fmtPrice } from "../coin/format";
 import { track } from "../track";
-import { ExchangePanel } from "./ExchangePanel";
+import { AccountHealth } from "./AccountHealth";
+import { ExchangePanel, type ExData } from "./ExchangePanel";
+import { PositionTable } from "./PositionTable";
+import { Term } from "./Term";
+import { bindingText, field, Kpi, money, SafetyBar, severity, toneColor, TONE_BG } from "./ui";
+import { WhatIf } from "./WhatIf";
 
 /**
- * 滚仓助手: positions entered by hand, grouped by account, with the price ladder, how much
- * may be added under the risk budget, and where to take some off. Visitors keep their accounts
- * in this browser (localStorage); the signed-in admin's live on the server, which mails alerts.
- * Only public prices and plans are fetched. Nothing is ordered.
+ * 滚仓助手: accounts → positions → one position in detail. The signed-in admin's read-only exchange
+ * accounts are built from their snapshots on every read (nothing of them is stored but what is set on a
+ * position); hand-entered accounts live on the server for the admin, in this browser for visitors.
+ * Per account: a health card (stop orders, distance to liquidation, everything at its stop, a stress test);
+ * per position: what to do now, the add / reduce calculator, its settings. Nothing is ordered.
  */
 
 const KEY = "sl-roll-v1";
@@ -44,21 +52,6 @@ function save(list: Account[]) {
   } catch {}
 }
 const real = (list: Account[]) => list.filter((a) => a.id !== EXAMPLE.id || a.holdings.some((h) => !h.example)).map((a) => ({ ...a, holdings: a.holdings.filter((h) => !h.example) }));
-
-const field = "num w-full rounded-lg border border-line bg-panel-2 px-2.5 py-1.5 text-sm outline-none focus:border-accent";
-const money = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(Math.round(v)).toLocaleString("en-US")}`;
-const toneColor = (v: number) => (v > 0 ? "text-up" : v < 0 ? "text-down" : "text-ink-3");
-const TONE_BG: Record<Tone, string> = { good: "bg-up-soft", wait: "bg-panel-2", warn: "bg-warn-soft", bad: "bg-down-soft" };
-const bindingText = (b: AddLimit["binding"], r: { pyramid: number; maxAdds: number; liqGapAtr: number; maxLeverage: number } = ROLL_RULES) =>
-  ({
-    budget: "风险预算",
-    pyramid: `金字塔（不超过上一笔的 ${r.pyramid * 100}%）`,
-    liquidation: `强平距离（止损要在强平前 ${r.liqGapAtr} 倍 ATR）`,
-    leverage: `实际杠杆不超过 ${r.maxLeverage} 倍`,
-    count: `最多加 ${r.maxAdds} 次`,
-    losing: "浮亏中不加仓",
-    stop: "止损在现价另一边",
-  })[b];
 
 interface Live {
   price: number | null;
@@ -91,7 +84,8 @@ function useLive(coins: string[]): Record<string, Live> {
   return live;
 }
 
-const analyse = (h: Holding, acc: Account, l: Live | undefined): View => holdingView(h, acc, marketOf(l?.plan ?? null, l?.price ?? null, l?.funding ?? null));
+const analyse = (h: Holding, acc: Account, l: Live | undefined): View =>
+  holdingView(h, acc, h.ex && !h.ex.listed ? marketOf(null, h.ex.mark, null) : marketOf(l?.plan ?? null, l?.price ?? h.ex?.mark ?? null, l?.funding ?? null));
 
 /** The signed-in admin's book on the server (null: a visitor, kept in this browser). */
 interface Server {
@@ -102,40 +96,63 @@ interface Server {
   local: Account[] | null;
 }
 
+const EX_POLL_MS = 30_000;
+
 export function RollView({ coins }: { coins: CoinMeta[] }) {
+  // hand-entered accounts (the example until there is something real)
   const [accounts, setAccounts] = useState<Account[]>([EXAMPLE]);
-  const [accId, setAccId] = useState(EXAMPLE.id);
-  const [holdId, setHoldId] = useState<string | null>("ex1");
+  const [accId, setAccId] = useState<string | null>(null);
+  const [holdId, setHoldId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [server, setServer] = useState<Server | null>(null);
   const [sync, setSync] = useState<string | null>(null);
+  const [ex, setEx] = useState<ExData | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // an edit not yet saved: a reload from the server must not overwrite it
-  const pending = useRef(false);
+  const prefTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
-  const show = (list: Account[]) => {
-    setAccounts(list);
-    setAccId(list[0].id);
-    setHoldId(list[0].holdings[0]?.id ?? null);
-  };
   useEffect(() => {
     const local = load();
-    if (local?.length) show(local);
+    if (local?.length) setAccounts(local);
     fetch("/api/admin/roll")
       .then((r) => (r.ok ? r.json() : null))
       .then((b) => {
         if (!b?.book) return;
         const mine: Account[] = b.book.accounts;
         setServer({ alert: b.book.alert, mailTo: b.mailTo, mailReady: b.mailReady, local: !mine.length && local && real(local).length ? real(local) : null });
-        if (mine.length) show(mine);
+        setAccounts(mine.length ? mine : []);
       })
       .catch(() => {});
     track("view_roll", "roll");
   }, []);
 
+  // the exchange accounts (admin only): read now, then every 30 s while the page is visible
+  const admin = server != null;
+  const loadEx = useCallback(
+    (refresh: boolean) =>
+      fetch(`/api/admin/exchange${refresh ? "?refresh=1" : ""}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((b: ExData | null) => b && setEx(b))
+        .catch(() => {}),
+    [],
+  );
+  useEffect(() => {
+    if (!admin) return;
+    loadEx(true);
+    const poll = setInterval(() => !document.hidden && loadEx(true), EX_POLL_MS);
+    const tick = setInterval(() => setNow(Date.now()), 5_000);
+    return () => (clearInterval(poll), clearInterval(tick));
+  }, [admin, loadEx]);
+  const postEx = async (body: Record<string, unknown>) => {
+    const r = await fetch("/api/admin/exchange", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).catch(() => null);
+    const b = r ? await r.json().catch(() => null) : null;
+    if (!r?.ok) return { ok: false, message: (b?.error as string) || "操作失败" };
+    if (b?.accounts) setEx(b);
+    return { ok: true, message: (b?.message as string) ?? null };
+  };
+
   const push = (list: Account[], alert: RollAlertConfig, now = false) => {
     if (timer.current) clearTimeout(timer.current);
-    pending.current = true;
     const go = () =>
       fetch("/api/admin/roll", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "save", book: { accounts: real(list), alert } }) })
         .then(async (r) => {
@@ -144,322 +161,273 @@ export function RollView({ coins }: { coins: CoinMeta[] }) {
           setServer((s) => s && { ...s, alert: b.book.alert });
           setSync("已保存到服务器");
         })
-        .catch((e) => setSync((e as Error).message))
-        .finally(() => (pending.current = false));
+        .catch((e) => setSync((e as Error).message));
     if (now) return go();
     timer.current = setTimeout(go, 800);
   };
-  // after an exchange read: take the server's book (mirrored positions), keeping the current selection
-  const reload = useCallback(() => {
-    if (pending.current) return;
-    fetch("/api/admin/roll")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((b) => {
-        const mine: Account[] | undefined = b?.book?.accounts;
-        if (!mine?.length || pending.current) return;
-        setAccounts(mine);
-        setAccId((id) => (mine.some((a) => a.id === id) ? id : mine[0].id));
-        setHoldId((id) => (mine.some((a) => a.holdings.some((h) => h.id === id)) ? id : null));
-      })
-      .catch(() => {});
-  }, []);
   const update = (next: Account[]) => {
     setAccounts(next);
     if (server) push(next, server.alert);
     else save(next);
     track("use_roll", "roll");
   };
-  const acc = accounts.find((a) => a.id === accId) ?? accounts[0];
-  const setAcc = (patch: Partial<Account>) => update(accounts.map((a) => (a.id === acc.id ? { ...a, ...patch } : a)));
-  const setHolding = (id: string, patch: Partial<Holding>) => setAcc({ holdings: acc.holdings.map((h) => (h.id === id ? { ...h, ...patch, example: false } : h)) });
 
-  const held = useMemo(() => [...new Set(accounts.flatMap((a) => a.holdings.map((h) => h.coin)))].sort(), [accounts]);
+  // exchange accounts are built from their snapshots on every render; nothing of theirs is stored here
+  const exAccs = useMemo(() => (ex ? ex.accounts.flatMap((a) => (ex.snapshots[a.id]?.snap ? [exAccountOf(ex.snapshots[a.id].snap!, ex.prefs, a.prefs)] : [])) : []), [ex]);
+  const manual = exAccs.length ? real(accounts) : accounts;
+  const all = [...exAccs, ...manual];
+  const acc = all.find((a) => a.id === accId) ?? all[0];
+
+  const setAcc = (patch: Partial<Account>) => {
+    if (!acc) return;
+    if (acc.exchange) {
+      const prefs = { riskPct: patch.riskPct ?? acc.riskPct, budget: patch.budget ?? acc.budget, fee: patch.fee ?? acc.fee };
+      setEx((e) => e && { ...e, accounts: e.accounts.map((a) => (a.id === acc.exchange ? { ...a, prefs } : a)) });
+      postEx({ action: "account", id: acc.exchange, prefs });
+      return;
+    }
+    update(accounts.map((a) => (a.id === acc.id ? { ...a, ...patch } : a)));
+  };
+  const setHolding = (id: string, patch: Partial<Holding>) => {
+    if (!acc) return;
+    if (acc.exchange) {
+      // a live position: only what the page sets on it is stored, per position
+      const h = acc.holdings.find((x) => x.id === id);
+      if (!h) return;
+      const prefs = prefsOf({ ...h, ...patch });
+      setEx((e) => e && { ...e, prefs: { ...e.prefs, [id]: prefs } });
+      clearTimeout(prefTimers.current[id]);
+      prefTimers.current[id] = setTimeout(() => postEx({ action: "prefs", key: id, prefs }), 600);
+      return;
+    }
+    setAcc({ holdings: acc.holdings.map((h) => (h.id === id ? { ...h, ...patch, example: false } : h)) });
+  };
+
+  const held = useMemo(() => [...new Set(all.flatMap((a) => a.holdings.filter((h) => !h.ex || h.ex.listed).map((h) => h.coin)))].sort(), [all]);
   const live = useLive(held);
   const views = acc ? acc.holdings.map((h) => [h, analyse(h, acc, live[h.coin])] as const) : [];
-  const cur = views.find(([h]) => h.id === holdId) ?? views[0];
+  // the picked position, or the most urgent one
+  const cur = views.find(([h]) => h.id === holdId) ?? [...views].sort(([, a], [, b]) => severity(a) - severity(b))[0];
 
-  if (!acc) return null;
   return (
     <div className="space-y-5">
       <header className="space-y-1.5">
         <h1 className="text-2xl font-semibold">滚仓助手</h1>
         <p className="max-w-3xl text-sm leading-relaxed text-ink-2">
-          接上交易所只读账户（站长登录后）或手动填上已经开的合约仓位，这里告诉你：止损单挂好没有、现在赚多少、离止损和强平多远、下一次能在哪里加多少、加完均价和打到止损的结果、到哪里该减。页面不下单，也不预测涨跌：滚仓只是让你在大行情里拿得更重，小行情里可能把小赚变成小亏。
+          接上交易所只读账户（站长登录后）或手动填上已经开的合约仓位，这里告诉你：止损单挂好没有、离强平多远、账户扛得住多大的波动、下一次能在哪里加多少、加完均价和打到止损的结果、到哪里该减。页面不下单，也不预测涨跌：滚仓只是让你在大行情里拿得更重，小行情里可能把小赚变成小亏。
         </p>
       </header>
 
       {server ? (
         <div className="space-y-2 text-xs text-ink-3">
-          <p>已登录：账户和持仓存在服务器上，服务器每分钟检查一次，按下面的设置发邮件。{sync && <span className={sync === "已保存到服务器" ? "" : "text-down"}> {sync}</span>}</p>
+          <p>已登录：交易所账户每 30 秒读取一次；手动账户存在服务器上。服务器每分钟检查一次，按“邮件提醒”的设置发邮件。{sync && <span className={sync === "已保存到服务器" ? "" : "text-down"}> {sync}</span>}</p>
           {server.local && (
             <p className="text-ink-2">
-              这个浏览器里还有 {server.local.length} 个账户没存到服务器。
-              <button className="ml-2 text-accent" onClick={() => (show(server.local!), update(server.local!), setServer({ ...server, local: null }))}>存到服务器</button>
+              这个浏览器里还有 {server.local.length} 个手动账户没存到服务器。
+              <button className="ml-2 text-accent" onClick={() => (update(server.local!), setServer({ ...server, local: null }))}>存到服务器</button>
             </p>
           )}
         </div>
       ) : (
         <p className="text-xs text-ink-3">
-          账户和持仓只存在这个浏览器里。站长<Link href="/admin" className="text-accent">登录后台</Link>后，可以接入 OKX / 币安的只读账户自动同步持仓，这一页改存到服务器，并能在没挂止损单、到加仓位、减仓位、快到止损时发邮件。
+          账户和持仓只存在这个浏览器里。站长<Link href="/admin" className="text-accent">登录后台</Link>后，可以接入 OKX / 币安的只读账户自动读取持仓，并能在没挂止损单、到加仓位、减仓位、快到止损时发邮件。
         </p>
       )}
 
-      {server && <ExchangePanel onSynced={reload} />}
-
-      <AccountBar accounts={accounts} acc={acc} onPick={(id) => { setAccId(id); setHoldId(accounts.find((a) => a.id === id)?.holdings[0]?.id ?? null); }} onChange={setAcc} onAdd={() => {
-        const a: Account = { id: uid(), name: `账户 ${real(accounts).length + 1}`, total: 10000, riskPct: 2, budget: "keep", fee: DEFAULT_FEE.taker, holdings: [] };
-        update([...accounts.filter((x) => x.id !== EXAMPLE.id || x.holdings.some((h) => !h.example)), a]);
-        setAccId(a.id);
-        setHoldId(null);
-      }} onRemove={() => {
-        const next = accounts.filter((a) => a.id !== acc.id);
-        update(next.length ? next : [EXAMPLE]);
-        setAccId((next[0] ?? EXAMPLE).id);
-        setHoldId((next[0] ?? EXAMPLE).holdings[0]?.id ?? null);
-      }} />
-
-      <AccountRisk acc={acc} views={views.map(([h, v]) => [h, v])} />
-
       <div className="flex flex-wrap items-center gap-2">
-        {views.map(([h, v]) => (
-          <button key={h.id} className="chip num" data-active={cur?.[0].id === h.id} onClick={() => setHoldId(h.id)}>
-            {h.coin} {h.dir > 0 ? "多" : "空"}{views.filter(([x]) => x.coin === h.coin && x.dir === h.dir).length > 1 ? ` ${h.mode === "isolated" ? "逐仓" : "全仓"}` : ""} {v.open != null && <span className={cur?.[0].id === h.id ? "" : toneColor(v.open + v.pos.realized)}>{money(v.open + v.pos.realized)}</span>}
-            {h.example && " · 示例"}
+        {all.map((a) => (
+          <button key={a.id} className="chip" data-active={a.id === acc?.id} onClick={() => (setAccId(a.id), setHoldId(null), setAdding(false))}>
+            {a.name}
+            {a.snap ? ` · ${EXCHANGE_NAME[a.snap.ex]}` : exAccs.length ? " · 手动" : ""}
           </button>
         ))}
-        <button className="text-sm text-accent" onClick={() => setAdding(true)}>+ 添加持仓</button>
+        <button
+          className="text-sm text-accent"
+          onClick={() => {
+            const a: Account = { id: uid(), name: `手动账户 ${real(accounts).length + 1}`, total: 10000, riskPct: 2, budget: "keep", fee: DEFAULT_FEE.taker, holdings: [] };
+            update([...real(accounts), a]);
+            setAccId(a.id);
+            setHoldId(null);
+          }}
+        >
+          + 手动账户
+        </button>
       </div>
 
-      {adding && (
-        <HoldingForm coins={coins.map((c) => c.id)} price={(c) => live[c]?.price ?? null} onCancel={() => setAdding(false)} onAdd={(h) => {
-          setAcc({ holdings: [...acc.holdings.filter((x) => !x.example), h] });
-          setHoldId(h.id);
-          setAdding(false);
-        }} />
+      {acc && (
+        <AccountHealth
+          key={acc.id}
+          acc={acc}
+          views={views}
+          betas={ex?.betas ?? {}}
+          alertOff={server ? !server.alert.enabled : null}
+          onEnableAlert={() => server && push(accounts, { ...server.alert, enabled: true }, true)}
+          onChange={setAcc}
+          onRemove={acc.exchange ? null : () => {
+            const next = accounts.filter((a) => a.id !== acc.id);
+            update(next.length || exAccs.length ? next : [EXAMPLE]);
+            setAccId(null);
+            setHoldId(null);
+          }}
+          now={now}
+        />
       )}
 
-      {cur ? (
-        <HoldingCard key={cur[0].id} h={cur[0]} v={cur[1]} acc={acc} onChange={(p) => setHolding(cur[0].id, p)} onRemove={() => setAcc({ holdings: acc.holdings.filter((x) => x.id !== cur[0].id) })} />
-      ) : (
-        !adding && <div className="card p-6 text-sm text-ink-3">这个账户还没有持仓。点“添加持仓”，填上币种、方向、开仓价和数量。</div>
+      {acc && (
+        <section className="space-y-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-lg font-semibold">持仓 <span className="text-sm font-normal text-ink-3">· 最需要处理的排在前面，点一行看详情</span></h2>
+            {!acc.exchange && <button className="text-sm text-accent" onClick={() => setAdding(true)}>+ 添加持仓</button>}
+          </div>
+          {adding && !acc.exchange && (
+            <HoldingForm coins={coins.map((c) => c.id)} price={(c) => live[c]?.price ?? null} onCancel={() => setAdding(false)} onAdd={(h) => {
+              setAcc({ holdings: [...acc.holdings.filter((x) => !x.example), h] });
+              setHoldId(h.id);
+              setAdding(false);
+            }} />
+          )}
+          <PositionTable views={views} picked={cur?.[0].id ?? null} onPick={setHoldId} />
+          {cur ? (
+            <PositionDetail key={cur[0].id} h={cur[0]} v={cur[1]} acc={acc} onChange={(p) => setHolding(cur[0].id, p)} onRemove={acc.exchange ? null : () => setAcc({ holdings: acc.holdings.filter((x) => x.id !== cur[0].id) })} />
+          ) : (
+            !adding && <div className="card p-6 text-sm text-ink-3">{acc.exchange ? "这个交易所账户现在没有 U 本位合约持仓。" : "这个账户还没有持仓。点“添加持仓”，填上币种、方向、开仓价和数量。"}</div>
+          )}
+        </section>
       )}
 
+      {server && ex && <ExchangePanel data={ex} onPost={postEx} />}
       {server && <AlertCard server={server} onSave={(alert) => push(accounts, alert, true)} accounts={accounts} />}
 
       <Rules />
       <p className="text-[11px] leading-relaxed text-ink-3">
-        {server ? "账户和持仓存在服务器上，只有登录后能看到。" : "账户和持仓只保存在这个浏览器（换设备或清缓存会丢失），页面不会上传。"}强平价按维持保证金率 0.5% 估算、不含平仓手续费和资金费，以交易所显示为准。页面上的止损请在交易所挂好，提醒不能代替止损单。
+        {server ? "手动账户存在服务器上，只有登录后能看到；交易所账户不存仓位，每次都从交易所读取。" : "账户和持仓只保存在这个浏览器（换设备或清缓存会丢失），页面不会上传。"}交易所账户的权益、强平价、止损单以交易所为准；手动账户的强平按维持保证金率 0.5% 估算。提醒不能代替交易所的止损单。
       </p>
     </div>
   );
 }
 
-function AccountBar({ accounts, acc, onPick, onChange, onAdd, onRemove }: { accounts: Account[]; acc: Account; onPick: (id: string) => void; onChange: (p: Partial<Account>) => void; onAdd: () => void; onRemove: () => void }) {
+/** One position in detail, in tabs: what to do now, the add / reduce calculator, its settings. */
+function PositionDetail({ h, v, acc, onChange, onRemove }: { h: Holding; v: View; acc: Account; onChange: (p: Partial<Holding>) => void; onRemove: (() => void) | null }) {
+  const [tab, setTab] = useState<"now" | "calc" | "settings">("now");
   const [confirm, setConfirm] = useState(false);
-  return (
-    <section className="card space-y-3 p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        {accounts.map((a) => (
-          <button key={a.id} className="chip" data-active={a.id === acc.id} onClick={() => onPick(a.id)}>
-            {a.name}
-          </button>
-        ))}
-        <button className="text-sm text-accent" onClick={onAdd}>+ 添加账户</button>
-      </div>
-      <div className="grid grid-cols-2 gap-3 text-xs text-ink-3 sm:grid-cols-5">
-        <label className="space-y-1">
-          <span>账户名</span>
-          <input id="acc-name" className={field} disabled={!!acc.exchange} value={acc.name} onChange={(e) => onChange({ name: e.target.value })} />
-        </label>
-        <label className="space-y-1">
-          <span>{acc.exchange ? "账户权益（跟随交易所）" : "账户总金额 (USDT)"}</span>
-          <input id="acc-total" type="number" className={field} disabled={!!acc.exchange} value={acc.total || ""} onChange={(e) => onChange({ total: +e.target.value })} />
-        </label>
-        <label className="space-y-1">
-          <span>每笔风险</span>
-          <select id="acc-risk" className={field} value={acc.riskPct} onChange={(e) => onChange({ riskPct: +e.target.value })}>
-            <option value={1}>保守 1%</option>
-            <option value={2}>标准 2%</option>
-            <option value={3}>积极 3%</option>
-          </select>
-        </label>
-        <label className="space-y-1">
-          <span>加仓后打到止损</span>
-          <select id="acc-budget" className={field} value={acc.budget} onChange={(e) => onChange({ budget: e.target.value as Account["budget"] })}>
-            <option value="keep">最多亏每笔风险</option>
-            <option value="even">必须不亏（保本滚仓）</option>
-          </select>
-        </label>
-        <label className="space-y-1">
-          <span>手续费（吃单）%</span>
-          <input id="acc-fee" type="number" step="0.01" className={field} value={+(acc.fee * 100).toFixed(4)} onChange={(e) => onChange({ fee: Math.max(0, +e.target.value) / 100 })} />
-        </label>
-      </div>
-      <div className="text-xs">
-        {acc.exchange ? (
-          <span className="text-ink-3">这个账户跟随交易所：持仓每分钟同步，要移除请在上面的“交易所账户”里移除。</span>
-        ) : confirm ? (
-          <span className="space-x-3">
-            <span className="text-down">删除“{acc.name}”和下面所有持仓？</span>
-            <button className="text-down underline" onClick={() => (onRemove(), setConfirm(false))}>删除</button>
-            <button className="text-ink-3" onClick={() => setConfirm(false)}>取消</button>
-          </span>
-        ) : (
-          <button className="text-ink-3" onClick={() => setConfirm(true)}>删除这个账户</button>
-        )}
-      </div>
-    </section>
-  );
-}
-
-/** All holdings at their stops at once, against the account; same-direction holdings move together. */
-function AccountRisk({ acc, views }: { acc: Account; views: (readonly [Holding, View])[] }) {
-  if (!views.length || !(acc.total > 0)) return null;
-  const lossAt = (v: View) => (v.atStop != null ? Math.max(0, -v.atStop) : null);
-  const known = views.filter(([, v]) => lossAt(v) != null);
-  const total = known.reduce((s, [, v]) => s + lossAt(v)!, 0);
-  const pct = (total / acc.total) * 100;
-  // different coins on one side move together; the same coin twice on one side (isolated and cross) is one bigger trade
-  const sides = [1, -1].map((d) => [...new Set(views.filter(([h]) => h.dir === d).map(([h]) => h.coin))]).filter((x) => x.length > 1);
-  const twice = [1, -1].flatMap((d) => [...new Set(views.filter(([h]) => h.dir === d).map(([h]) => h.coin))].filter((c) => views.filter(([h]) => h.dir === d && h.coin === c).length > 1).map((c) => `${c} ${d > 0 ? "多" : "空"}`));
-  const notional = views.reduce((s, [, v]) => s + (v.price != null ? v.pos.qty * v.price : 0), 0);
-  const lev = notional / acc.total;
-  // longs and shorts on the same coin offset each other (hedge mode): the exposure that moves with the price
-  const net = Object.values(views.reduce<Record<string, number>>((m, [h, v]) => ((m[h.coin] = (m[h.coin] ?? 0) + (v.price != null ? h.dir * v.pos.qty * v.price : 0)), m), {})).reduce((s, x) => s + Math.abs(x), 0) / acc.total;
-  const unguarded = views.filter(([, v]) => v.guard && v.guard.state !== "ok").length;
-  return (
-    <section className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
-      <span>
-        所有持仓一起打到止损：<b className={`num ${total > 0 ? "text-down" : "text-up"}`}>{total > 0 ? `亏 ${Math.round(total).toLocaleString("en-US")} USDT（账户的 ${pct.toFixed(1)}%）` : "都不亏"}</b>
-        {known.length < views.length && <span className="text-ink-3">（{views.length - known.length} 笔还没有止损）</span>}
-        {unguarded > 0 && <span className="text-down">（{unguarded} 笔交易所止损单不完整，实际可能亏得更多）</span>}
-      </span>
-      <span>
-        实际杠杆 <b className={`num ${lev > ROLL_RULES.maxLeverage ? "text-down" : ""}`}>{lev.toFixed(1)} 倍</b>
-        {Math.abs(net - lev) > 0.05 && <span className="text-ink-3">（同币多空相抵后 {net.toFixed(1)} 倍）</span>}
-      </span>
-      {pct > ACCOUNT_RISK_PCT && <span className="text-warn">⚠ 超过账户的 {ACCOUNT_RISK_PCT}%：一起打到止损时伤得很重。</span>}
-      {sides.map((s) => (
-        <span key={s.join()} className="text-warn">⚠ {s.join("、")} 同方向：常常一起涨跌，等于一笔更大的单。</span>
-      ))}
-      {twice.map((s) => (
-        <span key={s} className="text-warn">⚠ {s}有不止一笔（逐仓和全仓分开）：打到止损时一起亏，风险要合起来看。</span>
-      ))}
-    </section>
-  );
-}
-
-function HoldingCard({ h, v, acc, onChange, onRemove }: { h: Holding; v: View; acc: Account; onChange: (p: Partial<Holding>) => void; onRemove: () => void }) {
   const { pos, price, stop, liq, atr } = v;
-  const [confirm, setConfirm] = useState(false);
+  const listed = !h.ex || h.ex.listed;
+  const record = (f: Fill) => onChange({ fills: [...h.fills, { ...f, t: Math.floor(Date.now() / 1000) }] });
   const liqPct = liq != null && price != null ? ((liq - price) / price) * 100 : null;
   const liqAtr = liq != null && price != null && atr ? Math.abs(price - liq) / atr : null;
-  const record = (f: Fill, patch: Partial<Holding> = {}) => onChange({ fills: [...h.fills, { ...f, t: Math.floor(Date.now() / 1000) }], ...patch });
-  const synced = h.source === "exchange";
+  const exPos = h.ex && acc.snap ? acc.snap.positions.find((p) => p.key === h.ex!.key) : undefined;
+  const check = exPos && acc.snap ? liqCheck(acc.snap, exPos) : null;
+  const sanity = listed ? stopVsStructure(h.dir, stop, v.st?.stop ?? null, atr, pos.qty) : null;
+  const losing = price != null && h.dir * (price - pos.avg) <= 0;
+  const upl = h.ex ? h.ex.upl : (v.open ?? 0);
+  const stopFrom = v.stopFrom === "exchange" ? "交易所止损单" : v.stopFrom === "page" ? "你设的计划止损" : v.stopFrom === "structure" ? "结构认错位（交易所没挂）" : "";
   return (
     <section className="card space-y-4 p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-lg font-semibold">
-          {h.coin} {h.dir > 0 ? "多单" : "空单"} <span className="text-sm font-normal text-ink-3">· {h.mode === "isolated" ? "逐仓" : "全仓"} {h.leverage}× {h.example && "· 示例，可以直接改或删掉"}{synced && `· 交易所同步 ${h.ex?.instId ?? ""}`}</span>
+          {h.coin} {h.dir > 0 ? "多单" : "空单"} <span className="text-sm font-normal text-ink-3">· {h.mode === "isolated" ? <Term k="逐仓" /> : <Term k="全仓" />} {h.leverage}×{h.ex ? ` · ${h.ex.instId}` : ""}{h.example && " · 示例，可以直接改或删掉"}</span>
         </h2>
-        <span className="num text-sm text-ink-3">现价 {fmtPrice(price)}{atr != null && ` · 4 小时 ATR ${fmtPrice(atr)}`}</span>
+        <span className="num text-sm text-ink-3">现价 {fmtPrice(price)}{atr != null && <> · 4 小时 <Term k="ATR" /> {fmtPrice(atr)}</>}</span>
       </div>
 
-      {v.status && (
-        <div className={`rounded-lg px-4 py-3 ${TONE_BG[v.status.tone]}`}>
-          <div className="text-lg font-semibold">{v.status.title}</div>
-          <div className="text-sm text-ink-2">{v.status.detail}</div>
-        </div>
-      )}
-
-      {v.guard && v.status?.title !== v.guard.title && (v.guard.state === "ok" ? (
-        <p className="text-xs text-ink-3">✓ {v.guard.detail}</p>
-      ) : (
-        <div className="rounded-lg bg-down-soft px-4 py-3">
-          <div className="font-semibold">⚠ {v.guard.title}</div>
-          <div className="text-sm text-ink-2">{v.guard.detail}</div>
-        </div>
-      ))}
-
-      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-        <Kpi k="已实现盈亏" v={<span className={toneColor(pos.realized)}>{money(pos.realized)}</span>} sub={`已付手续费 ${pos.fees.toFixed(1)}`} />
-        {synced && h.ex ? (
-          <Kpi k="浮动盈亏（交易所）" v={<span className={toneColor(h.ex.upl)}>{money(h.ex.upl)}</span>} sub={`保证金收益 ${((h.ex.upl / (h.ex.margin ?? (pos.avg * pos.qty) / h.leverage)) * 100).toFixed(1)}% · 平仓手续费约 ${(pos.qty * (price ?? pos.avg) * acc.fee).toFixed(1)}`} />
-        ) : (
-          <Kpi k="浮动盈亏" v={<span className={toneColor(v.open ?? 0)}>{v.open != null ? money(v.open) : "—"}</span>} sub={v.open != null && pos.qty > 0 ? `保证金收益 ${((v.open / ((pos.avg * pos.qty) / h.leverage)) * 100).toFixed(1)}%` : "已扣平仓手续费"} />
-        )}
-        <Kpi k="均价 · 数量" v={`${fmtPrice(pos.avg)} · ${trimQty(pos.qty)}`} sub={price != null ? `仓位价值 ${Math.round(pos.qty * price).toLocaleString("en-US")}` : ""} />
-        <Kpi k="打到止损" v={<span className={toneColor(v.atStop ?? 0)}>{v.atStop != null ? money(v.atStop) : "—"}</span>} sub={v.atStop != null && acc.total > 0 ? `账户的 ${((v.atStop / acc.total) * 100).toFixed(1)}%` : "还没有止损"} />
+      <div className="flex flex-wrap gap-1.5">
+        {(["now", "calc", "settings"] as const).map((k) => (
+          <button key={k} className="chip" data-active={tab === k} onClick={() => setTab(k)}>{k === "now" ? "现在怎么办" : k === "calc" ? "加减仓试算" : "设置"}</button>
+        ))}
       </div>
 
-      <div className="space-y-1.5 text-sm">
-        <div className="flex flex-wrap justify-between gap-2">
-          <span className="text-ink-3">离强平{synced && h.ex?.liq != null ? "（交易所数字）" : ""}</span>
-          <span className="num">
-            {liq == null ? "按现在的保证金不会被强平" : liqPct == null ? fmtPrice(liq) : h.dir * (price! - liq) <= 0 ? <b className="text-down">已越过强平价 {fmtPrice(liq)}</b> : `${liqPct.toFixed(1)}%（${fmtPrice(liq)}）${liqAtr != null ? ` · ${liqAtr.toFixed(1)} 倍 ATR` : ""}`}
-            {liq != null && stop != null && h.dir * (stop - liq) <= 0 && <b className="text-down"> · 强平在止损之前，还没到止损就会被强平</b>}
-          </span>
-        </div>
-        {liqAtr != null && h.dir * (price! - liq!) > 0 && <SafetyBar atr={liqAtr} />}
-        {v.fundDay != null && (
-          <div className="text-xs text-ink-3">
-            资金费：当前费率 {((v.funding ?? 0) * 100).toFixed(4)}%，按这个费率每天{v.fundDay >= 0 ? "付" : "收"}约 {Math.abs(v.fundDay).toFixed(1)} USDT（每 8 小时结算一次，费率会变）。
+      {tab === "now" && (
+        <>
+          {v.status && (
+            <div className={`rounded-lg px-4 py-3 ${TONE_BG[v.status.tone]}`}>
+              <div className="text-lg font-semibold">{v.status.title}</div>
+              <div className="text-sm text-ink-2">{v.status.detail}</div>
+            </div>
+          )}
+          {v.guard && v.status?.title !== v.guard.title && (v.guard.state === "ok" ? (
+            <p className="text-xs text-ink-3">✓ {v.guard.detail}{h.ex?.tp != null ? ` 止盈单 ${fmtPrice(h.ex.tp)}。` : ""}</p>
+          ) : (
+            <div className="rounded-lg bg-down-soft px-4 py-3">
+              <div className="font-semibold">⚠ {v.guard.title}</div>
+              <div className="text-sm text-ink-2">{v.guard.detail}</div>
+            </div>
+          ))}
+          {sanity && <p className={`text-sm ${sanity.tone === "warn" ? "text-warn" : "text-ink-3"}`}>{sanity.text}</p>}
+          {!listed && <p className="text-sm text-ink-3">{h.coin} 不在本站币种里：只检查止损单和强平；加入币种列表后才有关键位、结构认错位和滚仓计划。</p>}
+
+          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+            <Kpi k="已实现盈亏" v={<span className={toneColor(pos.realized)}>{money(pos.realized)}</span>} sub={h.ex ? "交易所数字" : `已付手续费 ${pos.fees.toFixed(1)}`} />
+            <Kpi k={h.ex ? "浮动盈亏（交易所）" : "浮动盈亏"} v={<span className={toneColor(upl)}>{money(upl)}</span>} sub={`保证金收益 ${((upl / (h.ex?.margin ?? (pos.avg * pos.qty) / Math.max(1, h.leverage))) * 100).toFixed(1)}%`} />
+            <Kpi k="均价 · 数量" v={`${fmtPrice(pos.avg)} · ${trimQty(pos.qty)}`} sub={price != null ? `仓位价值 ${Math.round(pos.qty * price).toLocaleString("en-US")}` : ""} />
+            <Kpi k="打到止损" v={<span className={toneColor(v.atStop ?? 0)}>{v.atStop != null ? money(v.atStop) : "—"}</span>} sub={stop != null ? `${fmtPrice(stop)} · ${stopFrom}` : "还没有止损"} />
           </div>
-        )}
-      </div>
 
-      <NextSteps h={h} v={v} onChange={onChange} />
+          <div className="space-y-1.5 text-sm">
+            <div className="flex flex-wrap justify-between gap-2">
+              <span className="text-ink-3">离<Term k="强平" />{h.ex && liq != null ? "（交易所数字）" : ""}</span>
+              <span className="num">
+                {liq == null ? (h.ex ? "交易所显示暂无强平价（保证金充足）" : "按现在的保证金不会被强平") : liqPct == null ? fmtPrice(liq) : h.dir * (price! - liq) <= 0 ? <b className="text-down">已越过强平价 {fmtPrice(liq)}</b> : `${liqPct.toFixed(1)}%（${fmtPrice(liq)}）${liqAtr != null ? ` · ${liqAtr.toFixed(1)} 倍 ATR` : ""}`}
+                {liq != null && stop != null && h.dir * (stop - liq) <= 0 && <b className="text-down"> · 强平在止损之前，还没到止损就会被强平</b>}
+              </span>
+            </div>
+            {liqAtr != null && h.dir * (price! - liq!) > 0 && <SafetyBar atr={liqAtr} />}
+            {check?.estimate && <p className="text-[11px] text-ink-3">本页的账户模型算出 {fmtPrice(check.model)}，和交易所差 {(check.diff! * 100).toFixed(1)}%：加仓试算里的强平价是估算，以交易所为准。</p>}
+            {v.fundDay != null && (
+              <div className="text-xs text-ink-3">
+                资金费：当前费率 {((v.funding ?? 0) * 100).toFixed(4)}%，按这个费率每天{v.fundDay >= 0 ? "付" : "收"}约 {Math.abs(v.fundDay).toFixed(1)} USDT（每 8 小时结算一次，费率会变）。
+              </div>
+            )}
+          </div>
 
-      <Ladder h={h} v={v} />
+          {losing && listed && (
+            <div className="space-y-1 rounded-lg border border-warn/40 bg-warn-soft p-3 text-sm">
+              <p className="font-semibold">如果继续往反方向走</p>
+              <p className="text-ink-2">
+                认错的位置：<b className="num">{fmtPrice(stop)}</b>（{stopFrom || "还没有止损"}），打到{v.atStop != null ? `${money(v.atStop)} USDT` : "—"}；强平 <b className="num">{fmtPrice(liq)}</b>。
+                按规则亏损的单不加仓摊平；想看补仓会怎样，到“加减仓试算”里算（研究 E47 结果出来前不推荐补仓位置）。日线反向时的必须止损价和锁仓计算在下一期加上。
+              </p>
+            </div>
+          )}
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <AddPanel h={h} v={v} acc={acc} onRecord={synced ? null : (f, leverage) => record(f, { leverage })} />
-        <ReducePanel v={v} acc={acc} onRecord={synced ? null : (f) => record(f)} />
-      </div>
-
-      <Settings h={h} v={v} onChange={onChange} />
-
-      {synced ? (
-        <p className="text-xs text-ink-3">数量、均价、杠杆和保证金模式以交易所为准，每分钟同步；在交易所加减仓后这里会自动更新。已实现盈亏是交易所给的数字。</p>
-      ) : (
-        <details className="text-sm">
-          <summary className="cursor-pointer text-ink-2">成交记录（{h.fills.length} 笔）· 改、删、补记手动加减仓</summary>
-          <Fills h={h} acc={acc} onChange={onChange} />
-        </details>
+          {listed && <NextSteps h={h} v={v} onChange={onChange} />}
+          {listed && <Ladder h={h} v={v} />}
+        </>
       )}
 
-      <div className="text-xs">
-        {synced ? null : confirm ? (
-          <span className="space-x-3">
-            <span className="text-down">删除这笔持仓？</span>
-            <button className="text-down underline" onClick={onRemove}>删除</button>
-            <button className="text-ink-3" onClick={() => setConfirm(false)}>取消</button>
-          </span>
-        ) : (
-          <button className="text-ink-3" onClick={() => setConfirm(true)}>删除这笔持仓</button>
-        )}
-      </div>
+      {tab === "calc" && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <WhatIf h={h} v={v} acc={acc} onRecord={h.ex ? null : record} />
+          <ReducePanel v={v} acc={acc} onRecord={h.ex ? null : record} />
+        </div>
+      )}
+
+      {tab === "settings" && (
+        <>
+          <Settings h={h} v={v} onChange={onChange} />
+          {h.ex ? (
+            <p className="text-xs text-ink-3">数量、均价、杠杆和保证金模式以交易所为准，每 30 秒读取一次；在交易所加减仓后这里会自动更新。这里只保存你设的计划止损、目标价、风格和提醒选项。</p>
+          ) : (
+            <details className="text-sm">
+              <summary className="cursor-pointer text-ink-2">成交记录（{h.fills.length} 笔）· 改、删、补记手动加减仓</summary>
+              <Fills h={h} acc={acc} onChange={onChange} />
+            </details>
+          )}
+          {onRemove && (
+            <div className="text-xs">
+              {confirm ? (
+                <span className="space-x-3">
+                  <span className="text-down">删除这笔持仓？</span>
+                  <button className="text-down underline" onClick={onRemove}>删除</button>
+                  <button className="text-ink-3" onClick={() => setConfirm(false)}>取消</button>
+                </span>
+              ) : (
+                <button className="text-ink-3" onClick={() => setConfirm(true)}>删除这笔持仓</button>
+              )}
+            </div>
+          )}
+        </>
+      )}
     </section>
-  );
-}
-
-function Kpi({ k, v, sub }: { k: string; v: React.ReactNode; sub?: string }) {
-  return (
-    <div className="min-w-0 rounded-lg border border-line px-3 py-2">
-      <div className="text-xs text-ink-3">{k}</div>
-      <div className="num truncate text-[17px] font-semibold">{v}</div>
-      {sub && <div className="num truncate text-[11px] text-ink-3">{sub}</div>}
-    </div>
-  );
-}
-
-/** Distance to liquidation in ATR: red under 2, amber under 5, green beyond (the marker caps at 10). */
-function SafetyBar({ atr }: { atr: number }) {
-  const at = Math.min(10, atr) * 10;
-  return (
-    <div className="relative h-2 rounded-full" style={{ background: "linear-gradient(90deg, var(--down) 0 20%, var(--warn) 20% 50%, var(--up) 50% 100%)" }} aria-label={`离强平 ${atr.toFixed(1)} 倍 ATR`}>
-      <i className="absolute -top-1 h-4 w-[3px] rounded bg-ink" style={{ left: `calc(${at}% - 1.5px)` }} />
-    </div>
   );
 }
 
@@ -592,7 +560,7 @@ function AddPlan({ h, v }: { h: Holding; v: View }) {
       <div className="space-y-1 rounded-lg border border-up/40 bg-up-soft p-3 text-sm">
         <p className="font-semibold">加仓：{when}，加 {trimQty(lim.qty)}（保证金约 {margin(lim.qty)} USDT，{h.leverage} 倍）</p>
         <p className="text-ink-2">
-          加完均价 <b className="num">{fmtPrice(lim.avg)}</b>、共 {trimQty(pos.qty + lim.qty)}；强平 {fmtPrice(lim.liq)}；打到止损 {fmtPrice(stop)} <b className={toneColor(lim.atStop)}>{money(lim.atStop)}</b>。这是规则给的上限（{style}：{rule}；这次受“{bindingText(lim.binding, v.rules)}”限制），可以在下面“加仓预览”里改保证金。
+          加完均价 <b className="num">{fmtPrice(lim.avg)}</b>、共 {trimQty(pos.qty + lim.qty)}；强平 {fmtPrice(lim.liq)}；打到止损 {fmtPrice(stop)} <b className={toneColor(lim.atStop)}>{money(lim.atStop)}</b>。这是规则给的上限（{style}：{rule}；这次受“{bindingText(lim.binding, v.rules)}”限制），可以在“加减仓试算”里改。
         </p>
         {h.addStops && lvl != null && (() => {
           const o = v.ownStop(lvl);
@@ -626,7 +594,7 @@ function AddPlan({ h, v }: { h: Holding; v: View }) {
           <p className="text-ink-2">止损跟着结构走：{h.dir > 0 ? "出现新的更高低点" : "出现新的更低高点"}以后，把止损移到它外面（或者自己在下面“止损”里填），这里就会变成“可以加”，并写出加多少、加完均价。</p>
         </>
       ) : (
-        <p className="text-ink-2">{lim?.binding === "count" ? "已经加满次数，剩下只做减仓和移动止损。" : lim?.binding === "liquidation" ? "再加强平会离止损太近：降低杠杆，或先把止损移近一些。" : lim?.binding === "leverage" ? "账户实际杠杆已到上限；逐仓可以在下面勾“不受实际杠杆限制”。" : "按规则这里不加。"}</p>
+        <p className="text-ink-2">{lim?.binding === "count" ? "已经加满次数，剩下只做减仓和移动止损。" : lim?.binding === "liquidation" ? "再加强平会离止损太近：降低杠杆，或先把止损移近一些。" : lim?.binding === "margin" ? "交易所账户里的可用保证金不够这一笔：先减其他仓位或转入资金。" : "按规则这里不加。"}</p>
       )}
     </div>
   );
@@ -750,78 +718,6 @@ function AddLots({ h, v, onChange }: { h: Holding; v: View; onChange: (p: Partia
   );
 }
 
-function AddPanel({ h, v, acc, onRecord }: { h: Holding; v: View; acc: Account; onRecord: ((f: Fill, leverage: number) => void) | null }) {
-  const [atIn, setAt] = useState(0);
-  const [lev, setLev] = useState(h.leverage);
-  const [stopIn, setStop] = useState(0);
-  // 0: follow the page (next add level or the price, the current stop) until the visitor types
-  const at = atIn > 0 ? atIn : +(v.addLevel ?? (v.price != null ? nextAddLevel(h.dir, v.price, v.levels) : null) ?? v.price ?? 0).toPrecision(6);
-  const stop = stopIn > 0 ? stopIn : (v.stop ?? 0);
-  const limit = stop > 0 && at > 0 ? maxAdd({ pos: v.pos, price: at, stop, budget: v.budget, mode: h.mode, leverage: lev, account: acc.total, atr: v.atr, fee: acc.fee, rules: v.rules }) : null;
-  // the add is typed as margin (USDT); 0 follows the rules' limit
-  const [mIn, setM] = useState<number>(0);
-  const q = mIn > 0 && at > 0 ? (mIn * lev) / at : (limit?.qty ?? 0);
-  const marginOf = (x: number) => (at > 0 ? (x * at) / lev : 0);
-  const over = limit != null && q > limit.qty * 1.001 + 1e-12;
-  const own = v.ownStop(at);
-  const [ownIn, setOwn] = useState(0);
-  const ownStop = ownIn > 0 ? ownIn : own;
-  const p = q > 0 && at > 0 ? previewAdd({ pos: v.pos, price: at, qty: q, stop: stop > 0 ? stop : null, mode: h.mode, leverage: lev, account: acc.total, fee: acc.fee }) : null;
-  return (
-    <div className="space-y-3 rounded-lg border border-line p-3">
-      <h3 className="text-[15px] font-semibold">加仓预览</h3>
-      <div className="grid grid-cols-2 gap-2.5 text-xs text-ink-3 sm:grid-cols-4">
-        <Num id="add-price" label="加仓价" value={at} onChange={setAt} />
-        <Num id="add-stop" label="加完的止损" value={stop} onChange={setStop} />
-        <label className="space-y-1">
-          <span>加多少保证金 (USDT){mIn > 0 ? "" : "（按规则）"}</span>
-          <input id="add-margin" type="number" inputMode="decimal" className={field} value={mIn > 0 ? mIn : +marginOf(limit?.qty ?? 0).toFixed(2) || ""} onChange={(e) => setM(+e.target.value)} />
-          <span className="block text-ink-3">= {trimQty(q)} 个{mIn > 0 && <button className="ml-2 text-accent" onClick={() => setM(0)}>回到规则上限</button>}</span>
-        </label>
-        <Num id="add-lev" label="杠杆倍数" value={lev} onChange={(x) => setLev(Math.max(1, x))} />
-        {h.addStops && <Num id="add-own" label="这笔的单独止损（空着共用）" value={ownStop ?? 0} onChange={setOwn} />}
-      </div>
-      {limit && (
-        <p className="text-sm">
-          {limit.qty > 0 ? (
-            <>按规则最多加 <b className="num">{trimQty(limit.qty)}</b>（这次受“{bindingText(limit.binding, v.rules)}”限制）。</>
-          ) : (
-            <span className="text-warn">
-              按规则这次不加：{bindingText(limit.binding, v.rules)}。
-              {limit.binding === "budget" && (() => {
-                const o = unlockOptions(h, v, at).find((x) => x.ok);
-                return o ? ` 止损移到 ${fmtPrice(o.need)} ${h.dir > 0 ? "以上" : "以下"}，就能在这里加 ${trimQty(o.q)}（保证金约 ${Math.round(o.margin).toLocaleString("en-US")} USDT）；把上面“加完的止损”改成这个数就能看到结果。` : " 现在止损离得太远，要等价格走得更远、止损跟上来。";
-              })()}
-            </span>
-          )}
-        </p>
-      )}
-      {p && (
-        <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-          <Kpi k="新均价" v={fmtPrice(p.avg)} sub={`原 ${fmtPrice(v.pos.avg)} · 共 ${trimQty(p.qty)}`} />
-          <Kpi k="新强平" v={fmtPrice(p.liq)} sub={p.margin != null ? `保证金 ${Math.round(p.margin).toLocaleString("en-US")}` : "全仓按账户算"} />
-          <Kpi k="打到止损" v={<span className={toneColor(p.atStop ?? 0)}>{p.atStop != null ? money(p.atStop) : "—"}</span>} sub={p.atStop != null && acc.total > 0 ? `账户的 ${((p.atStop / acc.total) * 100).toFixed(1)}%` : ""} />
-          <Kpi k="止损在强平前" v={p.stopBeforeLiq ? <span className="text-up">是</span> : <span className="text-down">否</span>} />
-        </div>
-      )}
-      {p && over && limit && (
-        <p className="text-sm text-warn">比规则上限多（上限 {trimQty(limit.qty)} 个、保证金约 {Math.round(marginOf(limit.qty)).toLocaleString("en-US")}）：打到止损会{p.atStop != null && p.atStop < 0 ? `亏 ${Math.abs(Math.round(p.atStop)).toLocaleString("en-US")} USDT` : "少赚"}。可以照样记，但这是你自己的决定。</p>
-      )}
-      {p && !p.stopBeforeLiq && <p className="text-sm text-down">这样加，强平价会跑到止损之前：价格还没到止损就会被强平。减少数量或降低杠杆。</p>}
-      <p className="text-[11px] leading-relaxed text-ink-3">
-        规则：只在赚钱的一边、价格收盘越过关键位后加；先把止损移到新的保护位，再按“加完整笔打到止损最多亏{v.budget === 0 ? " 0（保本）" : `每笔风险 ${acc.riskPct}%`}”算数量。保证金可以自己改，均价、强平和打到止损的结果跟着重算。
-      </p>
-      {onRecord ? (
-        <button disabled={!(q > 0 && at > 0)} className="rounded-lg bg-ink px-3 py-1.5 text-sm text-bg disabled:opacity-40" onClick={() => (onRecord({ kind: "add", price: at, qty: q, ...(h.addStops && ownStop != null && ownStop > 0 && h.dir * (at - ownStop) > 0 ? { stop: ownStop } : {}) }, lev), setM(0), setOwn(0))}>
-          我按这个加了
-        </button>
-      ) : (
-        <p className="text-[11px] text-ink-3">在交易所加仓后，这里一分钟内自动同步。</p>
-      )}
-    </div>
-  );
-}
-
 function ReducePanel({ v, acc, onRecord }: { v: View; acc: Account; onRecord: ((f: Fill) => void) | null }) {
   const [atIn, setAt] = useState(0);
   const [qtyIn, setQty] = useState(0);
@@ -862,12 +758,12 @@ function Settings({ h, v, onChange }: { h: Holding; v: View; onChange: (p: Parti
     <div className="grid grid-cols-2 gap-2.5 text-xs text-ink-3 sm:grid-cols-4">
       <label className="space-y-1">
         <span>保证金模式</span>
-        <select id="h-mode" className={field} disabled={h.source === "exchange"} value={h.mode} onChange={(e) => onChange({ mode: e.target.value as MarginMode })}>
+        <select id="h-mode" className={field} disabled={!!h.ex} value={h.mode} onChange={(e) => onChange({ mode: e.target.value as MarginMode })}>
           <option value="isolated">逐仓</option>
           <option value="cross">全仓</option>
         </select>
       </label>
-      {h.source === "exchange" ? (
+      {h.ex ? (
         <div className="space-y-1">
           <span>杠杆倍数</span>
           <div className="num py-1.5 text-sm text-ink">{h.leverage}×（交易所）</div>
@@ -891,12 +787,6 @@ function Settings({ h, v, onChange }: { h: Holding; v: View; onChange: (p: Parti
           <option value="aggressive">激进：可亏一笔风险</option>
         </select>
       </label>
-      {h.mode === "isolated" && (
-        <label className="col-span-2 flex items-start gap-2 sm:col-span-4">
-          <input id="h-nolev" type="checkbox" className="mt-0.5" checked={!!h.noLevCap} onChange={(e) => onChange({ noLevCap: e.target.checked || undefined })} />
-          <span>逐仓不受“实际杠杆不超过 {ROLL_RULES.maxLeverage} 倍”限制。这笔最多亏的就是放进去的保证金；加仓数量仍受风险预算和“止损要在强平之前”限制，杠杆越高强平越近，能加的反而可能更少。</span>
-        </label>
-      )}
       <label className="space-y-1">
         <span>减仓方式</span>
         <select id="h-cut" className={field} value={h.cutMode ?? "close"} onChange={(e) => onChange({ cutMode: e.target.value === "close" ? undefined : (e.target.value as "touch" | "none") })}>
@@ -1064,7 +954,6 @@ function HoldingForm({ coins, price, onAdd, onCancel }: { coins: string[]; price
   const [amount, setAmount] = useState(0);
   const [stop, setStop] = useState(0);
   const [style, setStyle] = useState<Holding["style"]>(undefined);
-  const [noLevCap, setNoLevCap] = useState(false);
   const [probe, setProbe] = useState(false);
   const qty = (by === "qty" ? amount : entry > 0 ? (amount * lev) / entry : 0) * (probe ? PROBE_RULES.share : 1);
   const stopOk = !(stop > 0) || dir * (entry - stop) > 0;
@@ -1112,12 +1001,6 @@ function HoldingForm({ coins, price, onAdd, onCancel }: { coins: string[]; price
             <option value="aggressive">激进：可亏一笔风险</option>
           </select>
         </label>
-        {mode === "isolated" && (
-          <label className="col-span-2 flex items-start gap-2 sm:col-span-4">
-            <input id="new-nolev" type="checkbox" className="mt-0.5" checked={noLevCap} onChange={(e) => setNoLevCap(e.target.checked)} />
-            <span>逐仓不受“实际杠杆不超过 {ROLL_RULES.maxLeverage} 倍”限制（风险预算和“止损要在强平之前”照旧）</span>
-          </label>
-        )}
         <label className="col-span-2 flex items-start gap-2 sm:col-span-4">
           <input id="new-probe" type="checkbox" className="mt-0.5" checked={probe} onChange={(e) => setProbe(e.target.checked)} />
           <span>试仓分批：上面填计划的总仓位，这里只开三分之一，之后每次收盘站上关键位再加一份（最多两次）</span>
@@ -1132,7 +1015,7 @@ function HoldingForm({ coins, price, onAdd, onCancel }: { coins: string[]; price
         <button
           disabled={!ok}
           className="rounded-lg bg-ink px-3 py-1.5 text-sm text-bg disabled:opacity-40"
-          onClick={() => onAdd({ id: uid(), coin, dir, mode, leverage: lev, fills: [{ kind: "open", price: entry, qty, t: Math.floor(Date.now() / 1000) }], stop: stop > 0 ? stop : null, targets: [], realizedBase: 0, ...(style ? { style } : {}), ...(noLevCap && mode === "isolated" ? { noLevCap: true } : {}), ...(probe ? { probe: true } : {}) })}
+          onClick={() => onAdd({ id: uid(), coin, dir, mode, leverage: lev, fills: [{ kind: "open", price: entry, qty, t: Math.floor(Date.now() / 1000) }], stop: stop > 0 ? stop : null, targets: [], realizedBase: 0, ...(style ? { style } : {}), ...(probe ? { probe: true } : {}) })}
         >
           添加
         </button>
@@ -1147,9 +1030,10 @@ function Rules() {
     <details className="card p-4 text-sm leading-relaxed">
       <summary className="cursor-pointer font-semibold">这页按什么规则算</summary>
       <ul className="mt-2 list-disc space-y-1 pl-5 text-ink-2">
-        <li>只在赚钱的一边加仓，亏损的单不加仓摊平（马丁格尔会把一笔错单放大）。</li>
+        <li>只在赚钱的一边加仓，亏损的单不加仓摊平（马丁格尔会把一笔错单放大）。“加减仓试算”可以算补仓拉低均价的结果，但在 E47 回测结果出来前不推荐补仓位置。</li>
         <li>加仓等价格<b>收盘</b>越过前方关键位（来自币页的“关键价位”：15 分钟到周线多种方法合并，离得近的已合在一起），先把止损移到新的保护位，再算能加多少。</li>
-        <li>每次加完，整笔打到止损最多亏“每笔风险”（或选“保本滚仓”：不亏）；每次不超过上一笔的 {ROLL_RULES.pyramid * 100}%，最多加 {ROLL_RULES.maxAdds} 次；止损要在强平前至少 {ROLL_RULES.liqGapAtr} 倍 ATR；实际杠杆不超过 {ROLL_RULES.maxLeverage} 倍。</li>
+        <li>每次加完，整笔打到止损最多亏“每笔风险”（或选“保本滚仓”：不亏）；每次不超过上一笔的 {ROLL_RULES.pyramid * 100}%，最多加 {ROLL_RULES.maxAdds} 次；止损要在强平前至少 {ROLL_RULES.liqGapAtr} 倍 ATR；加仓要的保证金（数量 × 价格 ÷ 开仓杠杆）不超过交易所账户的可用保证金。不再限制“实际杠杆”：打到止损亏多少和强平在不在止损外面，才是真正的约束。</li>
+        <li>交易所账户：权益、可用、杠杆、强平价、止损单都用交易所的数字。加仓后的强平价按交易所给的维持保证金反推：逐仓用这笔自己的保证金，全仓把账户里所有全仓仓位一起算（其他合约价格不动）；和交易所现在的强平价差超过 1% 时标“估算”。</li>
         <li>减仓：前方第一个、第二个关键位各减三分之一，剩下跟着移动认错位。离强平不到 {ROLL_RULES.nearLiqAtr} 倍 ATR 时先减仓或补保证金。</li>
         <li>
           回测（E31，10 个币的 4 小时 K 线，2020 年起 2,027 笔，入场和计划页同一套）：按这套规则滚仓比不滚平均每笔只多 0.05R，没到 0.1R 的门槛，换预算、金字塔比例、加仓次数或改用日线也一样；在“收盘越过摆动点”时加，和持仓期间随便挑时间加差不多。加过仓的交易里约七成比不滚更差（平均少 0.29R），三成更好（平均多 1.09R），多出来的全靠少数大行情；连续亏损时的最大回撤大了约三成。风险预算是守住了的：打到止损亏超过 1.1 倍初始风险的只有 0.5%。所以滚仓不会让你更常赚，只是在大行情里拿得更重。加仓确认改用 1 小时或 15 分钟收盘（同一个摆动点）：结果和 4 小时差不多（每笔多 0.01–0.02R，不显著），加仓价离突破点近一些（中位从 0.11R 变成 0.07R / 0.05R），最大回撤略大；所以三种都可以选，默认 4 小时。“进取：保本滚”就是“止损移到开仓价、用利润滚”：加完整笔打到止损不亏，每次可以加到和上一笔一样多，最多 5 次。回测每笔平均 +0.24R（稳健 +0.22R、不滚 +0.16R），对不滚多 0.07R，没到 0.1R 的标准；亏超过本金 1.1 倍的只有 0.1%，最大回撤 78R（稳健 82R）。允许加完打到止损亏 1 倍、2 倍本金的更激进做法平均更高（+0.26R、+0.42R），但那只是仓位放大：按波动折算不比不滚划算，亏超过本金的笔数到 1.5%、10.6%。“激进：可亏一笔风险”就是其中亏 1 倍的那档：加完整笔打到止损最多亏“每笔风险”（账户设置里的那个百分比），每次可以加到和上一笔一样多，最多 5 次，平均 +0.26R，但最大回撤 102R，比不滚大六成，76% 的加仓笔比不滚差，靠少数大行情拉高；按波动折算并不比不滚划算。2 倍那档不提供。减仓方式（E31e，同一批交易、不加仓，比较在前方关键位怎么减）：不减 +0.16R / 笔，赚钱的笔数 36%，最大回撤 63R，最赚的那 32 笔大行情平均 +12.7R；碰到关键位就减三分之一 +0.05R，赚钱 48%，回撤 40R，大行情只剩 +5.0R，比不减少 0.11R、各段都更差，按波动折算也更差；4 小时收盘没站稳才减 +0.10R，赚钱 41%，回撤 48R，大行情 +8.3R，比碰到就减多 0.05R（没到 0.1R 的标准，最近 12 个月约 0）。碰到关键位的那根约 45% 收盘站在位外。把“冲到离位 0.25 倍 ATR 内没碰到”也算冲击反而略差；做空和做多一样对称，没有额外优势。所以默认“收盘没站稳才减”，三种都可以选。保本时机（E31f，同一批交易）：不移保本 +0.16R、最大回撤 63R；站稳第一个关键位后把止损移到开仓价 +0.11R、回撤 47R，约 32% 的单在开仓价出场（其中一成本来能赚 1R 以上），最赚的那批大行情从 12.7R 变成 8.2R；浮盈 1R 后保本几乎和不移一样（结构止损通常已经更高）；下一根一赚钱就保本 +0.02R，比不移少 0.14R、各段都更差。保本之后再用“激进”滚：+0.22R、回撤 74R（不保本的激进 +0.26R、102R）。所以保本是让结果更平稳的选项，默认不开。另外测了两条：① 浮盈到过 2 倍 ATR 后吐回一半就减三分之一，平均每笔少 0.03–0.08R，最大回撤小两到三成，所以只做成可选的提醒；② 价格离摆动点超过 1.5 倍 ATR 就不加，和不限制差不多（加仓数量本来就被“打到止损最多亏多少”压小了），没有加这条。
@@ -1179,7 +1063,7 @@ function AlertCard({ server, accounts, onSave }: { server: Server; accounts: Acc
     <section className="card space-y-3 p-4 text-sm">
       <h2 className="text-[15px] font-semibold">邮件提醒</h2>
       <p className="text-xs leading-relaxed text-ink-3">
-        服务器每分钟看一次：收盘（每笔持仓自己选 4 小时 / 1 小时 / 15 分钟）越过关键位（多单站上、空单跌破）、按规则可以加仓时；冲击减仓位的那根 4 小时收盘没站稳（或站稳了）时（选“碰到就减”的是价格到减仓位时）；价格到你填的价位时；开了“浮盈回吐提醒”的持仓吐回一半浮盈时；开了“站稳后保本”的持仓 4 小时收盘站稳第一个关键位、该把止损移到保本价时；快到止损、已经过了止损、离强平太近时；所有持仓一起打到止损超过账户 {ACCOUNT_RISK_PCT}% 时。同一件事只发一次，同一分钟的几件事合成一封。刚打开时第一轮只记录不发。
+        服务器每分钟看一次：收盘（每笔持仓自己选 4 小时 / 1 小时 / 15 分钟）越过关键位（多单站上、空单跌破）、按规则可以加仓时；冲击减仓位的那根 4 小时收盘没站稳（或站稳了）时（选“碰到就减”的是价格到减仓位时）；价格到你填的价位时；开了“浮盈回吐提醒”的持仓吐回一半浮盈时；开了“站稳后保本”的持仓 4 小时收盘站稳第一个关键位、该把止损移到保本价时；快到止损、已经过了止损、离强平太近时；所有持仓一起打到止损超过账户 {ACCOUNT_RISK_PCT}% 时；交易所持仓没有止损单、止损单在强平后面或只覆盖一部分时（新开的仓位一出现就检查）。同一件事只发一次，同一分钟的几件事合成一封。刚打开时第一轮只记录不发。
       </p>
       {!server.mailReady && <p className="text-xs text-warn">后台的邮件还没配置好：先到“系统设置 → 邮件与告警”填 SMTP 并保存。</p>}
       <label className="flex items-center gap-2">

@@ -136,19 +136,17 @@ test("aggressive style: the per-trade risk as the budget even when the account r
   assert.equal(v.add(2360)!.binding, "pyramid");
 });
 
-test("isolated holdings can drop the account leverage cap; cross cannot", async () => {
+test("the account's real leverage no longer caps adds; an old noLevCap flag still loads and is ignored", async () => {
   const { holdingView } = await import("../src/lib/rollbook.ts");
-  // a big budget so the leverage cap binds: 5 × 10,000 / 2360 − 4 ≈ 17.2
   const b = book({ stop: 2320, style: "aggressive", leverage: 2 });
   b.accounts[0].riskPct = 50;
   const h = b.accounts[0].holdings[0];
-  const capped = holdingView(h, b.accounts[0], mk(2360).ETH).add(2360, 2340)!;
-  assert.equal(capped.binding, "pyramid");
+  // 20 ETH at 2,300 is 4.6x the account: before, the 5x cap bound here; now only the budget, pyramid and liquidation do
   const big = { ...h, fills: [{ kind: "open" as const, price: 2300, qty: 20 }] };
-  assert.equal(holdingView(big, b.accounts[0], mk(2360).ETH).add(2360, 2340)!.binding, "leverage");
-  assert.notEqual(holdingView({ ...big, noLevCap: true }, b.accounts[0], mk(2360).ETH).add(2360, 2340)!.binding, "leverage");
-  assert.equal(holdingView({ ...big, noLevCap: true, mode: "cross" }, b.accounts[0], mk(2360).ETH).add(2360, 2340)!.binding, "leverage");
-  assert.equal(cleanBook({ ...b, accounts: [{ ...b.accounts[0], holdings: [{ ...h, noLevCap: true }] }] }, ["ETH"]).accounts[0].holdings[0].noLevCap, true);
+  for (const mode of ["isolated", "cross"] as const) assert.notEqual(holdingView({ ...big, mode }, b.accounts[0], mk(2360).ETH).add(2360, 2340)!.binding, "margin");
+  const loaded = cleanBook({ ...b, accounts: [{ ...b.accounts[0], holdings: [{ ...h, noLevCap: true }] }] }, ["ETH"]).accounts[0].holdings[0];
+  assert.equal(loaded.fills.length, 1);
+  assert.equal("noLevCap" in loaded, false);
 });
 
 test("cut modes: the default decides at the 4-hour close, touch cuts at the price, none never cuts", async () => {

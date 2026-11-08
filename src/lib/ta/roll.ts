@@ -48,8 +48,6 @@ export const ROLL_RULES = {
   maxAdds: 3,
   /** stop must sit at least this many ATR before liquidation after an add */
   liqGapAtr: 1,
-  /** total notional / account at most this */
-  maxLeverage: 5,
   /** "close to the stop" / "close to liquidation", in ATR */
   nearStopAtr: 0.5,
   nearLiqAtr: 2,
@@ -123,7 +121,7 @@ export interface AddLimit {
   /** the most that may be added at `price` (0: do not add) */
   qty: number;
   /** which rule set the limit */
-  binding: "budget" | "pyramid" | "liquidation" | "leverage" | "count" | "losing" | "stop";
+  binding: "budget" | "pyramid" | "liquidation" | "margin" | "count" | "losing" | "stop";
   /** after adding `qty` */
   avg: number;
   liq: number | null;
@@ -137,8 +135,12 @@ export interface AddLimit {
  *  - the whole position at the stop loses at most `budget` (0: must not lose), fees included;
  *  - at most ROLL_RULES.pyramid of the previous fill, at most ROLL_RULES.maxAdds adds;
  *  - the stop still sits ≥ liqGapAtr ATR before the new liquidation price;
- *  - total notional / account ≤ maxLeverage.
+ *  - the margin the add needs (size × price ÷ the position's leverage) fits in `available`, when known.
+ * No cap on the account's real leverage: the budget at the stop and the liquidation gap are the limits
+ * that matter, and the leverage the position was opened with already sets its margin.
+ * `liqOf` replaces the simple liquidation estimate (synced positions: the account-level model).
  */
+export type LiqOf = (qty: number, avg: number, added: number, price: number) => number | null;
 export function maxAdd(o: {
   pos: Position;
   price: number;
@@ -150,15 +152,18 @@ export function maxAdd(o: {
   atr: number | null;
   fee?: number;
   rules?: Partial<Record<keyof typeof ROLL_RULES, number>>;
+  /** USDT free to open with; null / absent: not checked (hand-entered accounts) */
+  available?: number | null;
+  liqOf?: LiqOf;
 }): AddLimit {
-  const r: Record<"pyramid" | "maxAdds" | "liqGapAtr" | "maxLeverage", number> = { ...ROLL_RULES, ...o.rules };
+  const r: Record<"pyramid" | "maxAdds" | "liqGapAtr", number> = { ...ROLL_RULES, ...o.rules };
   const fee = o.fee ?? DEFAULT_FEE.taker;
   const { pos, price, stop } = o;
   const d = pos.dir;
   const after = (x: number) => {
     const q = pos.qty + x;
     const avg = q > 0 ? (pos.avg * pos.qty + price * x) / q : 0;
-    const liq = liquidationPrice({ dir: d, qty: q, avg, mode: o.mode, leverage: o.leverage, account: o.account });
+    const liq = o.liqOf ? o.liqOf(q, avg, x, price) : liquidationPrice({ dir: d, qty: q, avg, mode: o.mode, leverage: o.leverage, account: o.account });
     const atStop = d * (stop - avg) * q - fee * (price * x + stop * q);
     return { avg, liq, atStop };
   };
@@ -174,7 +179,7 @@ export function maxAdd(o: {
   const limits: [AddLimit["binding"], number][] = [
     ["budget", (o.budget + a) / lossPerUnit],
     ["pyramid", r.pyramid * pos.lastAdd],
-    ["leverage", o.account > 0 ? (r.maxLeverage * o.account) / price - pos.qty : Infinity],
+    ["margin", o.available != null ? (Math.max(0, o.available) * Math.max(1, o.leverage)) / price : Infinity],
   ];
   // liquidation moves toward the price as size grows: bisect for the largest size that keeps the gap
   const gap = (o.atr ?? 0) * r.liqGapAtr;
@@ -200,16 +205,16 @@ export function maxAdd(o: {
 }
 
 /** What adding `qty` at `price` does, without any rule: for the page's free preview. */
-export function previewAdd(o: { pos: Position; price: number; qty: number; stop: number | null; mode: MarginMode; leverage: number; account: number; fee?: number }) {
+export function previewAdd(o: { pos: Position; price: number; qty: number; stop: number | null; mode: MarginMode; leverage: number; account: number; fee?: number; liqOf?: LiqOf }) {
   const fee = o.fee ?? DEFAULT_FEE.taker;
   const pos = positionOf(o.pos.dir, [
     { kind: "open", price: o.pos.avg, qty: o.pos.qty },
     { kind: "add", price: o.price, qty: o.qty },
   ], 0);
-  const liq = liquidationPrice({ dir: pos.dir, qty: pos.qty, avg: pos.avg, mode: o.mode, leverage: o.leverage, account: o.account });
+  const liq = o.liqOf ? o.liqOf(pos.qty, pos.avg, o.qty, o.price) : liquidationPrice({ dir: pos.dir, qty: pos.qty, avg: pos.avg, mode: o.mode, leverage: o.leverage, account: o.account });
   const atStop = o.stop == null ? null : pos.dir * (o.stop - pos.avg) * pos.qty - fee * (o.price * o.qty + o.stop * pos.qty);
   const stopBeforeLiq = o.stop == null || liq == null || pos.dir * (o.stop - liq) > 0;
-  return { qty: pos.qty, avg: pos.avg, liq, atStop, stopBeforeLiq, margin: o.mode === "isolated" ? (pos.avg * pos.qty) / Math.max(1, o.leverage) : null };
+  return { qty: pos.qty, avg: pos.avg, liq, atStop, stopBeforeLiq, margin: o.mode === "isolated" ? (pos.avg * pos.qty) / Math.max(1, o.leverage) : null, addMargin: (o.price * o.qty) / Math.max(1, o.leverage) };
 }
 
 /**

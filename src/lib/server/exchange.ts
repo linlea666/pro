@@ -1,16 +1,23 @@
 import { createHmac } from "node:crypto";
 import { binanceReadOnly, EXCHANGE_NAME, okxContractValues, okxReadOnly, parseBinance, parseOkx, type ExchangeId, type ExSnapshot, type OkxInstrument } from "../exchange.ts";
+import { getKlines } from "../data/klines.ts";
+import { cleanPrefs, DEFAULT_EX_PREFS, exAccountOf, prefKey, type Account, type ExAccountPrefs, type HoldingPrefs } from "../rollbook.ts";
+import { betaOf, MARGIN_RULES } from "../ta/margin.ts";
+import { DEFAULT_FEE } from "../ta/roll.ts";
 import { coinIds } from "./coins.ts";
 import { decrypt, encrypt } from "./crypto.ts";
 import { getDb } from "./db.ts";
 import { recordSource } from "./health.ts";
 import { logger } from "./log.ts";
+import { getState, setState } from "./settings.ts";
 
 /**
  * Read-only exchange accounts for 滚仓助手: the keys (encrypted with MASTER_KEY, in settings), signed
  * GET requests to OKX and Binance USDT-M futures, and the latest snapshot of each account in memory.
  * Only read-only keys are accepted: a key that can trade or withdraw is refused when saved.
  * Logs never carry a query string, a signature or a key: only the exchange, the path and the status.
+ * The positions are not stored: every read builds the accounts from the snapshots (`exAccounts`); only
+ * what the page sets on a position (`roll.exprefs`) and on an account (its risk %, budget, fee) is kept.
  */
 
 const KEY = "exchange.accounts";
@@ -31,6 +38,10 @@ export interface ExAccount {
   /** Binance: the key is bound to IP addresses */
   ipRestrict?: boolean;
   addedAt: number;
+  /** the page's account settings for it */
+  riskPct?: number;
+  budget?: "keep" | "even";
+  fee?: number;
 }
 
 interface Creds {
@@ -51,7 +62,75 @@ function putExAccounts(list: ExAccount[]) {
 }
 
 /** What the page may see: never the key, the secret or the passphrase. */
-export const publicExAccounts = () => getExAccounts().map(({ id, name, ex, keyHint, ipRestrict, addedAt }) => ({ id, name, ex, keyHint, ipRestrict: ipRestrict ?? null, addedAt }));
+export const publicExAccounts = () => getExAccounts().map((a) => ({ id: a.id, name: a.name, ex: a.ex, keyHint: a.keyHint, ipRestrict: a.ipRestrict ?? null, prefs: acctPrefs(a) }));
+
+export const acctPrefs = (a: ExAccount): ExAccountPrefs => ({ riskPct: a.riskPct ?? DEFAULT_EX_PREFS.riskPct, budget: a.budget ?? DEFAULT_EX_PREFS.budget, fee: a.fee ?? DEFAULT_FEE.taker });
+
+/** The page's account settings for an exchange account. */
+export function saveAcctPrefs(id: string, input: Partial<ExAccountPrefs>) {
+  const list = getExAccounts();
+  const a = list.find((x) => x.id === id);
+  if (!a) throw new Error("没有找到这个交易所账户");
+  const num = (x: unknown, lo: number, hi: number) => (typeof x === "number" && Number.isFinite(x) && x >= lo && x <= hi ? x : undefined);
+  const next: ExAccount = { ...a, ...(num(input.riskPct, 0.1, 10) != null ? { riskPct: input.riskPct } : {}), ...(input.budget === "keep" || input.budget === "even" ? { budget: input.budget } : {}), ...(num(input.fee, 0, 0.01) != null ? { fee: input.fee } : {}) };
+  putExAccounts(list.map((x) => (x.id === id ? next : x)));
+}
+
+// ---------------------------------------------------------------- per-position prefs
+
+const PREFS = "roll.exprefs";
+const PREF_KEEP_MS = 7 * 24 * 3600_000;
+
+export function getExPrefs(): Record<string, HoldingPrefs> {
+  const row = getDb().prepare("SELECT value FROM settings WHERE key = ?").get(PREFS) as { value: string } | undefined;
+  return row ? (JSON.parse(row.value) as Record<string, HoldingPrefs>) : {};
+}
+
+function putExPrefs(p: Record<string, HoldingPrefs>) {
+  getDb()
+    .prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+    .run(PREFS, JSON.stringify(p), Date.now());
+}
+
+/** What the page set on one position (`key` = `<account>:<position key>`). */
+export function saveExPrefs(key: string, input: unknown) {
+  if (typeof key !== "string" || key.length > 120 || !getExAccounts().some((a) => key.startsWith(`${a.id}:`))) throw new Error("没有找到这个持仓");
+  const all = getExPrefs();
+  all[key] = { ...cleanPrefs(input), seen: Date.now() };
+  putExPrefs(all);
+}
+
+/** Old books mirrored exchange positions; their settings come over once (see `migrateMirrors`). */
+export function mergeExPrefs(p: Record<string, HoldingPrefs>) {
+  if (Object.keys(p).length) putExPrefs({ ...p, ...getExPrefs() });
+}
+
+/** Mark the open positions as seen (once a day) and forget prefs of positions closed for a week. */
+function touchPrefs(fresh: ExSnapshot[]) {
+  const all = getExPrefs();
+  const now = Date.now();
+  let changed = false;
+  const open = new Set(fresh.flatMap((s) => s.positions.map((p) => prefKey(s.id, p.key))));
+  const ids = new Set(getExAccounts().map((a) => a.id));
+  for (const [k, v] of Object.entries(all)) {
+    if (open.has(k)) {
+      if (!v.seen || now - v.seen > 24 * 3600_000) (all[k] = { ...v, seen: now }), (changed = true);
+    } else if (!ids.has(k.split(":")[0]) || now - (v.seen ?? 0) > PREF_KEEP_MS) {
+      delete all[k];
+      changed = true;
+    }
+  }
+  if (changed) putExPrefs(all);
+}
+
+/** Every exchange account with a usable snapshot, as accounts of the 滚仓 page. */
+export function exAccounts(): Account[] {
+  const prefs = getExPrefs();
+  return getExAccounts().flatMap((a) => {
+    const x = snaps[a.id];
+    return x?.snap && !x.error ? [exAccountOf(x.snap, prefs, acctPrefs(a))] : [];
+  });
+}
 
 const credsOf = (a: ExAccount): Creds => ({ key: decrypt(a.keyEnc), secret: decrypt(a.secretEnc), pass: a.passEnc ? decrypt(a.passEnc) : null });
 const hint = (k: string) => `${k.slice(0, 4)}…${k.slice(-4)}`;
@@ -163,8 +242,55 @@ async function binanceSnapshot(id: string, name: string, c: Creds): Promise<{ sn
       .catch(() => ((g.__slBnAlgo = Date.now()), []));
   }
   const snap = parseBinance({ id, name, t: Date.now(), account, risks, orders: [...orders, ...algo], dual: dual.dualSidePosition === true, coins: coinIds() });
+  await binanceRealized(c, snap).catch((e) => logger.debug("datasource", "币安已实现盈亏读取失败", { error: (e as Error).message }));
   const ro = binanceReadOnly(restrictions);
   return { snap, readOnly: ro.ok, ipRestrict: ro.ipRestrict };
+}
+
+/**
+ * Binance's position endpoints carry no realized profit. Add up the income (realized profit, commission,
+ * funding) of each symbol since this page first saw the position; a symbol held on both sides (hedge
+ * mode) cannot be split, so it gets none. The income list covers the last 7 days at most.
+ */
+async function binanceRealized(c: Creds, s: ExSnapshot) {
+  if (!s.positions.length) return;
+  const stateKey = `exFirstSeen.${s.id}`;
+  const first = JSON.parse(getState(stateKey) ?? "{}") as Record<string, number>;
+  const now = Date.now();
+  const next: Record<string, number> = {};
+  for (const p of s.positions) next[p.key] = first[p.key] ?? now;
+  if (JSON.stringify(next) !== JSON.stringify(first)) setState(stateKey, JSON.stringify(next));
+  const since = Math.max(Math.min(...Object.values(next)), now - 7 * 24 * 3600_000);
+  const rows = (await binanceGet(c, FAPI, "/fapi/v1/income", { startTime: String(since), limit: "1000" })) as { symbol?: string; incomeType?: string; income?: string; time?: number }[];
+  const kinds = new Set(["REALIZED_PNL", "COMMISSION", "FUNDING_FEE"]);
+  for (const p of s.positions) {
+    if (s.positions.filter((x) => x.instId === p.instId).length > 1) continue;
+    const t0 = next[p.key];
+    p.realized = rows.filter((r) => r.symbol === p.instId && kinds.has(r.incomeType ?? "") && (r.time ?? 0) >= t0).reduce((t, r) => t + (parseFloat(r.income ?? "0") || 0), 0);
+  }
+}
+
+// ---------------------------------------------------------------- betas
+
+const BETA_TTL_MS = 6 * 3600_000;
+const gb = globalThis as unknown as { __slBetas?: { at: number; map: Record<string, number> } };
+
+/** 90-day beta of each listed coin's daily returns against BTC (cached 6 hours); the rest use the default. */
+export async function coinBetas(coins: string[]): Promise<Record<string, number>> {
+  const want = [...new Set(coins)].filter((c) => c !== "BTC");
+  if (gb.__slBetas && Date.now() - gb.__slBetas.at < BETA_TTL_MS && want.every((c) => c in gb.__slBetas!.map)) return gb.__slBetas.map;
+  const map: Record<string, number> = { BTC: 1 };
+  try {
+    const btc = (await getKlines("BTC", "1d", 91)).candles.map((x) => x.c);
+    for (const c of want) {
+      const b = await getKlines(c, "1d", 91).then((r) => betaOf(r.candles.map((x) => x.c), btc)).catch(() => null);
+      map[c] = b != null && b > 0 ? Math.round(b * 100) / 100 : MARGIN_RULES.defaultBeta;
+    }
+  } catch {
+    for (const c of want) map[c] = MARGIN_RULES.defaultBeta;
+  }
+  gb.__slBetas = { at: Date.now(), map };
+  return map;
 }
 
 const fetchSnapshot = (a: Pick<ExAccount, "id" | "name" | "ex">, c: Creds) => (a.ex === "okx" ? okxSnapshot(a.id, a.name, c) : binanceSnapshot(a.id, a.name, c));
@@ -203,10 +329,7 @@ export function syncExchanges(): Promise<void> {
         snaps[a.id] = { snap: snaps[a.id]?.snap ?? null, error: msg, t: Date.now() };
       }
     }
-    if (fresh.length) {
-      const { mirrorSnapshots } = await import("./rollalert.ts");
-      mirrorSnapshots(fresh);
-    }
+    if (fresh.length) touchPrefs(fresh);
   })().finally(() => (g.__slExSync = null));
   return g.__slExSync;
 }
@@ -262,11 +385,12 @@ export async function saveExAccount(input: ExAccountInput): Promise<{ account: R
     keyHint: replacing ? hint(creds.key) : cur!.keyHint,
     ...(ipRestrict !== undefined ? { ipRestrict } : cur?.ipRestrict !== undefined ? { ipRestrict: cur.ipRestrict } : {}),
     addedAt: cur?.addedAt ?? Date.now(),
+    ...(cur?.riskPct != null ? { riskPct: cur.riskPct } : {}),
+    ...(cur?.budget ? { budget: cur.budget } : {}),
+    ...(cur?.fee != null ? { fee: cur.fee } : {}),
   };
   putExAccounts(cur ? list.map((a) => (a.id === id ? next : a)) : [...list, next]);
   snaps[id] = { snap: { ...snap, name }, error: null, t: snap.t };
-  const { mirrorSnapshots } = await import("./rollalert.ts");
-  mirrorSnapshots([{ ...snap, name }]);
   return { account: publicExAccounts().find((a) => a.id === id)!, snap };
 }
 
@@ -280,12 +404,13 @@ export async function testExAccount(id: string): Promise<ExSnapshot> {
   return r.snap;
 }
 
-/** Forget the key and the snapshot; the mirrored 滚仓 account goes too. */
-export async function removeExAccount(id: string) {
+/** Forget the key, the snapshot and what the page set on its positions. */
+export function removeExAccount(id: string) {
   const list = getExAccounts();
   if (!list.some((a) => a.id === id)) throw new Error("没有找到这个交易所账户");
   putExAccounts(list.filter((a) => a.id !== id));
   delete snaps[id];
-  const { dropMirror } = await import("./rollalert.ts");
-  dropMirror(id);
+  const prefs = getExPrefs();
+  for (const k of Object.keys(prefs)) if (k.startsWith(`${id}:`)) delete prefs[k];
+  putExPrefs(prefs);
 }

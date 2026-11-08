@@ -77,10 +77,12 @@ test("the add limit: budget, pyramid, losing side, liquidation", () => {
   const c = maxAdd({ ...base, leverage: 30, stop: 2280, budget: 1000, rules: { pyramid: 10 } });
   assert.equal(c.binding, "liquidation");
   assert.ok(c.liq! <= 2280 - 20 + 1e-6);
-  // account leverage cap: 5 × 10,000 / 2360 − 4
-  const d = maxAdd({ ...base, budget: 1e9, rules: { pyramid: 100 }, account: 10000 });
-  assert.equal(d.binding, "leverage");
-  near(d.qty, 50000 / 2360 - 4);
+  // no cap on the account's real leverage any more: with a huge budget the pyramid binds
+  assert.equal(maxAdd({ ...base, budget: 1e9, rules: { pyramid: 100 }, account: 10000 }).binding, "pyramid");
+  // the margin it needs (size × price ÷ leverage) must fit in what is free to open with
+  const d = maxAdd({ ...base, budget: 1e9, rules: { pyramid: 100 }, account: 10000, available: 500 });
+  assert.equal(d.binding, "margin");
+  near(d.qty, (500 * base.leverage) / 2360);
 });
 
 test("the third add is the last", () => {

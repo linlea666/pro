@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { binanceReadOnly, coinFor, okxContractValues, okxReadOnly, parseBinance, parseOkx, stopOf, type ExSnapshot } from "../src/lib/exchange.ts";
-import { cleanBook, exGuard, holdingView, pickExAlerts, pickRollAlerts, reconcileBook, type Market, type RollBook } from "../src/lib/rollbook.ts";
+import { cleanBook, exAccountOf, exGuard, holdingView, migrateMirrors, pickRollAlerts, prefKey, prefsOf, type Market, type RollBook } from "../src/lib/rollbook.ts";
 import { binanceSign, okxSign } from "../src/lib/server/exchange.ts";
 
 const COINS = ["BTC", "ETH", "ZEC", "1000PEPE"];
@@ -140,57 +140,70 @@ test("parseBinance: margin balance, hedge-mode sides, classic and algo stop orde
   assert.deepEqual(stopOf(s, pepe), { sl: 0.012, covered: 50000, tp: null, trail: false });
 });
 
-const empty = (): RollBook => ({ accounts: [{ id: "m", name: "手填", total: 1000, riskPct: 2, budget: "keep", fee: 0.0005, holdings: [{ id: "h", coin: "ETH", dir: 1, mode: "isolated", leverage: 5, fills: [{ kind: "open", price: 2000, qty: 1 }], stop: 1900, targets: [], realizedBase: 0 }] }], alert: { enabled: true, to: [], dailyCap: 30 } });
+const mkt = (price: number, o: Partial<Market> = {}): Market => ({ price, atr: 30, levels: [], swingStop: { "1": null, "-1": null }, funding: null, lastClose: null, ...o });
 
-test("reconcileBook mirrors positions, keeps page settings, follows quantity changes, drops closed ones", () => {
+test("exAccountOf: the exchange account itself, stable ids, page settings by position, unlisted coins kept", () => {
   const s = okx();
-  const b1 = reconcileBook(empty(), [s]);
-  assert.equal(b1.accounts.length, 2);
-  assert.equal(b1.accounts[0].holdings.length, 1, "hand-entered account untouched");
-  const ex = b1.accounts[1];
-  assert.equal(ex.exchange, "o1");
-  assert.equal(ex.total, 4120.68);
-  assert.deepEqual(ex.holdings.map((h) => h.coin), ["ZEC", "ETH", "BTC"], "DOGE is not on the site");
-  const zec = ex.holdings[0];
-  assert.equal(zec.source, "exchange");
-  assert.equal(zec.mode, "isolated");
+  const acc = exAccountOf(s, {});
+  assert.equal(acc.id, "o1");
+  assert.equal(acc.exchange, "o1");
+  assert.equal(acc.total, 4120.68);
+  assert.equal(acc.snap, s);
+  // every position, including DOGE that the site does not list
+  assert.deepEqual(acc.holdings.map((h) => [h.coin, h.ex?.listed]), [["ZEC", true], ["ETH", true], ["BTC", true], ["DOGE", false]]);
+  const zec = acc.holdings[0];
+  assert.equal(zec.id, "o1:ZEC-USDT-SWAP|isolated|1");
   assert.equal(zec.leverage, 10);
   assert.equal(zec.ex?.sl, 1200);
   // the page's realized figure equals the exchange's (the opening fee is not counted twice)
-  const v = holdingView(zec, ex, { price: 1267.56, atr: 20, levels: [], swingStop: { "1": null, "-1": null }, funding: null, lastClose: null });
+  const v = holdingView(zec, acc, mkt(1267.56));
   assert.ok(Math.abs(v.pos.realized - -1.37) < 1e-9);
   assert.equal(v.stop, 1200);
   assert.equal(v.stopFrom, "exchange");
   assert.equal(v.liq, 1150.2);
+  assert.equal(v.available, 2244.1, "the free margin limits adds");
+  assert.ok(v.liqOf, "adds use the account-level liquidation model");
 
-  // the page sets a stop, targets and a style; the next sync keeps them and the fills
-  const edited: RollBook = { ...b1, accounts: b1.accounts.map((a) => (a.exchange ? { ...a, riskPct: 1, holdings: a.holdings.map((h) => (h.coin === "ZEC" ? { ...h, stop: 1210, targets: [1400], style: "bold" as const } : h)) } : a)) };
-  const b2 = reconcileBook(edited, [s]);
-  const z2 = b2.accounts[1].holdings.find((h) => h.coin === "ZEC")!;
+  // what the page sets is stored per position and survives every read
+  const prefs = { [zec.id]: prefsOf({ ...zec, stop: 1210, targets: [1400], style: "bold" }) };
+  const again = exAccountOf(s, prefs, { riskPct: 1, budget: "even", fee: 0.0005 });
+  const z2 = again.holdings[0];
   assert.equal(z2.id, zec.id);
   assert.equal(z2.stop, 1210);
   assert.deepEqual(z2.targets, [1400]);
   assert.equal(z2.style, "bold");
-  assert.equal(z2.fills, edited.accounts[1].holdings[0].fills);
-  assert.equal(b2.accounts[1].riskPct, 1);
+  assert.equal(again.riskPct, 1);
+  assert.equal(again.budget, "even");
+  // the exchange's stop order still comes first
+  assert.equal(holdingView(z2, again, mkt(1267)).stop, 1200);
+  // a position that grew on the exchange keeps its settings (same id)
+  const grown = exAccountOf({ ...s, positions: s.positions.map((p) => (p.coin === "ZEC" ? { ...p, qty: 3, avg: 1290 } : p)) }, prefs);
+  assert.deepEqual(grown.holdings[0].fills.map((f) => [f.kind, f.price, f.qty]), [["open", 1290, 3]]);
+  assert.equal(grown.holdings[0].stop, 1210);
 
-  // added on the exchange: one new opening fill at the new average; ETH closed: gone
-  const s3: ExSnapshot = { ...s, positions: s.positions.filter((p) => p.coin !== "ETH").map((p) => (p.coin === "ZEC" ? { ...p, qty: 3, avg: 1290 } : p)) };
-  const b3 = reconcileBook(b2, [s3]);
-  const z3 = b3.accounts[1].holdings.find((h) => h.coin === "ZEC")!;
-  assert.deepEqual(z3.fills.map((f) => [f.kind, f.price, f.qty]), [["open", 1290, 3]]);
-  assert.equal(z3.stop, 1210);
-  assert.deepEqual(b3.accounts[1].holdings.map((h) => h.coin), ["ZEC", "BTC"]);
-
-  // what the page sends back survives cleanBook with the exchange fields
-  const c = cleanBook(b3, COINS);
-  assert.equal(c.accounts[1].exchange, "o1");
-  assert.equal(c.accounts[1].holdings[0].source, "exchange");
-  assert.equal(c.accounts[1].holdings[0].ex?.key, "ZEC-USDT-SWAP|isolated|1");
+  // exchange accounts are never stored with the hand-entered book
+  const c = cleanBook({ accounts: [acc, { id: "m", name: "手填", total: 1000, riskPct: 2, budget: "keep", fee: 0, holdings: [{ id: "h", coin: "ETH", dir: 1, mode: "isolated", leverage: 5, fills: [{ kind: "open", price: 2000, qty: 1 }], stop: 1900, targets: [], realizedBase: 0 }] }], alert: { enabled: false, to: [], dailyCap: 30 } }, COINS);
+  assert.deepEqual(c.accounts.map((a) => a.id), ["m"]);
 });
 
-test("exGuard and the guard alert: no stop order, a stop beyond liquidation, partial cover", () => {
-  const ex = { key: "k", instId: "ETH-USDT-SWAP", liq: 1800, mark: 2000, upl: 0, margin: null, mmr: null, sl: null as number | null, covered: null as number | null, tp: null, trail: false, t: 0 };
+test("migrateMirrors: old mirror accounts go, their position settings become prefs (old keys had no margin mode)", () => {
+  const raw = {
+    accounts: [
+      { id: "m", name: "手填", holdings: [] },
+      { id: "ex-o1", name: "okx", exchange: "o1", holdings: [
+        { id: "x1", coin: "BTC", dir: 1, mode: "isolated", leverage: 20, fills: [], stop: 75000, targets: [80000], realizedBase: 0, style: "bold", ex: { key: "BTC-USDT-SWAP|1" } },
+        { id: "x2", coin: "BTC", dir: -1, mode: "cross", leverage: 10, fills: [], stop: null, targets: [], realizedBase: 0, ex: { key: "BTC-USDT-SWAP|cross|-1" } },
+      ] },
+    ],
+  };
+  const m = migrateMirrors(raw)!;
+  assert.deepEqual((m.accounts as { id: string }[]).map((a) => a.id), ["m"]);
+  assert.deepEqual(m.prefs, { [prefKey("o1", "BTC-USDT-SWAP|isolated|1")]: { stop: 75000, targets: [80000], style: "bold" }, [prefKey("o1", "BTC-USDT-SWAP|cross|-1")]: { targets: [] } });
+  assert.equal(migrateMirrors({ accounts: [{ id: "m" }] }), null, "nothing to do");
+});
+
+test("exGuard and the guard alert: no stop order, a stop beyond liquidation, partial cover; ids stay stable", () => {
+  const ex = { key: "k", instId: "ETH-USDT-SWAP", liq: 1800, mark: 2000, upl: 0, margin: null, mmr: null, sl: null as number | null, covered: null as number | null, tp: null, trail: false, t: 0, listed: true };
   assert.equal(exGuard({ dir: 1, ex }, 1)?.state, "none");
   assert.equal(exGuard({ dir: 1, ex: { ...ex, sl: 1700, covered: 1 } }, 1)?.state, "beyondLiq");
   assert.equal(exGuard({ dir: 1, ex: { ...ex, sl: 1900, covered: 0.5 } }, 1)?.state, "partial");
@@ -198,22 +211,19 @@ test("exGuard and the guard alert: no stop order, a stop beyond liquidation, par
   assert.equal(exGuard({ dir: 1 }, 1), null, "hand-entered holdings have no exchange orders to check");
 
   const s = okx();
-  const book = reconcileBook({ accounts: [], alert: { enabled: true, to: [], dailyCap: 30 } }, [{ ...s, positions: s.positions.filter((p) => p.coin === "ZEC") }]);
-  const m: Record<string, Market> = {};
-  for (const c of ["ZEC", "ETH", "BTC"]) m[c] = { price: c === "ZEC" ? 1267 : c === "ETH" ? 2230 : 77000, atr: 10, levels: [], swingStop: { "1": null, "-1": null }, funding: null, lastClose: null };
+  const book = (snap: ExSnapshot): RollBook => ({ accounts: [exAccountOf(snap, {})], alert: { enabled: true, to: [], dailyCap: 30 } });
+  const m: Record<string, Market> = { ZEC: mkt(1267), ETH: mkt(2230), BTC: mkt(77000), DOGE: mkt(0.21) };
   // first round: the account is learnt, nothing is mailed
-  const r1 = pickRollAlerts(book, m, {});
+  const r1 = pickRollAlerts(book({ ...s, positions: s.positions.filter((p) => p.coin === "ZEC") }), m, {});
   assert.equal(r1.alerts.length, 0);
-  // ETH (no stop order) and BTC (stop covers half) open afterwards: both mailed at once as new trades
-  const book2 = reconcileBook(book, [s]);
-  const r2 = pickRollAlerts(book2, m, r1.mem);
-  assert.deepEqual(r2.alerts.filter((a) => a.kind === "guard").map((a) => a.title.split("：")[1]).sort(), ["交易所没有止损单", "止损单只覆盖一部分仓位"]);
-  // and the real equity now drives the account risk: BTC at its stop alone is ~11% of 4,120 USDT
+  // ETH (no stop order), BTC (stop covers half) and DOGE (not on the site, no stop order) open afterwards: all mailed at once
+  const r2 = pickRollAlerts(book(s), m, r1.mem);
+  assert.deepEqual(r2.alerts.filter((a) => a.kind === "guard").map((a) => a.title).sort(), ["okx · BTC 多单：止损单只覆盖一部分仓位", "okx · DOGE 多单：交易所没有止损单", "okx · ETH 空单：交易所没有止损单"]);
+  // the real equity drives the account risk: BTC at its stop alone is ~11% of 4,120 USDT
   assert.ok(r2.alerts.some((a) => a.kind === "risk"));
-  // nothing changed: no repeat
-  assert.equal(pickRollAlerts(reconcileBook(book2, [s]), m, r2.mem).alerts.length, 0);
+  // the next read builds the same ids: nothing is repeated
+  assert.equal(pickRollAlerts(book(s), m, r2.mem).alerts.length, 0);
 });
-
 test("an isolated and a cross position on the same contract stay apart, each with its own stop orders", () => {
   // the user's account on 2026-11-09: hedge mode, BTC long isolated 20x, BTC long cross 10x, BTC short cross
   const s = parseOkx({
@@ -242,35 +252,20 @@ test("an isolated and a cross position on the same contract stay apart, each wit
   assert.ok(Math.abs(stopOf(s, iso).covered! - 0.093) < 1e-12);
   assert.equal(stopOf(s, cross).sl, null, "the cross long has no stop order");
   assert.equal(stopOf(s, short).sl, 77500);
-  const b = reconcileBook({ accounts: [], alert: { enabled: false, to: [], dailyCap: 30 } }, [s]);
-  const hs = b.accounts[0].holdings;
+  const hs = exAccountOf(s, {}).holdings;
   assert.equal(hs.length, 3);
   assert.equal(new Set(hs.map((h) => h.id)).size, 3, "three holdings, three ids");
   assert.deepEqual(hs.map((h) => [h.mode, h.dir, h.leverage, exGuard(h, positionQty(h))?.state]), [["isolated", 1, 20, "partial"], ["cross", 1, 10, "none"], ["cross", -1, 10, "ok"]]);
-  // and the next sync finds each one again
-  const again = reconcileBook(b, [s]).accounts[0].holdings;
-  assert.deepEqual(again.map((h) => h.id), hs.map((h) => h.id));
+  // and the next read finds each one again
+  assert.deepEqual(exAccountOf(s, {}).holdings.map((h) => h.id), hs.map((h) => h.id));
 });
 
 const positionQty = (h: RollBook["accounts"][number]["holdings"][number]) => h.fills.reduce((q, f) => q + (f.kind === "reduce" ? -f.qty : f.qty), 0);
 
-test("positions on coins the site does not list still get the stop-order alert; a missing stop order leads the status", () => {
-  const s = okx();
-  // DOGE is not on the site: no holding, but its missing stop order is checked
-  const r1 = pickExAlerts([s], {});
-  assert.equal(r1.alerts.length, 0, "first round only learns");
-  assert.equal(pickExAlerts([s], r1.mem).alerts.length, 0, "unchanged: nothing new");
-  const opened: ExSnapshot = { ...s, positions: [...s.positions, { ...s.positions[3], key: "PEPE-USDT-SWAP|cross|1", instId: "PEPE-USDT-SWAP", base: "PEPE2", coin: null }] };
-  const r2 = pickExAlerts([opened], r1.mem);
-  assert.deepEqual(r2.alerts.map((a) => a.title), ["okx · PEPE-USDT-SWAP 多单：交易所没有止损单"]);
-  assert.ok(r2.alerts.every((a) => a.kind === "guard"));
-
-  // a synced holding without a stop order: the status says so first, whatever the plan says
-  const b = reconcileBook({ accounts: [], alert: { enabled: false, to: [], dailyCap: 30 } }, [s]);
-  const acc = b.accounts[0];
+test("a missing stop order leads the status", () => {
+  const acc = exAccountOf(okx(), {});
   const eth = acc.holdings.find((h) => h.coin === "ETH")!;
-  const v = holdingView(eth, acc, { price: 2230, atr: 30, levels: [], swingStop: { "1": null, "-1": { stop: 2300, anchor: 2280 } }, funding: null, lastClose: null });
+  const v = holdingView(eth, acc, mkt(2230, { swingStop: { "1": null, "-1": { stop: 2300, anchor: 2280 } } }));
   assert.equal(v.status?.title, "交易所没有止损单");
   assert.equal(v.status?.tone, "bad");
-  assert.equal(acc.name, "okx", "the mirror is named after the exchange account");
 });

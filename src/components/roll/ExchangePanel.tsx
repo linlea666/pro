@@ -1,107 +1,67 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { EXCHANGE_NAME, stopOf, type ExchangeId, type ExSnapshot } from "@/lib/exchange";
-import { trimQty } from "@/lib/ta/roll";
-import { fmtPrice } from "../coin/format";
+import { useState } from "react";
+import { EXCHANGE_NAME, type ExchangeId, type ExSnapshot } from "@/lib/exchange";
+import type { ExAccountPrefs, HoldingPrefs } from "@/lib/rollbook";
 
 /**
- * 交易所账户（只读）: add an OKX / Binance read-only API key, see the account snapshot (equity, available,
- * margin ratio, positions with the exchange's liquidation price and stop orders). Positions on the site's
- * coins are mirrored into a 滚仓 account; `onSynced` reloads the book after each read.
+ * 交易所连接 (read-only keys): add an OKX / Binance key, test it, rename it, replace it, remove it, and see
+ * whether each account reads. The balances and positions themselves show in the account card and the
+ * position table above; the data is loaded once by the page (`ExData`).
  */
 
-interface PublicAccount {
+export interface PublicAccount {
   id: string;
   name: string;
   ex: ExchangeId;
   keyHint: string;
   ipRestrict: boolean | null;
-  addedAt: number;
+  prefs: ExAccountPrefs;
 }
-interface Data {
+export interface ExData {
   accounts: PublicAccount[];
   snapshots: Record<string, { snap: ExSnapshot | null; error: string | null; t: number }>;
+  prefs: Record<string, HoldingPrefs>;
+  betas: Record<string, number>;
   canEncrypt: boolean;
   allowlist: boolean;
   secure: boolean;
 }
 
 const field = "num w-full rounded-lg border border-line bg-panel-2 px-2.5 py-1.5 text-sm outline-none focus:border-accent";
-const usdt = (v: number) => v.toLocaleString("en-US", { maximumFractionDigits: 2 });
-const STALE_MS = 30_000;
-const POLL_MS = 30_000;
 
-export function ExchangePanel({ onSynced }: { onSynced: () => void }) {
-  const [data, setData] = useState<Data | null>(null);
+export function ExchangePanel({ data, onPost }: { data: ExData; onPost: (body: Record<string, unknown>) => Promise<{ ok: boolean; message: string | null }> }) {
   const [pick, setPick] = useState<string | null>(null);
-  const [form, setForm] = useState<null | "add" | "key" | "rename">(null);
+  const [form, setForm] = useState<null | "add" | "key" | "rename">(data.accounts.length ? null : "add");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [now, setNow] = useState(() => Date.now());
-
-  const load = useCallback(
-    (refresh: boolean) =>
-      fetch(`/api/admin/exchange${refresh ? "?refresh=1" : ""}`)
-        .then((r) => (r.ok ? r.json() : null))
-        .then((b: Data | null) => {
-          if (!b) return;
-          setData(b);
-          setPick((p) => (p && b.accounts.some((a) => a.id === p) ? p : (b.accounts[0]?.id ?? null)));
-          if (refresh && b.accounts.length) onSynced();
-        })
-        .catch(() => {}),
-    [onSynced],
-  );
-  useEffect(() => {
-    load(true);
-    const id = setInterval(() => !document.hidden && load(true), POLL_MS);
-    const tick = setInterval(() => setNow(Date.now()), 5_000);
-    return () => (clearInterval(id), clearInterval(tick));
-  }, [load]);
-
+  const acc = data.accounts.find((a) => a.id === pick) ?? data.accounts[0] ?? null;
+  const entry = acc ? data.snapshots[acc.id] : undefined;
+  const http = typeof location !== "undefined" && location.protocol === "http:";
   const post = async (body: Record<string, unknown>) => {
     setBusy(true);
     setMsg(null);
-    try {
-      const r = await fetch("/api/admin/exchange", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-      const b = await r.json().catch(() => null);
-      if (!r.ok) throw new Error(b?.error || "操作失败");
-      setData(b);
-      setMsg(b.message ? { ok: true, text: b.message } : null);
-      setForm(null);
-      onSynced();
-      return b as Data;
-    } catch (e) {
-      setMsg({ ok: false, text: (e as Error).message });
-      return null;
-    } finally {
-      setBusy(false);
-    }
+    const r = await onPost(body);
+    setBusy(false);
+    if (r.ok) setForm(null);
+    if (r.message) setMsg({ ok: r.ok, text: r.message });
   };
 
-  if (!data) return null;
-  const acc = data.accounts.find((a) => a.id === pick) ?? null;
-  const entry = acc ? data.snapshots[acc.id] : undefined;
-  const snap = entry?.snap ?? null;
-  const http = typeof location !== "undefined" && location.protocol === "http:";
-
   return (
-    <section className="card space-y-4 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold">交易所账户 <span className="text-sm font-normal text-ink-3">· 只读，不下单</span></h2>
-        <button className="rounded-lg bg-ink px-3 py-1.5 text-sm text-bg" onClick={() => (setForm("add"), setMsg(null))}>添加账户</button>
-      </div>
-
-      {!data.canEncrypt && <p className="text-sm text-down">服务器没有配置 MASTER_KEY，无法加密保存 API Key。</p>}
-
-      {data.accounts.length > 0 && (
+    <details className="card p-4" open={!data.accounts.length}>
+      <summary className="cursor-pointer text-[15px] font-semibold">
+        交易所连接 <span className="text-sm font-normal text-ink-3">· 只读，不下单{data.accounts.length ? ` · ${data.accounts.length} 个账户` : ""}</span>
+      </summary>
+      <div className="mt-3 space-y-3">
+        {!data.canEncrypt && <p className="text-sm text-down">服务器没有配置 MASTER_KEY，无法加密保存 API Key。</p>}
         <div className="flex flex-wrap items-center gap-2">
-          <select id="ex-pick" className={`${field} w-auto`} value={pick ?? ""} onChange={(e) => setPick(e.target.value)}>
-            {data.accounts.map((a) => (
-              <option key={a.id} value={a.id}>{a.name} · {EXCHANGE_NAME[a.ex]}</option>
-            ))}
-          </select>
+          {data.accounts.length > 0 && (
+            <select id="ex-pick" className={`${field} w-auto`} value={acc?.id ?? ""} onChange={(e) => setPick(e.target.value)}>
+              {data.accounts.map((a) => (
+                <option key={a.id} value={a.id}>{a.name} · {EXCHANGE_NAME[a.ex]}</option>
+              ))}
+            </select>
+          )}
           {acc && (
             <>
               <button disabled={busy} className="chip" onClick={() => post({ action: "test", id: acc.id })}>测试连接</button>
@@ -110,20 +70,22 @@ export function ExchangePanel({ onSynced }: { onSynced: () => void }) {
               <RemoveButton disabled={busy} name={acc.name} onRemove={() => post({ action: "remove", id: acc.id })} />
             </>
           )}
+          <button className="rounded-lg bg-ink px-3 py-1.5 text-sm text-bg" onClick={() => (setForm("add"), setMsg(null))}>添加账户</button>
         </div>
-      )}
-
-      {msg && <p className={`text-sm ${msg.ok ? "text-up" : "text-down"}`}>{msg.text}</p>}
-
-      {form && <KeyForm mode={form} acc={acc} busy={busy} http={http} data={data} onCancel={() => setForm(null)} onSubmit={(b) => post({ action: "save", ...b })} />}
-
-      {acc && entry?.error && <p className="rounded-lg bg-down-soft px-3 py-2 text-sm">读取失败：{entry.error}</p>}
-      {acc && snap && <Snapshot key={acc.id} snap={snap} stale={now - snap.t > STALE_MS} onRefresh={() => load(true)} keyHint={acc.keyHint} ipRestrict={acc.ipRestrict} />}
-
-      {!data.accounts.length && !form && (
-        <p className="text-sm text-ink-3">添加一个交易所的只读 API Key 后，这里直接读取余额、持仓、强平价和止损挂单，持仓会自动出现在下面的滚仓账户里，不用再手填。</p>
-      )}
-    </section>
+        {acc && (
+          <p className="text-xs text-ink-3">
+            Key {acc.keyHint}
+            {entry?.snap && ` · 最近读取 ${new Date(entry.snap.t).toLocaleTimeString("zh-CN", { hour12: false })}`}
+            {acc.ipRestrict === false && <span className="text-warn"> · 这个 Key 没有绑定 IP，建议在交易所绑定服务器地址</span>}
+          </p>
+        )}
+        {acc && entry?.error && <p className="rounded-lg bg-down-soft px-3 py-2 text-sm">读取失败：{entry.error}</p>}
+        {entry?.snap?.warnings.map((w) => <p key={w} className="text-xs text-warn">⚠ {w}</p>)}
+        {msg && <p className={`text-sm ${msg.ok ? "text-up" : "text-down"}`}>{msg.text}</p>}
+        {form && <KeyForm mode={form} acc={form === "add" ? null : acc} busy={busy} http={http} data={data} onCancel={() => setForm(null)} onSubmit={(b) => post({ action: "save", ...b })} />}
+        {!data.accounts.length && !form && <p className="text-sm text-ink-3">添加一个交易所的只读 API Key 后，余额、持仓、强平价和止损挂单直接从交易所读取，不用再手填。</p>}
+      </div>
+    </details>
   );
 }
 
@@ -140,7 +102,7 @@ function RemoveButton({ name, disabled, onRemove }: { name: string; disabled: bo
   );
 }
 
-function KeyForm({ mode, acc, busy, http, data, onCancel, onSubmit }: { mode: "add" | "key" | "rename"; acc: PublicAccount | null; busy: boolean; http: boolean; data: Data; onCancel: () => void; onSubmit: (b: Record<string, unknown>) => void }) {
+function KeyForm({ mode, acc, busy, http, data, onCancel, onSubmit }: { mode: "add" | "key" | "rename"; acc: PublicAccount | null; busy: boolean; http: boolean; data: ExData; onCancel: () => void; onSubmit: (b: Record<string, unknown>) => void }) {
   const [ex, setEx] = useState<ExchangeId>(acc?.ex ?? "okx");
   const [name, setName] = useState(mode === "add" ? "" : (acc?.name ?? ""));
   const [key, setKey] = useState("");
@@ -199,73 +161,6 @@ function KeyForm({ mode, acc, busy, http, data, onCancel, onSubmit }: { mode: "a
         </button>
         <button className="text-sm text-ink-3" onClick={onCancel}>取消</button>
       </div>
-    </div>
-  );
-}
-
-/** Equity, available, margin ratio and every position with its liquidation price and stop orders. */
-function Snapshot({ snap, stale, onRefresh, keyHint, ipRestrict }: { snap: ExSnapshot; stale: boolean; onRefresh: () => void; keyHint: string; ipRestrict: boolean | null }) {
-  const time = new Date(snap.t).toLocaleTimeString("zh-CN", { hour12: false });
-  const ratioTone = snap.mgnRatio == null ? "" : snap.mgnRatio <= 1.5 ? "text-down" : snap.mgnRatio <= 3 ? "text-warn" : "text-up";
-  return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-ink-3">
-        <span>
-          {EXCHANGE_NAME[snap.ex]} · {snap.posMode === "hedge" ? "双向持仓" : "单向持仓"} · 账户快照 {time}
-          {stale ? <span className="text-warn"> · 快照已超过 30 秒，请刷新后再参考</span> : ""} · Key {keyHint}
-          {ipRestrict === false && <span className="text-warn"> · 这个 Key 没有绑定 IP</span>}
-        </span>
-        <button className="chip" onClick={onRefresh}>刷新快照</button>
-      </div>
-      <div className="grid grid-cols-2 gap-2.5 rounded-lg bg-panel-2 p-3 sm:grid-cols-4">
-        <Stat k="USDT 总权益" v={usdt(snap.equity)} />
-        <Stat k="当前可用于开仓" v={usdt(snap.available)} />
-        <Stat k="挂单占用" v={usdt(snap.frozen)} />
-        <Stat
-          k="爆仓安全倍数"
-          v={<span className={ratioTone}>{snap.mgnRatio != null ? `${snap.mgnRatio.toFixed(1)} 倍` : "—"}</span>}
-          sub={snap.mmr != null ? `权益 ÷ 维持保证金 ${usdt(snap.mmr)}，降到 1 倍就强平；3 倍以下要小心` : "没有占用维持保证金"}
-        />
-      </div>
-      {snap.warnings.map((w) => <p key={w} className="text-xs text-warn">⚠ {w}</p>)}
-      {snap.positions.length ? (
-        <div className="grid gap-2 sm:grid-cols-2">
-          {snap.positions.map((p) => {
-            const st = stopOf(snap, p);
-            const liqPct = p.liq != null && p.mark > 0 ? Math.abs(p.mark - p.liq) / p.mark * 100 : null;
-            const naked = st.sl == null;
-            const beyond = st.sl != null && p.liq != null && p.dir * (st.sl - p.liq) <= 0;
-            const partial = st.covered != null && st.covered < p.qty * 0.99;
-            return (
-              <div key={p.key} className="space-y-1 rounded-lg border border-line px-3 py-2 text-sm">
-                <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <b>{p.instId}</b>
-                  <span className={p.upl >= 0 ? "num text-up" : "num text-down"}>{p.upl >= 0 ? "+" : ""}{usdt(p.upl)}</span>
-                </div>
-                <div className="text-ink-2">{p.dir > 0 ? "多" : "空"} · {p.mode === "isolated" ? "逐仓" : "全仓"} · {p.lever}×</div>
-                <div className="num text-xs text-ink-3">数量 {trimQty(p.qty)} {p.base} · 均价 {fmtPrice(p.avg)} · 标记价 {fmtPrice(p.mark)}</div>
-                <div className="num text-xs">
-                  强平 {p.liq != null ? `${fmtPrice(p.liq)}（${liqPct!.toFixed(1)}%）` : "—"} ·{" "}
-                  {naked ? <b className="text-down">没有止损单</b> : beyond ? <b className="text-down">止损 {fmtPrice(st.sl)} 在强平后面</b> : partial ? <b className="text-warn">止损 {fmtPrice(st.sl)} 只覆盖 {trimQty(st.covered!)}，还有 {trimQty(p.qty - st.covered!)} 没保护</b> : <span className="text-up">止损 {fmtPrice(st.sl)}</span>}
-                </div>
-                {!p.coin && <div className="text-xs text-ink-3">{p.base} 不在本站币种里：只显示交易所数字，加入币种后才有关键位和滚仓计算。</div>}
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <p className="text-sm text-ink-3">这个账户现在没有 U 本位合约持仓。</p>
-      )}
-    </div>
-  );
-}
-
-function Stat({ k, v, sub }: { k: string; v: React.ReactNode; sub?: string }) {
-  return (
-    <div className="min-w-0">
-      <div className="text-xs text-ink-3">{k}</div>
-      <div className="num truncate text-[17px] font-semibold">{v}</div>
-      {sub && <div className="num truncate text-[11px] text-ink-3">{sub}</div>}
     </div>
   );
 }

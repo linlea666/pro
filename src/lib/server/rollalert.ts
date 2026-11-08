@@ -1,10 +1,10 @@
 import { getKlines } from "../data/klines.ts";
 import { getPerpSnapshot } from "../data/perp.ts";
-import type { ExSnapshot } from "../exchange.ts";
-import { cleanBook, DEFAULT_ROLL_ALERT, holdingView, marketOf, pickExAlerts, pickRollAlerts, reconcileBook, rollMailText, type Market, type RollAlert, type RollBook, type RollMemory } from "../rollbook.ts";
+import { cleanBook, DEFAULT_ROLL_ALERT, holdingView, marketOf, migrateMirrors, pickRollAlerts, rollMailText, type Market, type RollAlert, type RollBook, type RollMemory } from "../rollbook.ts";
 import { getTrendPlan } from "../trendplan.ts";
 import { TF_SECONDS } from "../types.ts";
 import { coinIds } from "./coins.ts";
+import { mergeExPrefs } from "./exchange.ts";
 import { getDb } from "./db.ts";
 import { logger } from "./log.ts";
 import { getMailConfig, mailReady, sendMail, type MailConfig } from "./mail.ts";
@@ -23,10 +23,19 @@ import { getWatchAlertConfig } from "./watchalert.ts";
 const KEY = "roll.book";
 const EVERY_MS = 60_000;
 
+/** The hand-entered accounts and the alert settings (exchange accounts are built from their snapshots). */
 export function getRollBook(): RollBook {
   const row = getDb().prepare("SELECT value FROM settings WHERE key = ?").get(KEY) as { value: string } | undefined;
-  const b = row ? (JSON.parse(row.value) as Partial<RollBook>) : {};
-  return { accounts: b.accounts ?? [], alert: { ...DEFAULT_ROLL_ALERT, ...b.alert } };
+  const raw = row ? (JSON.parse(row.value) as Partial<RollBook>) : {};
+  // books from before 2026-11-09 mirrored exchange accounts: keep their position settings, drop the copies
+  const old = migrateMirrors(raw);
+  if (old) {
+    mergeExPrefs(old.prefs);
+    raw.accounts = old.accounts as RollBook["accounts"];
+    writeBook({ accounts: raw.accounts, alert: { ...DEFAULT_ROLL_ALERT, ...raw.alert } });
+    logger.info("system", "滚仓账户：去掉交易所镜像账户，持仓设置已转存", { prefs: Object.keys(old.prefs).length });
+  }
+  return { accounts: raw.accounts ?? [], alert: { ...DEFAULT_ROLL_ALERT, ...raw.alert } };
 }
 
 const alertMail = (b: RollBook, mail: MailConfig = getMailConfig()): MailConfig => (b.alert.to.length ? { ...mail, to: b.alert.to } : mail);
@@ -37,37 +46,9 @@ function writeBook(b: RollBook) {
     .run(KEY, JSON.stringify(b), Date.now());
 }
 
-/** Mirror fresh exchange snapshots into the stored book (see `reconcileBook`). */
-export function mirrorSnapshots(fresh: ExSnapshot[]) {
-  if (fresh.length) writeBook(reconcileBook(getRollBook(), fresh));
-}
-
-/** An exchange account was removed: drop the account that mirrored it. */
-export function dropMirror(exId: string) {
-  const b = getRollBook();
-  writeBook({ ...b, accounts: b.accounts.filter((a) => a.exchange !== exId) });
-}
-
 export function saveRollBook(input: unknown): RollBook {
   const cur = getRollBook();
-  const sent = cleanBook(input, coinIds());
-  // a mirrored account's positions come from the exchange, not from the page: the page may have loaded
-  // them a sync ago. Keep the server's synced holdings (with the page's settings on them) and the total.
-  const next: RollBook = {
-    ...sent,
-    accounts: sent.accounts.map((a) => {
-      const mine = a.exchange ? cur.accounts.find((x) => x.exchange === a.exchange) : undefined;
-      if (!mine) return a.exchange ? { ...a, exchange: undefined, holdings: a.holdings.filter((h) => h.source !== "exchange") } : a;
-      const page = new Map(a.holdings.filter((h) => h.source === "exchange").map((h) => [h.id, h]));
-      const synced = mine.holdings.filter((h) => h.source === "exchange").map((h) => {
-        const p = page.get(h.id);
-        return p ? { ...p, coin: h.coin, dir: h.dir, mode: h.mode, leverage: h.leverage, fills: h.fills, realizedBase: h.realizedBase, source: h.source, ex: h.ex } : h;
-      });
-      return { ...a, id: mine.id, total: mine.total, holdings: [...a.holdings.filter((h) => h.source !== "exchange"), ...synced] };
-    }),
-  };
-  // the mirror of an exchange account always exists while the key is stored
-  for (const m of cur.accounts) if (m.exchange && !next.accounts.some((a) => a.exchange === m.exchange)) next.accounts.push(m);
+  const next = cleanBook(input, coinIds());
   const mail = getMailConfig();
   if (next.alert.enabled && !(mail.host && mail.user && mail.passEnc && (next.alert.to.length || mail.to.length))) {
     throw new Error("开启滚仓提醒前，请先在后台“系统设置 → 邮件与告警”里填好 SMTP 服务器、发件邮箱、授权码和收件邮箱");
@@ -78,9 +59,19 @@ export function saveRollBook(input: unknown): RollBook {
   return next;
 }
 
+/** The hand-entered accounts plus the live exchange accounts: what the alerts look at. */
+async function fullBook(): Promise<RollBook> {
+  const b = getRollBook();
+  const { exAccounts } = await import("./exchange.ts");
+  return { ...b, accounts: [...exAccounts(), ...b.accounts] };
+}
+
 async function markets(b: RollBook): Promise<Record<string, Market>> {
-  const coins = [...new Set(b.accounts.flatMap((a) => a.holdings.map((h) => h.coin)))];
+  const listed = (h: RollBook["accounts"][number]["holdings"][number]) => !h.ex || h.ex.listed;
+  const coins = [...new Set(b.accounts.flatMap((a) => a.holdings.filter(listed).map((h) => h.coin)))];
   const out: Record<string, Market> = {};
+  // coins the site does not list: only the exchange's mark price (stop orders and liquidation are checked)
+  for (const a of b.accounts) for (const h of a.holdings) if (!listed(h) && h.ex) out[h.coin] = marketOf(null, h.ex.mark, null);
   for (const coin of coins) {
     try {
       const [m5, plan, perp] = await Promise.all([getKlines(coin, "5m", 50), getTrendPlan(coin, "4h").catch(() => null), getPerpSnapshot(coin).catch(() => null)]);
@@ -106,18 +97,12 @@ const siteUrl = () => getWatchAlertConfig().siteUrl;
 
 /** One round. Returns what was mailed. */
 export async function runRollAlerts(nowMs = Date.now()): Promise<RollAlert[]> {
-  const b = getRollBook();
+  const b = await fullBook();
   const mail = alertMail(b);
-  if (!b.alert.enabled || !mailReady(mail) || !b.accounts.some((a) => a.holdings.length || a.exchange)) return [];
+  if (!b.alert.enabled || !mailReady(mail) || !b.accounts.some((a) => a.holdings.length)) return [];
   const raw = getState("rollAlert.mem");
   const prev = raw ? (JSON.parse(raw) as RollMemory) : null;
-  const held = pickRollAlerts(b, await markets(b), prev ?? {});
-  // positions on coins the site does not list: only their stop orders can be checked
-  const { exSnapshots } = await import("./exchange.ts");
-  const snaps = Object.values(exSnapshots()).flatMap((x) => (x.snap && !x.error ? [x.snap] : []));
-  const other = pickExAlerts(snaps, prev ?? {});
-  const alerts = [...held.alerts, ...other.alerts];
-  const mem = { ...held.mem, ...other.mem };
+  const { alerts, mem } = pickRollAlerts(b, await markets(b), prev ?? {});
   setState("rollAlert.mem", JSON.stringify(mem));
   if (prev == null || !alerts.length) return [];
 
@@ -139,7 +124,9 @@ export async function runRollAlerts(nowMs = Date.now()): Promise<RollAlert[]> {
 
 /** A sample mail with each position's current state, to check the settings end to end. */
 export async function sendTestRollAlert(input: unknown): Promise<string[]> {
-  const b = cleanBook(input, coinIds());
+  const sent = cleanBook(input, coinIds());
+  const { exAccounts } = await import("./exchange.ts");
+  const b = { ...sent, accounts: [...exAccounts(), ...sent.accounts] };
   const mail = alertMail(b);
   if (!mailReady(mail)) throw new Error("邮件还没有配置完整：请先在后台“系统设置 → 邮件与告警”里填好并保存");
   const ms = await markets(b);
